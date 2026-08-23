@@ -20,9 +20,33 @@ pub struct ExecArgs {
     pub help: bool,
     pub no_yolo: bool,
     pub model: Option<String>,
+    pub effort: Option<String>,
+    pub mcp: bool,
     pub prewalk: bool,
     pub smol_model: Option<String>,
     pub investigate_model: Option<String>,
+}
+
+pub fn parse_effort_level(value: &str) -> Result<String, String> {
+    match value {
+        "low" | "medium" | "high" | "xhigh" => Ok(value.to_string()),
+        _ => Err(format!(
+            "effort must be low, medium, high, or xhigh (got {value})"
+        )),
+    }
+}
+
+/// Flag wins; otherwise `TK_EFFORT` if it is a known level; else `low` for headless.
+pub fn resolve_exec_effort(explicit: Option<&str>) -> String {
+    if let Some(value) = explicit {
+        return value.to_string();
+    }
+    std::env::var("TK_EFFORT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| parse_effort_level(&value).ok())
+        .unwrap_or_else(|| "low".to_string())
 }
 
 fn exec_help() {
@@ -36,6 +60,9 @@ fn exec_help() {
     eprintln!("  --json          Emit {{\"ok\",\"text\",\"error\"}} on stdout instead of prose");
     eprintln!("  --cwd <dir>     Workspace to run against (default: current directory)");
     eprintln!("  --model <name>  Override the first configured provider's default model");
+    eprintln!("  --effort <lvl>  Reasoning effort: low (default), medium, high, xhigh");
+    eprintln!("  --thinking <lvl>  Alias for --effort (matches Codex/Pi flag names)");
+    eprintln!("  --mcp           Discover and register MCP tools (skipped by default)");
     eprintln!("  --no-yolo       Deny Ask-class tools (default non-TTY/exec is AlwaysAllow)");
     eprintln!("  --prewalk       Enable rx4 prewalk (or set RX4_PREWALK=1)");
     eprintln!("  --smol-model <name>  Apply model after the first write (RX4_SMOL_MODEL)");
@@ -95,29 +122,31 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         exec_failure(json, "empty prompt");
     }
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let discover = rt.spawn(discover_mcp_tools());
     let providers = setup_providers(&rt);
     let Some((configured, default_model)) = providers.into_iter().next() else {
         exec_failure(json, "no provider credentials; run `tk login <provider>`");
     };
-    let (mcp, errors) = match rt.block_on(discover) {
-        Ok(result) => result,
-        Err(error) => exec_failure(json, &format!("MCP discover failed: {error}")),
+    let mcp = if parsed.mcp {
+        let (mcp, errors) = rt.block_on(discover_mcp_tools());
+        for error in errors {
+            eprintln!("· {error}");
+        }
+        mcp
+    } else {
+        Vec::new()
     };
-    for error in errors {
-        eprintln!("· {error}");
-    }
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let configured_id = configured.id.clone();
     let model = parsed.model.unwrap_or(default_model);
+    let effort = resolve_exec_effort(parsed.effort.as_deref());
     let (mut agent, _subagent_manager) = build_agent(
         Some(configured.client),
         &model,
-        "high",
+        &effort,
         workspace.clone(),
         ModelRegistry::from_models([host_model_info(&configured_id, &model)]),
         &mcp,
@@ -135,15 +164,15 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
     });
 
     eprintln!(
-        "· {} / {} in {}",
+        "· {} / {} / {} in {}",
         configured.name,
         model,
+        effort,
         workspace.display()
     );
 
     sync_prewalk_model(&mut agent);
     let result = rt.block_on(agent.prompt(&prompt));
-    sync_prewalk_model(&mut agent);
     if let Err(error) = result {
         exec_failure(json, &error.to_string());
     }
@@ -179,10 +208,22 @@ mod tests {
         let yolo = ExecArgs::default();
         assert!(!yolo.no_yolo);
         assert_eq!(yolo.model, None);
+        assert_eq!(yolo.effort, None);
+        assert!(!yolo.mcp);
         let denied = ExecArgs {
             no_yolo: true,
             ..ExecArgs::default()
         };
         assert!(denied.no_yolo);
+    }
+
+    #[test]
+    fn exec_effort_defaults_to_low_and_accepts_known_levels() {
+        for level in ["low", "medium", "high", "xhigh"] {
+            assert_eq!(parse_effort_level(level).unwrap(), level);
+        }
+        assert!(parse_effort_level("turbo").is_err());
+        assert_eq!(resolve_exec_effort(Some("high")), "high");
+        assert_eq!(resolve_exec_effort(Some("low")), "low");
     }
 }

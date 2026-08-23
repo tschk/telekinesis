@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use crate::exec::{run_exec, ExecArgs};
+use crate::exec::{parse_effort_level, run_exec, ExecArgs};
 use crate::providers::run_login;
 use crate::tui::run_tui;
 
@@ -35,6 +35,15 @@ fn parse_run_args(args: &[String], allow_prompt: bool) -> Result<ExecArgs, Strin
             "--help" | "-h" => parsed.help = true,
             "--json" => parsed.json = true,
             "--no-yolo" => parsed.no_yolo = true,
+            "--mcp" => parsed.mcp = true,
+            "--effort" | "--thinking" => {
+                let flag = arg;
+                index += 1;
+                let level = args
+                    .get(index)
+                    .ok_or_else(|| format!("{flag} requires a level"))?;
+                parsed.effort = Some(parse_effort_level(level)?);
+            }
             "--model" => {
                 index += 1;
                 let model = args
@@ -116,8 +125,9 @@ pub fn print_help() {
     println!("  tk -c           Continue newest session for this project");
     println!("  tk exec \"<prompt>\"   Run one turn headlessly, final text on stdout");
     println!(
-        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --model <name>, --no-yolo,"
+        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --model <name>,"
     );
+    println!("                       --effort|--thinking <low|medium|high|xhigh>, --mcp, --no-yolo,");
     println!("                       --prewalk, --smol-model <name>, --investigate-model <name>)");
     println!("  tk --no-yolo    Headless stdin run that denies Ask-class tools");
     println!(
@@ -138,6 +148,7 @@ pub fn print_help() {
     println!("  GOOGLE_API_KEY      Google Gemini API key");
     println!("  OPENCODE_API_KEY    OpenCode Zen / OpenCode Go API key");
     println!("  OPENROUTER_API_KEY  OpenRouter API key");
+    println!("  TK_EFFORT           exec reasoning effort if --effort/--thinking omitted (default low)");
     println!("  TK_PLAN_APPROVAL    ask (default), off, or bypass whole-turn plans");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
     println!("  RX4_PREWALK         1/true to enable investigate-then-apply");
@@ -221,6 +232,28 @@ mod tests {
         assert!(parse_exec_args(&["--cwd".to_string()]).is_err());
         assert!(parse_exec_args(&["--nope".to_string()]).is_err());
         assert!(parse_exec_args(&["a".to_string(), "b".to_string()]).is_err());
+    }
+
+    #[test]
+    fn exec_parses_effort_thinking_alias_and_mcp() {
+        let parsed = parse_exec_args(&[
+            "--effort".into(),
+            "low".into(),
+            "--mcp".into(),
+            "task".into(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.effort.as_deref(), Some("low"));
+        assert!(parsed.mcp);
+        assert_eq!(parsed.prompt.as_deref(), Some("task"));
+        let alias = parse_exec_args(&["--thinking".into(), "xhigh".into(), "go".into()]).unwrap();
+        assert_eq!(alias.effort.as_deref(), Some("xhigh"));
+        assert!(!alias.mcp);
+        assert!(parse_exec_args(&["--effort".into()]).is_err());
+        assert!(parse_exec_args(&["--thinking".into(), "turbo".into()]).is_err());
+        let defaults = parse_exec_args(&["task".into()]).unwrap();
+        assert_eq!(defaults.effort, None);
+        assert!(!defaults.mcp);
     }
 
     #[test]
