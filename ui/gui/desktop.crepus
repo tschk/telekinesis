@@ -1,99 +1,102 @@
-div #root w-full h-full flex flex-col bg-zinc-950 text-zinc-100 overflow-hidden
-  div #topbar h-11 w-full flex flex-row items-center px-4 border-b border-zinc-800 gap-3 shrink-0
-    div flex flex-row items-center gap-2
-      button w-2.5 h-2.5 rounded-full bg-red-500 hover:bg-red-400 @click=close_window
-      button w-2.5 h-2.5 rounded-full bg-amber-500 hover:bg-amber-400 @click=minimize_window
-      button w-2.5 h-2.5 rounded-full bg-emerald-500 hover:bg-emerald-400 @click=maximize_window
-    span text-sm font-semibold text-zinc-300
-      "telekinesis"
-    div flex-1
-    div flex flex-row items-center gap-2 px-2 py-1 rounded-full bg-zinc-900 border border-zinc-800
+div #root w-full h-full flex flex-row bg-zinc-950 text-zinc-200 overflow-hidden
+  div #sessions w-44 h-full flex flex-col border-r border-zinc-800 shrink-0
+    div h-11 w-full flex flex-row items-center px-3 gap-2 border-b border-zinc-800 shrink-0
+      button w-2.5 h-2.5 rounded-full bg-zinc-600 hover:bg-zinc-400 @click=close_window
+      button w-2.5 h-2.5 rounded-full bg-zinc-700 hover:bg-zinc-500 @click=minimize_window
+      button w-2.5 h-2.5 rounded-full bg-zinc-500 hover:bg-zinc-300 @click=maximize_window
+      span text-xs text-zinc-500
+        "tk"
+    div flex-1 w-full px-2 py-2 flex flex-col gap-1 overflow-y-scroll
+      for session in {sessions}
+        if {session.is_computer}
+          if {session.active}
+            button w-full px-2 py-1.5 rounded-md bg-zinc-900 border border-zinc-700 @click=use_computer
+              span text-xs text-zinc-100
+                "{session.name}"
+          else
+            button w-full px-2 py-1.5 rounded-md hover:bg-zinc-900 @click=use_computer
+              span text-xs text-zinc-500
+                "{session.name}"
+        else
+          if {session.active}
+            button w-full px-2 py-1.5 rounded-md bg-zinc-900 border border-zinc-700 @click=use_coding
+              span text-xs text-zinc-100
+                "{session.name}"
+          else
+            button w-full px-2 py-1.5 rounded-md hover:bg-zinc-900 @click=use_coding
+              span text-xs text-zinc-500
+                "{session.name}"
+    div w-full px-2 pb-3 pt-1 flex flex-col gap-1 shrink-0
+      button w-full px-2 py-1 rounded-full border border-zinc-800 bg-zinc-900 @click=cycle_effort
+        span text-xs text-zinc-400 font-mono
+          "{model} · {effort}"
+      span text-xs text-zinc-600 font-mono
+        "{context_pct}%"
+  div #main flex-1 h-full flex flex-col overflow-hidden
+    div #status h-11 w-full flex flex-row items-center px-4 border-b border-zinc-800 gap-2 shrink-0
       div w-1.5 h-1.5 rounded-full
         if {connected}
           if {busy}
-            bg-amber-400
+            bg-zinc-400
           else
-            bg-emerald-400
+            bg-zinc-200
         else
-          bg-red-400
-      span text-xs text-zinc-400 font-mono
-        "{status}"
-      span text-xs text-zinc-600
-        "·"
+          bg-zinc-700
       span text-xs text-zinc-500 font-mono
+        "{status}"
+      span text-xs text-zinc-700
+        "·"
+      span text-xs text-zinc-600 font-mono
         "{provider}"
-    if {connected}
-      div flex flex-row items-center gap-1
-        if {computer_active}
-          button text-xs font-mono px-2 py-0.5 rounded-full text-indigo-300 @click=use_computer
-            "computer"
-        else
-          button text-xs font-mono px-2 py-0.5 rounded-full text-zinc-500 @click=use_computer
-            "computer"
-        if {coding_active}
-          button text-xs font-mono px-2 py-0.5 rounded-full text-indigo-300 @click=use_coding
-            "code"
-        else
-          button text-xs font-mono px-2 py-0.5 rounded-full text-zinc-500 @click=use_coding
-            "code"
-    span text-xs text-zinc-600 font-mono
-      "{model} · {context_pct}% context"
-  div #messages flex-1 w-full overflow-y-scroll
-    div w-full max-w-240 mx-auto px-5 py-5 flex flex-col gap-3
-      for message in {messages}
-        div w-full flex flex-col
-          if {message.is_tool}
-            div w-full flex flex-row items-start gap-2 py-1 font-mono
-              span text-xs text-zinc-700
-                "│"
-              span text-xs text-cyan-400
-                "{message.role}"
-              span flex-1 text-xs text-zinc-500
-                "{message.content}"
-          else
-            if {message.is_user}
-              div w-full flex flex-row justify-end
-                div max-w-80 px-3 py-2 rounded-2xl bg-indigo-600
-                  span text-sm text-white whitespace-pre-wrap
-                    "{message.content}"
-            else
-              if {message.is_error}
-                div w-full flex flex-row items-start gap-2 py-1
-                  span text-xs text-red-500 font-mono
-                    "!"
-                    span flex-1 text-sm text-red-300 whitespace-pre-wrap
-                    "{message.content}"
-              else
-                div w-full flex flex-row items-start gap-2
-                  div w-6 h-6 rounded-full bg-zinc-800 flex items-center justify-center shrink-0 mt-1
-                    span text-xs text-zinc-400
-                      "ai"
-                  div flex-1
-                    div max-w-80 px-3 py-2 rounded-2xl bg-zinc-900 border border-zinc-800
-                      span text-sm text-zinc-100 whitespace-pre-wrap
-                        "{message.content}"
-  div #composer w-full shrink-0 flex flex-col items-center px-4 pb-4 pt-2
-    div w-full max-w-240 min-h-14 rounded-2xl bg-zinc-900 border border-zinc-700 flex flex-col
-      div min-h-8 max-h-24 w-full px-3 pt-2 text-sm text-zinc-100 font-mono whitespace-pre-wrap overflow-y-scroll
-        "{input}"
-      div h-6 w-full flex flex-row items-center px-3
+      span flex-1
+      if {has_queue}
         span text-xs text-zinc-500 font-mono
-          if {connected}
-            "enter send · shift+enter newline · paste · /login · /clear"
+          "queue {queued}"
+    div #timeline flex-1 w-full overflow-y-scroll
+      div w-full max-w-180 mx-auto px-6 py-6 flex flex-col gap-3
+        for message in {messages}
+          div w-full flex flex-col
+            if {message.is_tool}
+              span text-xs text-zinc-600 font-mono whitespace-pre-wrap
+                "{message.role}  {message.content}"
+            else
+              if {message.is_user}
+                span text-sm text-zinc-400 whitespace-pre-wrap
+                  "{message.content}"
+              else
+                if {message.is_error}
+                  span text-sm text-red-400 whitespace-pre-wrap
+                    "{message.content}"
+                else
+                  span text-sm text-zinc-200 whitespace-pre-wrap
+                    "{message.content}"
+    div #composer w-full shrink-0 flex flex-col px-4 pb-4 pt-2
+      div w-full max-w-180 mx-auto min-h-14 rounded-xl bg-zinc-900 border border-zinc-800 flex flex-col
+        div min-h-8 max-h-24 w-full px-3 pt-2 text-sm text-zinc-100 font-mono whitespace-pre-wrap overflow-y-scroll
+          "{input}"
+        div h-6 w-full flex flex-row items-center px-3
+          span text-xs text-zinc-600 font-mono
+            if {connected}
+              "enter send · shift+enter newline · ⌘v paste · /effort"
+            else
+              "run `tk login openai` or /login"
+          span flex-1
+          if {busy}
+            button text-zinc-400 hover:text-zinc-100 text-xs font-mono @click=interrupt
+              "stop"
           else
-            "run `tk login openai` or /login"
-        span flex-1
-        if {busy}
-          button text-zinc-400 hover:text-zinc-100 text-xs font-mono @click=interrupt
-            "stop"
-        else
+            span
           if {connected}
-            button text-emerald-400 hover:text-emerald-300 text-xs font-mono @click=send_prompt
-              "send ↵"
+            if {busy}
+              button text-zinc-300 hover:text-zinc-100 text-xs font-mono @click=send_prompt
+                "queue ↵"
+            else
+              button text-zinc-200 hover:text-zinc-50 text-xs font-mono @click=send_prompt
+                "send ↵"
           else
             if {login_busy}
-              span text-xs text-amber-400 font-mono
+              span text-xs text-zinc-400 font-mono
                 "logging in"
             else
-              button text-emerald-400 hover:text-emerald-300 text-xs font-mono @click=start_login
+              button text-zinc-200 hover:text-zinc-50 text-xs font-mono @click=start_login
                 "login"

@@ -13,6 +13,13 @@ struct ViewMessage {
     is_error: bool,
 }
 
+struct ViewSession {
+    name: SharedString,
+    active: bool,
+    busy: bool,
+    is_computer: bool,
+}
+
 #[cfg(target_os = "macos")]
 use crate::platform::macos::with_ns_window;
 
@@ -145,6 +152,11 @@ impl CompanionView {
         cx.notify();
     }
 
+    fn cycle_effort(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.host.update(cx, |host, _cx| host.cycle_effort());
+        cx.notify();
+    }
+
     fn hide_panel(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ref handle) = self.cursor_panel_window {
             #[cfg(target_os = "macos")]
@@ -218,9 +230,23 @@ impl Render for CompanionView {
         let computer_active = snap.computer_active;
         let coding_active = snap.coding_active;
         let login_busy = snap.login_busy;
+        let effort: SharedString = snap.effort.into();
+        let queued = snap.queued;
+        let has_queue = queued > 0;
+        let _composer_action: SharedString = snap.composer_action.into();
         let _sidebar_expanded = self.sidebar_expanded;
         let _sessions_expanded = self.sessions_expanded;
         let _recent_expanded = self.recent_expanded;
+        let sessions: Vec<ViewSession> = snap
+            .sessions
+            .into_iter()
+            .map(|session| ViewSession {
+                name: session.name.into(),
+                active: session.active,
+                busy: session.busy,
+                is_computer: session.is_computer,
+            })
+            .collect();
 
         let input: SharedString = if snap.input.is_empty() {
             if login_busy {

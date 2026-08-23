@@ -9,4 +9,6 @@ dist/
 .env.local
 ui/tui/target/
 ui/gui/target/
+apps/mobile/target/
+apps/mobile/ios/.build/
 .pi-subagents/

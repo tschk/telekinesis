@@ -11,3 +11,8 @@ path = "ui/gui"
 type = "tui"
 id = "tui"
 path = "ui/tui"
+
+[[targets]]
+type = "native"
+id = "mobile"
+path = "apps/mobile"

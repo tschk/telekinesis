@@ -1,0 +1,15 @@
+{
+  "version": 3,
+  "root": [
+    {
+      "kind": "stack",
+      "axis": "column",
+      "children": [
+        { "kind": "text", "content": "pair  tkpair://127.0.0.1:8787/ws?token=pending" },
+        { "kind": "text", "content": "Scan the desktop QR, then this timeline talks to companion." },
+        { "kind": "text", "content": "ask the computer..." },
+        { "kind": "text", "content": "not connected · high · pair" }
+      ]
+    }
+  ]
+}
