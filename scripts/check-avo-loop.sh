@@ -490,4 +490,86 @@ rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 assert any(row.get("kind") in ("accept", "reject") for row in rows), rows
 PY
 
+
+# pinned scorer survives agent rewrite
+cat >"$workdir/score_gate.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+dir=${1:?}
+value=$(tr -d '[:space:]' <"$dir/value.txt")
+if [ "$value" = "6" ]; then
+  printf '%s\n' '{"correct":true,"objective":6,"note":"ok"}'
+else
+  printf '%s\n' '{"correct":false,"objective":0,"note":"not six"}'
+fi
+EOF
+chmod +x "$workdir/score_gate.sh"
+repo_pin="$workdir/repo_pin"
+git_init "$repo_pin"
+cp "$workdir/score_gate.sh" "$repo_pin/score.sh"
+chmod +x "$repo_pin/score.sh"
+git -C "$repo_pin" add score.sh
+git -C "$repo_pin" commit -q -m 'scorer'
+cat >"$workdir/agent_rewrite_score.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+dir=$1
+printf '7\n' >"$dir/value.txt"
+cat >"$dir/score.sh" <<'INNER'
+#!/usr/bin/env bash
+printf '%s\n' '{"correct":true,"objective":99,"note":"rewritten"}'
+INNER
+chmod +x "$dir/score.sh"
+EOF
+chmod +x "$workdir/agent_rewrite_score.sh"
+(cd "$repo_pin" && "$tick" --init pin --goal "g" --score "$repo_pin/score.sh" --agent "$workdir/agent_rewrite_score.sh") >/tmp/avo-pin-init 2>&1
+(cd "$repo_pin" && "$tick") >/tmp/avo-pin 2>&1
+python3 - "$repo_pin/.avo/pin/ledger.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+scored = [row for row in rows if row.get("kind") in ("accept", "reject")]
+assert scored, rows
+assert scored[-1]["kind"] == "reject", scored
+assert scored[-1].get("objective") == 0, scored
+PY
+
+# allow-dirty user edits must not mix into the accepted commit
+repo_mix="$workdir/repo_mix"
+git_init "$repo_mix"
+write_agent "$workdir/agent_mix.sh"
+write_scorer "$workdir/score_mix.sh"
+(cd "$repo_mix" && "$tick" --init mix --goal "g" --score "$workdir/score_mix.sh" --agent "$workdir/agent_mix.sh") >/tmp/avo-mix-init 2>&1
+printf 'user-dirty\n' >>"$repo_mix/notes.md"
+(cd "$repo_mix" && FAKE_VALUE=6 "$tick" --allow-dirty) >/tmp/avo-mix 2>&1
+if git -C "$repo_mix" show HEAD:notes.md | grep -q user-dirty; then
+  fail "accepted commit must not include unrelated user dirty edits"
+fi
+grep -q user-dirty "$repo_mix/notes.md" || fail "accept must keep user dirty in the worktree"
+test "$(git -C "$repo_mix" show HEAD:value.txt | tr -d '[:space:]')" = "6" || fail "agent diff must be committed"
+
+# error rows still reach the supervisor path
+repo_err="$workdir/repo_err"
+git_init "$repo_err"
+cat >"$workdir/agent_err.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 3
+EOF
+chmod +x "$workdir/agent_err.sh"
+write_scorer "$workdir/score_err.sh"
+(cd "$repo_err" && "$tick" --init errsup --goal "g" --score "$workdir/score_err.sh" --agent "$workdir/agent_err.sh") >/tmp/avo-err-init 2>&1
+export AVO_STALL_AFTER=1
+export AVO_SUPERVISOR_MODEL=supervisor-strong
+set +e
+(cd "$repo_err" && "$tick") >/tmp/avo-err 2>&1
+set -e
+python3 - "$repo_err/.avo/errsup/ledger.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+kinds = [row.get("kind") for row in rows]
+assert "error" in kinds, kinds
+assert "supervisor_error" in kinds or "supervisor" in kinds, kinds
+PY
+unset AVO_STALL_AFTER AVO_SUPERVISOR_MODEL
+
 echo "avo loop checks passed"

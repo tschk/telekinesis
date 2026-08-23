@@ -281,8 +281,65 @@ avo_capture_candidate() {
   )
   avo_unstage_protected
   AVO_CAND_TREE=$(avo_write_index_tree)
+  AVO_WORK_TREE=$AVO_CAND_TREE
+  avo_isolate_agent_tree
   printf '%s\n' "$AVO_CAND_TREE" >"$pred/candidate.tree"
   avo_reset_index
+}
+
+avo_isolate_agent_tree() {
+  local start=$AVO_START_HEAD
+  local pre=$AVO_PRE_TREE
+  local cand=$AVO_CAND_TREE
+  local isolated
+  [ -n "$start" ] && [ -n "$pre" ] && [ -n "$cand" ] || return 0
+  isolated=$(
+    cd "$AVO_ROOT" || exit 1
+    git read-tree "$start"
+    while IFS=$'\t' read -r status path; do
+      [ -n "${path:-}" ] || continue
+      case "$status" in
+        D*) git rm -q --cached --ignore-unmatch -- "$path" ;;
+        *) git restore --source="$cand" --staged -- "$path" ;;
+      esac
+    done < <(git diff --name-status --no-renames "$pre" "$cand")
+    git write-tree
+  )
+  AVO_CAND_TREE=$isolated
+}
+
+avo_reapply_user_dirty() {
+  [ -n "${AVO_START_HEAD:-}" ] && [ -n "${AVO_PRE_TREE:-}" ] && [ -n "${AVO_CAND_TREE:-}" ] || return 0
+  work=${AVO_WORK_TREE:-$AVO_CAND_TREE}
+  python3 - "$AVO_ROOT" "$AVO_START_HEAD" "$AVO_PRE_TREE" "$work" <<'ENDPY'
+import subprocess, sys
+root, start, pre, cand = sys.argv[1:]
+
+def names(a, b):
+    out = subprocess.check_output(
+        ["git", "-C", root, "diff", "--name-only", "--no-renames", a, b],
+        text=True,
+    )
+    return {p for p in out.splitlines() if p}
+
+for path in sorted(names(start, pre) - names(pre, cand)):
+    subprocess.check_call(
+        ["git", "-C", root, "restore", "--source", pre, "--worktree", "--", path]
+    )
+ENDPY
+}
+
+avo_pin_score() {
+  local dest
+  [ -n "${AVO_SCORE:-}" ] || return 0
+  AVO_SCORE_DISPLAY=${AVO_SCORE_DISPLAY:-$AVO_SCORE}
+  if [ -f "$AVO_SCORE" ]; then
+    dest="$(avo_task_dir)/score.pinned"
+    mkdir -p "$(avo_task_dir)"
+    cp -p "$AVO_SCORE" "$dest"
+    chmod +x "$dest"
+    AVO_SCORE=$dest
+  fi
 }
 
 avo_remove_tick_untracked() {
@@ -362,6 +419,7 @@ avo_commit_candidate() {
     git commit -q --allow-empty -m "$msg"
     git checkout -q -f HEAD -- .
   )
+  avo_reapply_user_dirty
 }
 
 avo_persist_candidate() {
@@ -590,7 +648,7 @@ avo_build_driver_prompt() {
     avo_knowledge_list
     printf '\n'
     printf '%s\n' "Scoring function f:"
-    printf '%s\n' "  $AVO_SCORE $AVO_ROOT"
+    printf '%s\n' "  ${AVO_SCORE_DISPLAY:-$AVO_SCORE} $AVO_ROOT"
     printf '%s\n' "  JSON {correct, objective, metrics, note, artifacts}"
     printf '%s\n' "  correct must be a JSON boolean. Incorrect candidates score objective 0."
     printf '%s\n' "  Host commits only if correct and objective >= baseline/best so far (within noise margin)."
@@ -659,35 +717,46 @@ PY
   avo_restore_tree
 }
 
+avo_supervisor_model() {
+  printf '%s\n' "${AVO_SUPERVISOR_MODEL:-${AVO_MODEL:-}}"
+}
+
+avo_maybe_supervise() {
+  if [ "$(avo_should_supervise)" = yes ]; then
+    avo_run_supervisor
+  fi
+}
+
 avo_run_supervisor() {
-  local dir prompt st
+  local dir prompt st model
   AVO_START_BRANCH=$(avo_current_branch)
   AVO_START_HEAD=$(avo_git rev-parse HEAD)
   avo_capture_pre_tick
   dir=$(avo_task_dir)
   prompt="$dir/supervisor.prompt"
   avo_build_supervisor_prompt "$prompt"
-  if [ -z "${AVO_SUPERVISOR_MODEL:-}" ]; then
+  model=$(avo_supervisor_model)
+  if [ -z "$model" ]; then
     {
       printf '%s\n' "Stall detected: no new best for ${AVO_STALL_AFTER:-3} ticks."
-      printf '%s\n' "No AVO_SUPERVISOR_MODEL set; host-only stall note."
+      printf '%s\n' "No AVO_SUPERVISOR_MODEL or AVO_MODEL set; host-only stall note."
     } >"$dir/supervisor.md"
     avo_restore_tree
     avo_ledger_append supervisor "$(python3 - "$AVO_TASK" <<'PY'
 import json, sys
-print(json.dumps({"task": sys.argv[1], "model": "", "note": "supervisor redirect"}))
+print(json.dumps({"task": sys.argv[1], "model": "", "note": "supervisor skipped"}))
 PY
 )"
     return 0
   fi
   set +e
-  AVO_MODEL="$AVO_SUPERVISOR_MODEL" "$AVO_AGENT" "$AVO_ROOT" "$prompt" >"$dir/supervisor.md.tmp" 2>&1
+  AVO_MODEL="$model" "$AVO_AGENT" "$AVO_ROOT" "$prompt" >"$dir/supervisor.md.tmp" 2>&1
   st=$?
   set -e
   if [ "$st" -ne 0 ]; then
     rm -f "$dir/supervisor.md.tmp"
     avo_restore_tree
-    avo_ledger_append supervisor_error "$(python3 - "$AVO_TASK" "${AVO_SUPERVISOR_MODEL:-}" <<'PY'
+    avo_ledger_append supervisor_error "$(python3 - "$AVO_TASK" "$model" <<'PY'
 import json, sys
 print(json.dumps({"task": sys.argv[1], "model": sys.argv[2], "note": "supervisor failed"}))
 PY
@@ -702,7 +771,7 @@ PY
   } >"$dir/supervisor.md"
   rm -f "$dir/supervisor.md.tmp"
   avo_restore_tree
-  avo_ledger_append supervisor "$(python3 - "$AVO_TASK" "${AVO_SUPERVISOR_MODEL:-}" <<'PY'
+  avo_ledger_append supervisor "$(python3 - "$AVO_TASK" "$model" <<'PY'
 import json, sys
 print(json.dumps({"task": sys.argv[1], "model": sys.argv[2], "note": "supervisor redirect"}))
 PY

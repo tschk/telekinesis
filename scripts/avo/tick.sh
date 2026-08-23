@@ -92,6 +92,8 @@ fi
 avo_acquire_lock
 trap avo_release_lock EXIT
 
+avo_pin_score
+
 AVO_START_BRANCH=$(avo_current_branch)
 AVO_START_HEAD=$(avo_git rev-parse HEAD)
 avo_capture_pre_tick
@@ -109,6 +111,7 @@ import json, sys
 print(json.dumps({"tick": int(sys.argv[1]), "correct": False, "objective": 0, "note": "agent failed"}))
 PY
 )"
+  avo_maybe_supervise
   avo_fail "agent failed"
 fi
 
@@ -119,6 +122,7 @@ import json, sys
 print(json.dumps({"tick": int(sys.argv[1]), "correct": False, "objective": 0, "note": "agent changed branch or HEAD"}))
 PY
 )"
+  avo_maybe_supervise
   avo_fail "agent changed branch or HEAD unexpectedly"
 fi
 
@@ -137,6 +141,7 @@ if sys.argv[3]:
 print(json.dumps(row))
 PY
 )"
+  avo_maybe_supervise
   avo_fail "score command failed"
 fi
 
@@ -188,6 +193,4 @@ PY
   avo_ledger_append reject "$payload"
 fi
 
-if [ "$(avo_should_supervise)" = yes ]; then
-  avo_run_supervisor
-fi
+avo_maybe_supervise
