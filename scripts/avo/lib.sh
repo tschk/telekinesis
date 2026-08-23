@@ -176,10 +176,7 @@ avo_lock_dir() {
 avo_pid_live() {
   local pid=$1
   [ -n "$pid" ] || return 1
-  if kill -0 "$pid" 2>/dev/null; then
-    return 0
-  fi
-  [ -d "/proc/$pid" ]
+  kill -0 "$pid" 2>/dev/null
 }
 
 avo_acquire_lock() {

@@ -478,7 +478,11 @@ write_scorer "$workdir/score_stale.sh"
 (cd "$repo_stale" && "$tick" --init stale --goal "g" --score "$workdir/score_stale.sh" --agent "$workdir/agent_stale.sh") >/tmp/avo-stale-init 2>&1
 mkdir -p "$repo_stale/.avo/stale/lock"
 printf '1\n' >"$repo_stale/.avo/stale/lock/pid"
+set +e
 (cd "$repo_stale" && FAKE_VALUE=3 "$tick") >/tmp/avo-stale 2>&1
+stale_status=$?
+set -e
+test "$stale_status" -eq 0 || fail "unsignalable lock pid must be reclaimed"
 test ! -d "$repo_stale/.avo/stale/lock" || fail "successful tick must release lock"
 python3 - "$repo_stale/.avo/stale/ledger.jsonl" <<'PY'
 import json, sys
