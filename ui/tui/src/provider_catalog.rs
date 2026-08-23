@@ -63,6 +63,11 @@ const FIREWORKS: &[&str] = &[
     "accounts/fireworks/models/llama-v3p3-70b-instruct",
 ];
 const HUGGINGFACE: &[&str] = &["Qwen/Qwen3-Coder-Next", "deepseek-ai/DeepSeek-V3.2"];
+const CLINEPASS: &[&str] = &[
+    "cline-pass/deepseek-v4-flash",
+    "cline-pass/qwen3.7-max",
+    "cline-pass/glm-5.2",
+];
 
 /// API-key providers directly supported by the current rx4 provider API.
 ///
@@ -270,6 +275,16 @@ pub const API_KEY_PROVIDERS: &[ProviderSpec] = &[
         models: MIMO,
         aliases: &["mimo-sgp"],
     },
+    ProviderSpec {
+        id: "clinepass",
+        name: "Cline-pass",
+        env: "CLINE_API_KEY",
+        base_url: "https://api.cline.bot/api/v1",
+        api: ProviderApi::OpenAiCompatible,
+        default_model: "cline-pass/deepseek-v4-flash",
+        models: CLINEPASS,
+        aliases: &["cline-pass", "cline"],
+    },
 ];
 
 pub fn find(query: &str) -> Option<&'static ProviderSpec> {
@@ -289,4 +304,116 @@ pub fn env_key(spec: &ProviderSpec) -> Option<String> {
     std::env::var(spec.env)
         .ok()
         .filter(|key| !key.trim().is_empty())
+        .or_else(|| {
+            if spec.id == "clinepass" {
+                cline_api_key_from_opencode_auth_file()
+            } else {
+                None
+            }
+        })
+}
+
+/// OpenCode stores Cline-pass under `cline-pass.key` in auth.json.
+/// The key is never logged; callers treat it like any other env secret.
+pub fn cline_api_key_from_opencode_auth(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let key = value.get("cline-pass")?.get("key")?.as_str()?;
+    let key = key.trim();
+    (!key.is_empty()).then(|| key.to_string())
+}
+
+pub fn opencode_auth_path() -> Option<std::path::PathBuf> {
+    if let Some(explicit) = std::env::var_os("OPENCODE_AUTH_PATH") {
+        return Some(std::path::PathBuf::from(explicit));
+    }
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))?;
+    Some(data.join("opencode").join("auth.json"))
+}
+
+fn cline_api_key_from_opencode_auth_file() -> Option<String> {
+    let path = opencode_auth_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    cline_api_key_from_opencode_auth(&raw)
+}
+
+/// Accept `cline-pass/foo` or `clinepass/foo` as the catalog slug.
+pub fn normalize_model(spec: &ProviderSpec, model: &str) -> String {
+    let model = model.trim();
+    if spec.id != "clinepass" {
+        return model.to_string();
+    }
+    if let Some(rest) = model.strip_prefix("clinepass/") {
+        return format!("cline-pass/{rest}");
+    }
+    if model.starts_with("cline-pass/") {
+        return model.to_string();
+    }
+    format!("cline-pass/{model}")
+}
+
+pub fn infer_from_model(model: &str) -> Option<&'static ProviderSpec> {
+    let model = model.trim();
+    let prefix = model.split_once('/')?.0;
+    find(prefix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_clinepass_aliases() {
+        let spec = find("clinepass").expect("id");
+        assert_eq!(spec.id, "clinepass");
+        assert_eq!(spec.base_url, "https://api.cline.bot/api/v1");
+        assert_eq!(spec.env, "CLINE_API_KEY");
+        assert_eq!(find("cline-pass").map(|p| p.id), Some("clinepass"));
+        assert_eq!(find("Cline-pass").map(|p| p.id), Some("clinepass"));
+    }
+
+    #[test]
+    fn normalizes_clinepass_model_slugs() {
+        let spec = find("clinepass").unwrap();
+        assert_eq!(
+            normalize_model(spec, "clinepass/deepseek-v4-flash"),
+            "cline-pass/deepseek-v4-flash"
+        );
+        assert_eq!(
+            normalize_model(spec, "deepseek-v4-flash"),
+            "cline-pass/deepseek-v4-flash"
+        );
+        assert_eq!(
+            normalize_model(spec, "cline-pass/qwen3.7-max"),
+            "cline-pass/qwen3.7-max"
+        );
+    }
+
+    #[test]
+    fn reads_opencode_auth_key_without_other_fields() {
+        let json = r#"{"cline-pass":{"type":"api","key":"sk-test-not-real"},"other":{"key":"nope"}}"#;
+        assert_eq!(
+            cline_api_key_from_opencode_auth(json).as_deref(),
+            Some("sk-test-not-real")
+        );
+        assert_eq!(cline_api_key_from_opencode_auth("{}"), None);
+        assert_eq!(
+            cline_api_key_from_opencode_auth(r#"{"cline-pass":{"type":"api","key":"  "}}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn infers_provider_from_model_prefix() {
+        assert_eq!(
+            infer_from_model("cline-pass/deepseek-v4-flash").map(|p| p.id),
+            Some("clinepass")
+        );
+        assert_eq!(
+            infer_from_model("clinepass/glm-5.2").map(|p| p.id),
+            Some("clinepass")
+        );
+        assert!(infer_from_model("deepseek-v4-flash").is_none());
+    }
 }

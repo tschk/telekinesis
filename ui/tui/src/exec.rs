@@ -19,6 +19,7 @@ pub struct ExecArgs {
     pub help: bool,
     pub no_yolo: bool,
     pub model: Option<String>,
+    pub provider: Option<String>,
 }
 
 fn exec_help() {
@@ -31,7 +32,8 @@ fn exec_help() {
     eprintln!("OPTIONS:");
     eprintln!("  --json          Emit {{\"ok\",\"text\",\"error\"}} on stdout instead of prose");
     eprintln!("  --cwd <dir>     Workspace to run against (default: current directory)");
-    eprintln!("  --model <name>  Override the first configured provider's default model");
+    eprintln!("  --provider <id> Use a configured provider (or TK_PROVIDER / model prefix)");
+    eprintln!("  --model <name>  Override that provider's default model");
     eprintln!("  --no-yolo       Deny Ask-class tools (default non-TTY/exec is AlwaysAllow)");
     eprintln!("  --help          Show this help");
     eprintln!();
@@ -88,8 +90,15 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         .build()?;
     let discover = rt.spawn(discover_mcp_tools());
     let providers = setup_providers(&rt);
-    let Some((configured, default_model)) = providers.into_iter().next() else {
-        exec_failure(json, "no provider credentials; run `tk login <provider>`");
+    let Some((configured, default_model)) = pick_configured_provider(
+        providers,
+        parsed.provider.as_deref(),
+        parsed.model.as_deref(),
+    ) else {
+        exec_failure(
+            json,
+            &missing_provider_message(parsed.provider.as_deref(), parsed.model.as_deref()),
+        );
     };
     let (mcp, errors) = match rt.block_on(discover) {
         Ok(result) => result,
@@ -101,7 +110,14 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let configured_id = configured.id.clone();
-    let model = parsed.model.unwrap_or(default_model);
+    let model = parsed
+        .model
+        .as_deref()
+        .map(|model| match crate::provider_catalog::by_id(&configured.id) {
+            Some(spec) => crate::provider_catalog::normalize_model(spec, model),
+            None => model.to_string(),
+        })
+        .unwrap_or(default_model);
     let (mut agent, _subagent_manager) = build_agent(
         Some(configured.client),
         &model,
@@ -156,6 +172,55 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn requested_provider(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("TK_PROVIDER")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn provider_matches(id: &str, name: &str, query: &str) -> bool {
+    crate::provider_catalog::find(query)
+        .is_some_and(|spec| spec.id == id)
+        || id.eq_ignore_ascii_case(query)
+        || name.eq_ignore_ascii_case(query)
+}
+
+pub(crate) fn pick_configured_provider(
+    providers: Vec<(crate::app::ConfiguredProvider, String)>,
+    explicit_provider: Option<&str>,
+    explicit_model: Option<&str>,
+) -> Option<(crate::app::ConfiguredProvider, String)> {
+    let requested = requested_provider(explicit_provider).or_else(|| {
+        explicit_model.and_then(crate::provider_catalog::infer_from_model).map(|spec| spec.id.to_string())
+    });
+    if let Some(query) = requested {
+        return providers.into_iter().find(|(provider, _)| {
+            provider_matches(&provider.id, &provider.name, &query)
+        });
+    }
+    providers.into_iter().next()
+}
+
+fn missing_provider_message(explicit_provider: Option<&str>, explicit_model: Option<&str>) -> String {
+    match requested_provider(explicit_provider).or_else(|| {
+        explicit_model
+            .and_then(crate::provider_catalog::infer_from_model)
+            .map(|spec| spec.id.to_string())
+    }) {
+        Some(id) => format!(
+            "provider {id} is not configured; set CLINE_API_KEY or run with a key OpenCode already stored"
+        ),
+        None => "no provider credentials; run `tk login <provider>`".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +230,7 @@ mod tests {
         let yolo = ExecArgs::default();
         assert!(!yolo.no_yolo);
         assert_eq!(yolo.model, None);
+        assert_eq!(yolo.provider, None);
         let denied = ExecArgs {
             no_yolo: true,
             ..ExecArgs::default()

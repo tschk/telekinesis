@@ -45,6 +45,16 @@ fn parse_run_args(args: &[String], allow_prompt: bool) -> Result<ExecArgs, Strin
                 }
                 parsed.model = Some(model.clone());
             }
+            "--provider" => {
+                index += 1;
+                let provider = args
+                    .get(index)
+                    .ok_or_else(|| "--provider requires a name".to_string())?;
+                if provider.is_empty() {
+                    return Err("--provider requires a name".to_string());
+                }
+                parsed.provider = Some(provider.clone());
+            }
             "--cwd" => {
                 index += 1;
                 let dir = args
@@ -95,7 +105,7 @@ pub fn print_help() {
     println!("  tk -c           Continue newest session for this project");
     println!("  tk exec \"<prompt>\"   Run one turn headlessly, final text on stdout");
     println!(
-        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --model <name>, --no-yolo)"
+        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --provider <id>, --model <name>, --no-yolo)"
     );
     println!("  tk --no-yolo    Headless stdin run that denies Ask-class tools");
     println!(
@@ -116,6 +126,8 @@ pub fn print_help() {
     println!("  GOOGLE_API_KEY      Google Gemini API key");
     println!("  OPENCODE_API_KEY    OpenCode Zen / OpenCode Go API key");
     println!("  OPENROUTER_API_KEY  OpenRouter API key");
+    println!("  CLINE_API_KEY       Cline-pass API key (or reuse OpenCode auth.json)");
+    println!("  TK_PROVIDER         Default exec/TUI provider id (e.g. clinepass)");
     println!("  TK_PLAN_APPROVAL    ask (default), off, or bypass whole-turn plans");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
     println!("                      (cu_* needs --features computer-use or full)");
@@ -191,6 +203,7 @@ mod tests {
         assert_eq!(parsed.prompt.as_deref(), Some("task"));
         assert!(!parsed.no_yolo);
         assert_eq!(parsed.model, None);
+        assert_eq!(parsed.provider, None);
         let no_yolo = parse_exec_args(&["--no-yolo".into(), "task".into()]).unwrap();
         assert!(no_yolo.no_yolo);
         assert!(parse_exec_args(&["--cwd".to_string()]).is_err());
@@ -206,6 +219,22 @@ mod tests {
         assert_eq!(parsed.prompt.as_deref(), Some("task"));
         assert!(parse_exec_args(&["--model".into()]).is_err());
         assert!(parse_exec_args(&["--model".into(), "".into(), "task".into()]).is_err());
+    }
+
+    #[test]
+    fn exec_parses_provider_and_clinepass_model() {
+        let parsed = parse_exec_args(&[
+            "--provider".into(),
+            "clinepass".into(),
+            "--model".into(),
+            "cline-pass/deepseek-v4-flash".into(),
+            "task".into(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.provider.as_deref(), Some("clinepass"));
+        assert_eq!(parsed.model.as_deref(), Some("cline-pass/deepseek-v4-flash"));
+        assert!(parse_exec_args(&["--provider".into()]).is_err());
+        assert!(parse_exec_args(&["--provider".into(), "".into(), "task".into()]).is_err());
     }
 
     #[test]
