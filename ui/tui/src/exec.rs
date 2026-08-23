@@ -9,6 +9,7 @@ use rx4::ModelRegistry;
 use crate::host::build_agent;
 use crate::models::host_model_info;
 use crate::providers::setup_providers;
+use crate::roles::ModelRouting;
 use crate::tools::discover_mcp_tools;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -19,6 +20,11 @@ pub struct ExecArgs {
     pub help: bool,
     pub no_yolo: bool,
     pub model: Option<String>,
+    pub smol: Option<String>,
+    pub slow: Option<String>,
+    pub plan_model: Option<String>,
+    pub prewalk: bool,
+    pub plan_yolo: bool,
 }
 
 fn exec_help() {
@@ -31,9 +37,14 @@ fn exec_help() {
     eprintln!("OPTIONS:");
     eprintln!("  --json          Emit {{\"ok\",\"text\",\"error\"}} on stdout instead of prose");
     eprintln!("  --cwd <dir>     Workspace to run against (default: current directory)");
-    eprintln!("  --model <name>  Override the first configured provider's default model");
-    eprintln!("  --no-yolo       Deny Ask-class tools (default non-TTY/exec is AlwaysAllow)");
-    eprintln!("  --help          Show this help");
+    eprintln!("  --model <name>       Override the first configured provider's default model");
+    eprintln!("  --smol <name>        Apply/implement model (or TK_SMOL_MODEL); Sol-light is a typical choice");
+    eprintln!("  --slow <name>        Slow/reasoning role (or TK_SLOW_MODEL)");
+    eprintln!("  --plan-model <name>  Plan role (or TK_PLAN_MODEL)");
+    eprintln!("  --prewalk            Investigate on --model; first write/edit switches one-way to --smol");
+    eprintln!("  --plan-yolo          Plan on --plan-model/--model, then implement on --smol");
+    eprintln!("  --no-yolo            Deny Ask-class tools (default non-TTY/exec is AlwaysAllow)");
+    eprintln!("  --help               Show this help");
     eprintln!();
     eprintln!("Only the final text goes to stdout; status and errors go to stderr.");
 }
@@ -65,6 +76,8 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         }
     }
 
+    let routing = ModelRouting::from_exec(&parsed);
+    let model_override = parsed.model.clone();
     let prompt = match parsed.prompt {
         Some(prompt) => prompt,
         None => {
@@ -101,7 +114,8 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let configured_id = configured.id.clone();
-    let model = parsed.model.unwrap_or(default_model);
+    let model = routing.start_model(model_override.as_deref().unwrap_or(&default_model));
+    let model = model.to_string();
     let (mut agent, _subagent_manager) = build_agent(
         Some(configured.client),
         &model,
@@ -109,6 +123,7 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         workspace.clone(),
         ModelRegistry::from_models([host_model_info(&configured_id, &model)]),
         &mcp,
+        routing,
     );
     if parsed.no_yolo {
         agent.set_approver(Arc::new(rx4::permissions::AlwaysDeny));

@@ -4,6 +4,11 @@ use parking_lot::Mutex as ParkingMutex;
 use rx4::subagent::SubagentManager;
 use rx4::{register_builtin_tools, register_spawn_agent_tool, ToolRegistry};
 
+use crate::roles::ModelRouting;
+
+pub(crate) mod hashline;
+mod hashline_tools;
+
 #[cfg(feature = "search")]
 mod darash;
 #[cfg(feature = "mcp")]
@@ -61,17 +66,20 @@ impl ToolProfile {
 pub(crate) fn build_tool_registry(
     subagent_manager: &Arc<ParkingMutex<SubagentManager>>,
     mcp: &[McpToolSpec],
+    routing: Arc<ModelRouting>,
 ) -> ToolRegistry {
-    build_tool_registry_with_profile(subagent_manager, mcp, ToolProfile::from_env())
+    build_tool_registry_with_profile(subagent_manager, mcp, ToolProfile::from_env(), routing)
 }
 
 pub(crate) fn build_tool_registry_with_profile(
     subagent_manager: &Arc<ParkingMutex<SubagentManager>>,
     mcp: &[McpToolSpec],
     profile: ToolProfile,
+    routing: Arc<ModelRouting>,
 ) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
     register_builtin_tools(&mut tools);
+    hashline_tools::register_hashline_tools(&mut tools, routing);
     if profile.computer_use() {
         #[cfg(feature = "computer-use")]
         rx4::computer_use::register_tools(&mut tools);
@@ -91,6 +99,10 @@ pub(crate) fn build_tool_registry_with_profile(
 mod tests {
     use super::*;
 
+    fn routing() -> Arc<ModelRouting> {
+        Arc::new(ModelRouting::default())
+    }
+
     fn registered_tool_names(tools: &rx4::ToolRegistry) -> Vec<String> {
         tools
             .definitions()
@@ -109,7 +121,7 @@ mod tests {
             ToolProfile::Coding,
             ToolProfile::Minimal,
         ] {
-            let tools = build_tool_registry_with_profile(&manager, &[], profile);
+            let tools = build_tool_registry_with_profile(&manager, &[], profile, routing());
             assert!(
                 registered_tool_names(&tools)
                     .iter()
@@ -123,9 +135,15 @@ mod tests {
     #[test]
     fn computer_use_feature_registers_cu_tools_on_default_and_full() {
         let manager = Arc::new(parking_lot::Mutex::new(SubagentManager::new()));
-        let default = build_tool_registry_with_profile(&manager, &[], ToolProfile::from_name(None));
-        let full = build_tool_registry_with_profile(&manager, &[], ToolProfile::Full);
-        let coding = build_tool_registry_with_profile(&manager, &[], ToolProfile::Coding);
+        let default = build_tool_registry_with_profile(
+            &manager,
+            &[],
+            ToolProfile::from_name(None),
+            routing(),
+        );
+        let full = build_tool_registry_with_profile(&manager, &[], ToolProfile::Full, routing());
+        let coding =
+            build_tool_registry_with_profile(&manager, &[], ToolProfile::Coding, routing());
         assert!(registered_tool_names(&default)
             .iter()
             .any(|name| name.starts_with("cu_")));
@@ -144,15 +162,42 @@ mod tests {
             &manager,
             &[],
             ToolProfile::from_name(None),
+            routing(),
         ));
         let full = registered_tool_names(&build_tool_registry_with_profile(
             &manager,
             &[],
             ToolProfile::Full,
+            routing(),
         ));
         assert_eq!(default, full);
         assert_eq!(ToolProfile::from_name(None), ToolProfile::Full);
         assert_eq!(ToolProfile::from_name(Some("full")), ToolProfile::Full);
+    }
+
+    #[test]
+    fn hashline_replaces_builtin_edit_schema() {
+        let manager = Arc::new(parking_lot::Mutex::new(SubagentManager::new()));
+        let tools =
+            build_tool_registry_with_profile(&manager, &[], ToolProfile::Minimal, routing());
+        let edit = tools
+            .definitions()
+            .into_iter()
+            .find(|definition| definition["name"] == "edit")
+            .expect("edit");
+        let schema = edit["parameters"].to_string();
+        assert!(schema.contains("input"), "{schema}");
+        assert!(!schema.contains("old_string"), "{schema}");
+        assert!(!schema.contains("apply_patch"), "{schema}");
+        let read = tools
+            .definitions()
+            .into_iter()
+            .find(|definition| definition["name"] == "read")
+            .expect("read");
+        assert!(read["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("hashline"));
     }
 
     #[cfg(not(feature = "mcp"))]
@@ -173,7 +218,7 @@ mod tests {
             ToolProfile::Coding,
             ToolProfile::Minimal,
         ] {
-            let tools = build_tool_registry_with_profile(&manager, &[], profile);
+            let tools = build_tool_registry_with_profile(&manager, &[], profile, routing());
             assert!(
                 registered_tool_names(&tools)
                     .iter()
@@ -187,7 +232,7 @@ mod tests {
     #[test]
     fn darash_tool_is_registered_as_network_effect() {
         let manager = Arc::new(parking_lot::Mutex::new(SubagentManager::new()));
-        let tools = build_tool_registry_with_profile(&manager, &[], ToolProfile::Full);
+        let tools = build_tool_registry_with_profile(&manager, &[], ToolProfile::Full, routing());
         assert!(tools
             .definitions()
             .iter()
@@ -199,9 +244,11 @@ mod tests {
     #[test]
     fn tool_profiles_are_environment_independent() {
         let manager = Arc::new(parking_lot::Mutex::new(SubagentManager::new()));
-        let full = build_tool_registry_with_profile(&manager, &[], ToolProfile::Full);
-        let minimal = build_tool_registry_with_profile(&manager, &[], ToolProfile::Minimal);
-        let coding = build_tool_registry_with_profile(&manager, &[], ToolProfile::Coding);
+        let full = build_tool_registry_with_profile(&manager, &[], ToolProfile::Full, routing());
+        let minimal =
+            build_tool_registry_with_profile(&manager, &[], ToolProfile::Minimal, routing());
+        let coding =
+            build_tool_registry_with_profile(&manager, &[], ToolProfile::Coding, routing());
 
         assert!(full
             .definitions()

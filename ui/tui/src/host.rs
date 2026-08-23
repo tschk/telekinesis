@@ -11,6 +11,7 @@ use rx4::ModelRegistry;
 
 use crate::models::host_model_info;
 use crate::product_policy;
+use crate::roles::{ModelRouting, RoutingProvider};
 use crate::tools::{self, McpToolSpec};
 
 const MAX_HISTORY: usize = 100;
@@ -149,7 +150,10 @@ pub(crate) fn build_agent(
     workspace: PathBuf,
     model_registry: ModelRegistry,
     mcp: &[McpToolSpec],
+    routing: ModelRouting,
 ) -> (Agent, Arc<ParkingMutex<SubagentManager>>) {
+    let routing = Arc::new(routing.with_default(model));
+    let provider = provider.map(|provider| RoutingProvider::wrap(provider, routing.clone()));
     let mut agent = Agent::new();
     let mut model_registry = model_registry;
     if let Some(provider) = &provider {
@@ -162,7 +166,7 @@ pub(crate) fn build_agent(
         subagent = subagent.with_provider(provider.clone());
     }
     let subagent_manager = Arc::new(ParkingMutex::new(subagent));
-    let tools = tools::build_tool_registry(&subagent_manager, mcp);
+    let tools = tools::build_tool_registry(&subagent_manager, mcp, routing);
     agent.set_tools(tools);
     subagent_manager.lock().set_tools(agent.tools.clone());
     agent.set_workspace_root(workspace);

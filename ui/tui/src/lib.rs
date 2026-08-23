@@ -13,6 +13,7 @@ pub mod pi;
 pub mod product_policy;
 pub mod provider_catalog;
 pub mod providers;
+pub mod roles;
 pub mod slash;
 pub mod tools;
 pub mod tui;

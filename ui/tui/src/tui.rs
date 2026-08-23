@@ -228,6 +228,7 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
         workspace,
         initial_registry.clone(),
         &mcp_specs,
+        crate::roles::ModelRouting::from_env(),
     );
     let restored_scope = prefs
         .scope

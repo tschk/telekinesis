@@ -35,16 +35,14 @@ fn parse_run_args(args: &[String], allow_prompt: bool) -> Result<ExecArgs, Strin
             "--help" | "-h" => parsed.help = true,
             "--json" => parsed.json = true,
             "--no-yolo" => parsed.no_yolo = true,
-            "--model" => {
-                index += 1;
-                let model = args
-                    .get(index)
-                    .ok_or_else(|| "--model requires a name".to_string())?;
-                if model.is_empty() {
-                    return Err("--model requires a name".to_string());
-                }
-                parsed.model = Some(model.clone());
+            "--model" => parsed.model = Some(take_flag_value(args, &mut index, "--model")?),
+            "--smol" => parsed.smol = Some(take_flag_value(args, &mut index, "--smol")?),
+            "--slow" => parsed.slow = Some(take_flag_value(args, &mut index, "--slow")?),
+            "--plan-model" => {
+                parsed.plan_model = Some(take_flag_value(args, &mut index, "--plan-model")?)
             }
+            "--prewalk" => parsed.prewalk = true,
+            "--plan-yolo" => parsed.plan_yolo = true,
             "--cwd" => {
                 index += 1;
                 let dir = args
@@ -72,6 +70,17 @@ fn parse_run_args(args: &[String], allow_prompt: bool) -> Result<ExecArgs, Strin
     Ok(parsed)
 }
 
+fn take_flag_value(args: &[String], index: &mut usize, flag: &str) -> Result<String, String> {
+    *index += 1;
+    let value = args
+        .get(*index)
+        .ok_or_else(|| format!("{flag} requires a name"))?;
+    if value.is_empty() {
+        return Err(format!("{flag} requires a name"));
+    }
+    Ok(value.clone())
+}
+
 pub fn parse_command(args: &[String], interactive: bool) -> Result<Command, String> {
     let rest = if args.len() > 1 { &args[1..] } else { &[] };
     match rest.first().map(String::as_str) {
@@ -95,7 +104,7 @@ pub fn print_help() {
     println!("  tk -c           Continue newest session for this project");
     println!("  tk exec \"<prompt>\"   Run one turn headlessly, final text on stdout");
     println!(
-        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --model <name>, --no-yolo)"
+        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --model <name>, --smol <name>, --prewalk, --plan-yolo, --no-yolo)"
     );
     println!("  tk --no-yolo    Headless stdin run that denies Ask-class tools");
     println!(
@@ -117,6 +126,11 @@ pub fn print_help() {
     println!("  OPENCODE_API_KEY    OpenCode Zen / OpenCode Go API key");
     println!("  OPENROUTER_API_KEY  OpenRouter API key");
     println!("  TK_PLAN_APPROVAL    ask (default), off, or bypass whole-turn plans");
+    println!("  TK_SMOL_MODEL       apply/implement model for --prewalk / --plan-yolo");
+    println!("  TK_SLOW_MODEL       slow/reasoning role");
+    println!("  TK_PLAN_MODEL       plan role (used by --plan-yolo when --model is unset)");
+    println!("  TK_PREWALK          1/true to enable prewalk without --prewalk");
+    println!("  TK_PLAN_YOLO        1/true to enable plan-yolo without --plan-yolo");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
     println!("                      (cu_* needs --features computer-use or full)");
     println!("                      (MCP needs --features mcp or full)");
@@ -206,6 +220,29 @@ mod tests {
         assert_eq!(parsed.prompt.as_deref(), Some("task"));
         assert!(parse_exec_args(&["--model".into()]).is_err());
         assert!(parse_exec_args(&["--model".into(), "".into(), "task".into()]).is_err());
+    }
+
+    #[test]
+    fn exec_parses_smol_prewalk_and_plan_yolo() {
+        let parsed = parse_exec_args(&[
+            "--model".into(),
+            "gpt-5.6-sol".into(),
+            "--smol".into(),
+            "gpt-5.6-sol-light".into(),
+            "--prewalk".into(),
+            "--plan-yolo".into(),
+            "--plan-model".into(),
+            "gpt-5.6-sol".into(),
+            "task".into(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(parsed.smol.as_deref(), Some("gpt-5.6-sol-light"));
+        assert_eq!(parsed.plan_model.as_deref(), Some("gpt-5.6-sol"));
+        assert!(parsed.prewalk);
+        assert!(parsed.plan_yolo);
+        assert!(!parsed.no_yolo);
+        assert!(parse_exec_args(&["--smol".into()]).is_err());
     }
 
     #[test]

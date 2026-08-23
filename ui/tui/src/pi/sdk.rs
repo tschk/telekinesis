@@ -180,6 +180,7 @@ pub fn create_agent_session(options: AgentSessionOptions) -> AgentSessionHandle 
         workspace,
         ModelRegistry::new(),
         &[],
+        crate::roles::ModelRouting::from_env(),
     );
     agent.max_tool_iterations = options.max_tool_iterations;
     agent.auto_compact_after = options.auto_compact_after;

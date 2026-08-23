@@ -42,6 +42,7 @@ tk
 tk exec "summarize this repo"
 tk exec --json --cwd /workspace "list the rust crates"
 tk exec --model grok-4.5 "summarize this repo"
+tk exec --model gpt-5.6-sol --smol gpt-5.6-sol-light --prewalk "fix the failing test"
 printf '%s\n' "review the diff" | tk exec -
 printf '%s\n' "review the diff" | tk --no-yolo
 
@@ -50,7 +51,10 @@ XAI_API_KEY=... tk
 
 Default non-TTY / `tk exec` is yolo (`AlwaysAllow`); `--no-yolo` denies
 Ask-class tools. `--model` overrides the first configured provider's default
-model (used by the avo-lite adapter in [AVO.md](AVO.md)).
+model (used by the avo-lite adapter in [AVO.md](AVO.md)). `--smol` /
+`TK_SMOL_MODEL` plus `--prewalk` hand the first real edit to the apply model;
+see [HASHLINE.md](HASHLINE.md). `read` / `edit` speak hashline (`[path#TAG]`,
+`PUT`/`CUT`/`MV`/`REM`), not apply_patch.
 
 ## OAuth providers
 
