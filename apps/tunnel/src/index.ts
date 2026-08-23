@@ -1,9 +1,13 @@
 import { createTunnel } from "./app.ts";
-import { resolveListenConfig } from "./listen.ts";
+import { resolveListenConfig, withCompanionToken } from "./listen.ts";
 
 const advertise = process.argv.includes("--advertise") || process.env.TK_TUNNEL_ADVERTISE === "1";
 const port = Number(process.env.TK_TUNNEL_PORT ?? 8787);
-const companionWs = process.env.TK_COMPANION_WS ?? "ws://127.0.0.1:17421";
+const companionToken = process.env.TK_COMPANION_TOKEN;
+const companionWs = withCompanionToken(
+  process.env.TK_COMPANION_WS ?? "ws://127.0.0.1:17421",
+  companionToken,
+);
 
 const listen = resolveListenConfig({
   advertise,

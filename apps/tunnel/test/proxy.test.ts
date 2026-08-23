@@ -65,7 +65,6 @@ describe("tunnel http + ws proxy", () => {
     tunnel.stop();
     companion.stop();
   });
-});
 
   test("does not proxy companion websocket when advertising", async () => {
     const companion = serveCompanionEcho();
@@ -84,7 +83,12 @@ describe("tunnel http + ws proxy", () => {
       websocket,
     });
     const minted = await fetch(`http://127.0.0.1:${tunnel.port}/pair`, { method: "POST" });
-    const body = (await minted.json()) as { token: string; companion?: string; url: string; relay: string };
+    const body = (await minted.json()) as {
+      token: string;
+      companion?: string;
+      url: string;
+      relay: string;
+    };
     expect(body.companion).toBeUndefined();
     expect(body.url).not.toContain("127.0.0.1");
     expect(body.relay).toContain("/signal/");
@@ -101,3 +105,4 @@ describe("tunnel http + ws proxy", () => {
     tunnel.stop();
     companion.stop();
   });
+});

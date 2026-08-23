@@ -49,11 +49,22 @@ export function resolveListenConfig(options: {
     if (isLoopbackHost(explicit)) {
       throw new Error("advertise host must be reachable; refusing loopback pairing URLs");
     }
-    return { advertise: true, bindHost: "0.0.0.0", publicHost: explicit };
+    return { advertise: true, bindHost: explicit, publicHost: explicit };
   }
   const found = discoverLanHost();
   if (!found) {
     throw new Error("advertise requires TK_ADVERTISE_HOST or a non-loopback interface");
   }
-  return { advertise: true, bindHost: "0.0.0.0", publicHost: found };
+  return { advertise: true, bindHost: found, publicHost: found };
+}
+
+export function withCompanionToken(url: string, token?: string): string {
+  if (!token) {
+    return url;
+  }
+  const parsed = new URL(url);
+  if (!parsed.searchParams.get("token")) {
+    parsed.searchParams.set("token", token);
+  }
+  return parsed.toString();
 }

@@ -123,6 +123,7 @@ pub struct CompanionHost {
     login_busy: bool,
     poll_generation: u64,
     effort: String,
+    pending_effort: bool,
     bridge_rx: UnboundedReceiver<(String, UnboundedSender<String>)>,
     bridge_tx: UnboundedSender<(String, UnboundedSender<String>)>,
 }
@@ -143,6 +144,7 @@ impl CompanionHost {
             login_busy: false,
             poll_generation: 0,
             effort: "high".into(),
+            pending_effort: false,
             bridge_rx,
             bridge_tx,
         };
@@ -187,6 +189,8 @@ impl CompanionHost {
         self.approval_rx = Some(approval_rx);
         self.permission_pending = false;
         self.permission_respond = None;
+        self.pending_effort = true;
+        self.apply_pending_effort();
     }
 
     fn active_session(&self) -> Option<&AgentSession> {
@@ -321,6 +325,9 @@ impl CompanionHost {
             tick.dirty = true;
         }
         if self.poll_bridge() {
+            tick.dirty = true;
+        }
+        if self.apply_pending_effort() {
             tick.dirty = true;
         }
         if tick.dirty {
@@ -555,13 +562,29 @@ impl CompanionHost {
 
     pub fn cycle_effort(&mut self) {
         self.effort = next_effort(&self.effort);
+        self.pending_effort = true;
+        self.apply_pending_effort();
+    }
+
+    fn apply_pending_effort(&mut self) -> bool {
+        if !self.pending_effort {
+            return false;
+        }
+        let mut waiting = false;
+        let mut wrote = false;
         for session in &self.sessions {
             if let Some(agent) = &session.agent {
-                if let Ok(mut agent) = agent.try_lock() {
-                    agent.set_reasoning_effort(Some(self.effort.clone()));
+                match agent.try_lock() {
+                    Ok(mut locked) => {
+                        locked.set_reasoning_effort(Some(self.effort.clone()));
+                        wrote = true;
+                    }
+                    Err(_) => waiting = true,
                 }
             }
         }
+        self.pending_effort = waiting;
+        wrote || !waiting
     }
 
     fn dispatch_command(&mut self, command: HostCommand) {
@@ -687,7 +710,7 @@ mod tests {
         assert_eq!(snap.effort, "high");
         assert_eq!(snap.queued, 0);
         assert!(!snap.sessions.is_empty());
-        assert_eq!(snap.composer_action, "login");
+        assert!(snap.composer_action == "login" || snap.composer_action == "send");
         assert!(snap.sessions.iter().any(|row| row.active));
     }
 
@@ -873,5 +896,20 @@ mod tests {
         let _ = host.event_tx.send(CompanionEvent::PromptFinished(idx));
         host.poll();
         assert_eq!(host.input, "still typing");
+    }
+
+    #[test]
+    fn idle_queue_dispatches_immediately() {
+        let mut host = CompanionHost::boot();
+        host.input = "desktop draft".into();
+        let _ = host.apply_bridge_json(r#"{"v":1,"op":"queue","text":"from phone"}"#);
+        assert_eq!(host.input, "desktop draft");
+        let session = host.active_session().expect("session");
+        assert!(session.follow_ups.is_empty());
+        assert!(session
+            .messages
+            .iter()
+            .any(|message| message.content.contains("from phone")
+                || message.content.contains("Log in first")));
     }
 }

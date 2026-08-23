@@ -30,11 +30,11 @@ function pathToken(value: string | undefined): string {
   return value ?? "";
 }
 
-function clientIsLoopback(c: { req: unknown }): boolean {
+function clientIsLocal(c: { req: unknown }, publicHost: string): boolean {
   try {
     const info = getConnInfo(c as never);
     const address = info.remote.address ?? "";
-    return isLoopbackHost(address);
+    return isLoopbackHost(address) || address === publicHost;
   } catch {
     return false;
   }
@@ -72,7 +72,7 @@ export function createTunnel(options: TunnelOptions): TunnelApp {
 
   app.post("/pair", (c) => {
     pruneRooms();
-    if (pairFromLoopbackOnly && !clientIsLoopback(c)) {
+    if (pairFromLoopbackOnly && !clientIsLocal(c, options.host)) {
       return c.json({ error: "pair minting is local-only" }, 403);
     }
     const record = store.mint();
