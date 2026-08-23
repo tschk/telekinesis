@@ -1,0 +1,23 @@
+{
+  "name": "@telekinesis/tunnel",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MPL-2.0",
+  "type": "module",
+  "description": "Loopback pairing tunnel: mint a token and proxy WebSocket to the local companion.",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "bunx tsc --noEmit",
+    "fmt": "bunx prettier --check src test package.json tsconfig.json"
+  },
+  "dependencies": {
+    "hono": "^4.9.6"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.20",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,16 @@
+[package]
+name = "telekinesis-mobile"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+description = "Crepuscularity-native View IR shell for pairing a phone to the desktop companion"
+publish = false
+
+[lib]
+name = "telekinesis_mobile"
+path = "src/lib.rs"
+
+[dependencies]
+crepuscularity-core = "0.5.0"
+crepuscularity-native = "0.6.4"
+serde_json = "1"

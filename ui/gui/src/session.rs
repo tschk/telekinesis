@@ -37,7 +37,8 @@ pub enum CompanionEvent {
     LoginFailed(String),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionKind {
     ComputerUse,
     Coding,
@@ -91,6 +92,7 @@ pub struct AgentSession {
     pub busy: bool,
     pub model: String,
     pub context_pct: usize,
+    pub follow_ups: Vec<String>,
 }
 
 impl AgentSession {
@@ -115,6 +117,7 @@ impl AgentSession {
             busy: false,
             model: model.to_string(),
             context_pct: 0,
+            follow_ups: Vec::new(),
         }
     }
 

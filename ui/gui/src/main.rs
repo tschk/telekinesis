@@ -13,6 +13,7 @@ mod shake;
 mod tray;
 mod view;
 
+use telekinesis_gui::bridge::{spawn_loopback_bind, DEFAULT_COMPANION_BIND};
 use telekinesis_gui::host::CompanionHost;
 
 use crate::platform::macos::{
@@ -69,6 +70,10 @@ fn main() {
 
         let host = cx.new(|_cx| CompanionHost::boot());
         let overlay = cx.new(|_cx| CursorOverlay::default());
+        let bridge = host.read(cx).bridge_sender();
+        if let Ok(addr) = DEFAULT_COMPANION_BIND.parse() {
+            spawn_loopback_bind(bridge, addr);
+        }
 
         // 1. Full-screen transparent overlay — click-through, floating
         let overlay_options = WindowOptions {

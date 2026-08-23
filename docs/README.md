@@ -19,6 +19,7 @@ flowchart LR
 - [Architecture](ARCHITECTURE.md) — product layers and the in-process event path.
 - [Rotary integration](ROTARY.md) — the host/engine boundary and the rx4 API used by the TUI.
 - [ADR-001](ADR-001-rotary-engine-telekinesis-host.md) — rotary engine and telekinesis host boundary.
+- [Mobile pairing](MOBILE.md) — phone View IR shell + loopback pairing tunnel.
 
 ## Feature inventory
 

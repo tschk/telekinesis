@@ -3,6 +3,11 @@ use rx4::permissions::Decision;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use crate::agent::{oauth_provider, runtime, setup_agents, AgentSetup};
+use crate::bridge::{
+    encode_bridge_response, parse_bridge_request, BridgeInbox, BridgeRequest, BridgeResponse,
+    BridgeSnapshot,
+};
+use crate::layout::{composer_action, next_effort, session_rows, SessionRow};
 use crate::session::{AgentSession, CompanionEvent, MessageItem, PointTarget, SessionKind};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11,6 +16,7 @@ pub enum HostCommand {
     Clear,
     ComputerUse,
     Coding,
+    CycleEffort,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +73,7 @@ pub fn parse_host_command(text: &str) -> Option<HostCommand> {
         "/clear" => Some(HostCommand::Clear),
         "/computer" | "/computer_use" => Some(HostCommand::ComputerUse),
         "/coding" => Some(HostCommand::Coding),
+        "/effort" => Some(HostCommand::CycleEffort),
         "/scope" => match arg {
             Some("computer_use") | Some("computer") => Some(HostCommand::ComputerUse),
             Some("coding") => Some(HostCommand::Coding),
@@ -92,6 +99,10 @@ pub struct HostSnapshot {
     pub session_kind: SessionKind,
     pub computer_active: bool,
     pub coding_active: bool,
+    pub effort: String,
+    pub queued: usize,
+    pub composer_action: String,
+    pub sessions: Vec<SessionRow>,
 }
 
 #[derive(Default)]
@@ -111,11 +122,15 @@ pub struct CompanionHost {
     permission_pending: bool,
     login_busy: bool,
     poll_generation: u64,
+    effort: String,
+    bridge_rx: UnboundedReceiver<(String, UnboundedSender<String>)>,
+    bridge_tx: UnboundedSender<(String, UnboundedSender<String>)>,
 }
 
 impl CompanionHost {
     pub fn boot() -> Self {
         let (event_tx, event_rx) = unbounded_channel();
+        let (bridge_tx, bridge_rx) = unbounded_channel();
         let mut host = Self {
             input: String::new(),
             sessions: Vec::new(),
@@ -127,6 +142,9 @@ impl CompanionHost {
             permission_pending: false,
             login_busy: false,
             poll_generation: 0,
+            effort: "high".into(),
+            bridge_rx,
+            bridge_tx,
         };
         if let Some(setup) = setup_agents(runtime(), event_tx) {
             host.apply_setup(setup);
@@ -217,6 +235,15 @@ impl CompanionHost {
         } else {
             "none"
         };
+        let queued = session.map(|s| s.follow_ups.len()).unwrap_or(0);
+        let sessions = session_rows(
+            &self
+                .sessions
+                .iter()
+                .map(|s| (s.name.clone(), s.kind, s.busy))
+                .collect::<Vec<_>>(),
+            self.active_session,
+        );
         HostSnapshot {
             input: self.input.clone(),
             model,
@@ -240,6 +267,10 @@ impl CompanionHost {
             coding_active: session
                 .map(|s| s.kind == SessionKind::Coding)
                 .unwrap_or(false),
+            effort: self.effort.clone(),
+            queued,
+            composer_action: composer_action(busy, connected).to_string(),
+            sessions,
         }
     }
 
@@ -267,6 +298,7 @@ impl CompanionHost {
                     if let Some(session) = self.sessions.get_mut(idx) {
                         session.busy = false;
                     }
+                    self.drain_follow_up(idx);
                 }
                 CompanionEvent::LoginSucceeded => {
                     self.login_busy = false;
@@ -288,10 +320,65 @@ impl CompanionHost {
         if self.poll_approvals() {
             tick.dirty = true;
         }
+        if self.poll_bridge() {
+            tick.dirty = true;
+        }
         if tick.dirty {
             self.poll_generation = self.poll_generation.saturating_add(1);
         }
         tick
+    }
+
+    pub fn bridge_sender(&self) -> BridgeInbox {
+        self.bridge_tx.clone()
+    }
+
+    fn poll_bridge(&mut self) -> bool {
+        let mut dirty = false;
+        while let Ok((raw, reply)) = self.bridge_rx.try_recv() {
+            dirty = true;
+            let response = self.apply_bridge_json(&raw);
+            let _ = reply.send(response);
+        }
+        dirty
+    }
+
+    pub fn apply_bridge_json(&mut self, raw: &str) -> String {
+        match parse_bridge_request(raw) {
+            Ok(request) => encode_bridge_response(&self.apply_bridge_request(request)),
+            Err(message) => encode_bridge_response(&BridgeResponse::Error { message }),
+        }
+    }
+
+    fn apply_bridge_request(&mut self, request: BridgeRequest) -> BridgeResponse {
+        match request {
+            BridgeRequest::Snapshot => BridgeResponse::Snapshot {
+                data: BridgeSnapshot::from(&self.snapshot()),
+            },
+            BridgeRequest::Prompt { text } => {
+                self.input = text;
+                self.send_prompt();
+                BridgeResponse::Ok
+            }
+            BridgeRequest::Queue { text } => {
+                if let Some(session) = self.active_session_mut() {
+                    session.follow_ups.push(text);
+                }
+                BridgeResponse::Ok
+            }
+            BridgeRequest::Interrupt => {
+                self.interrupt();
+                BridgeResponse::Ok
+            }
+            BridgeRequest::Select { session } => {
+                self.set_active_session(session);
+                BridgeResponse::Ok
+            }
+            BridgeRequest::Effort => {
+                self.cycle_effort();
+                BridgeResponse::Ok
+            }
+        }
     }
 
     pub fn poll_generation(&self) -> u64 {
@@ -403,11 +490,17 @@ impl CompanionHost {
             return;
         }
 
+        self.dispatch_prompt(text);
+    }
+
+    fn dispatch_prompt(&mut self, text: String) {
         let agent = {
             let Some(session) = self.active_session_mut() else {
                 return;
             };
             if session.busy {
+                session.follow_ups.push(text);
+                self.input.clear();
                 return;
             }
             let Some(agent) = session.agent.clone() else {
@@ -435,6 +528,34 @@ impl CompanionHost {
         });
     }
 
+    fn drain_follow_up(&mut self, idx: usize) {
+        let next = self.sessions.get_mut(idx).and_then(|session| {
+            if session.follow_ups.is_empty() {
+                None
+            } else {
+                Some(session.follow_ups.remove(0))
+            }
+        });
+        let Some(text) = next else {
+            return;
+        };
+        let previous = self.active_session;
+        self.active_session = idx;
+        self.dispatch_prompt(text);
+        self.active_session = previous;
+    }
+
+    pub fn cycle_effort(&mut self) {
+        self.effort = next_effort(&self.effort);
+        for session in &self.sessions {
+            if let Some(agent) = &session.agent {
+                if let Ok(mut agent) = agent.try_lock() {
+                    agent.set_reasoning_effort(Some(self.effort.clone()));
+                }
+            }
+        }
+    }
+
     fn dispatch_command(&mut self, command: HostCommand) {
         match command {
             HostCommand::Login(provider) => {
@@ -447,10 +568,12 @@ impl CompanionHost {
                     session.streaming_content.clear();
                     session.busy = false;
                     session.context_pct = 0;
+                    session.follow_ups.clear();
                 }
             }
             HostCommand::ComputerUse => self.use_computer(),
             HostCommand::Coding => self.use_coding(),
+            HostCommand::CycleEffort => self.cycle_effort(),
         }
     }
 
@@ -543,6 +666,72 @@ mod tests {
             Some(HostCommand::ComputerUse)
         );
         assert_eq!(parse_host_command("hello"), None);
+        assert_eq!(
+            parse_host_command("/effort"),
+            Some(HostCommand::CycleEffort)
+        );
+    }
+
+    #[test]
+    fn snapshot_lists_sessions_and_effort() {
+        let host = CompanionHost::boot();
+        let snap = host.snapshot();
+        assert_eq!(snap.effort, "high");
+        assert_eq!(snap.queued, 0);
+        assert!(!snap.sessions.is_empty());
+        assert_eq!(snap.composer_action, "login");
+        assert!(snap.sessions.iter().any(|row| row.active));
+    }
+
+    #[test]
+    fn queues_follow_up_while_busy() {
+        let mut host = CompanionHost::boot();
+        if let Some(session) = host.active_session_mut() {
+            session.busy = true;
+        }
+        host.input = "later".into();
+        host.send_prompt();
+        let snap = host.snapshot();
+        assert!(host.input.is_empty());
+        assert_eq!(snap.queued, 1);
+        assert_eq!(snap.composer_action, "queue");
+        assert_eq!(
+            host.active_session().map(|s| s.follow_ups.as_slice()),
+            Some(["later".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn prompt_finished_drains_queued_follow_up() {
+        let mut host = CompanionHost::boot();
+        if let Some(session) = host.active_session_mut() {
+            session.busy = true;
+            session.follow_ups.push("next turn".into());
+        }
+        let idx = host.active_session;
+        let _ = host.event_tx.send(CompanionEvent::PromptFinished(idx));
+        host.poll();
+        let session = host.active_session().expect("session");
+        assert!(session.follow_ups.is_empty());
+        assert!(session
+            .messages
+            .iter()
+            .any(|message| message.content.contains("Log in first")
+                || message.content.contains("next turn")));
+    }
+
+    #[test]
+    fn cycle_effort_and_bridge_snapshot() {
+        let mut host = CompanionHost::boot();
+        host.cycle_effort();
+        assert_eq!(host.snapshot().effort, "xhigh");
+        host.input = "/effort".into();
+        host.send_prompt();
+        assert_eq!(host.snapshot().effort, "low");
+        let reply = host.apply_bridge_json(r#"{"v":1,"op":"snapshot"}"#);
+        assert!(reply.contains(r#""op":"snapshot""#));
+        assert!(reply.contains(r#""effort":"low""#));
+        assert!(reply.contains(r#""v":1"#));
     }
 
     #[test]
