@@ -1,6 +1,8 @@
+import { getConnInfo } from "hono/bun";
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { iceServers } from "./ice.ts";
+import { isLoopbackHost } from "./listen.ts";
 import { PairStore, pairUrl } from "./pair.ts";
 import { isSignalMessage, SignalRoom } from "./signal.ts";
 
@@ -10,6 +12,9 @@ export type TunnelOptions = {
   advertise: boolean;
   companionWs: string;
   store?: PairStore;
+  allowCompanionProxy?: boolean;
+  pairFromLoopbackOnly?: boolean;
+  maxWsQueue?: number;
 };
 
 export type TunnelApp = {
@@ -19,35 +24,74 @@ export type TunnelApp = {
 };
 
 const { upgradeWebSocket, websocket } = createBunWebSocket();
+const DEFAULT_WS_QUEUE = 32;
 
 function pathToken(value: string | undefined): string {
   return value ?? "";
+}
+
+function clientIsLoopback(c: { req: unknown }): boolean {
+  try {
+    const info = getConnInfo(c as never);
+    const address = info.remote.address ?? "";
+    return isLoopbackHost(address);
+  } catch {
+    return false;
+  }
 }
 
 export function createTunnel(options: TunnelOptions): TunnelApp {
   const store = options.store ?? new PairStore();
   const rooms = new Map<string, SignalRoom>();
   const app = new Hono();
+  const allowCompanionProxy = options.allowCompanionProxy ?? !options.advertise;
+  const pairFromLoopbackOnly = options.pairFromLoopbackOnly ?? options.advertise;
+  const maxWsQueue = options.maxWsQueue ?? DEFAULT_WS_QUEUE;
+
+  const dropEmptyRoom = (token: string) => {
+    const room = rooms.get(token);
+    if (!room || room.size() === 0) {
+      rooms.delete(token);
+    }
+  };
+
+  const pruneRooms = () => {
+    store.prune();
+    for (const token of [...rooms.keys()]) {
+      if (!store.get(token)) {
+        rooms.delete(token);
+      } else {
+        dropEmptyRoom(token);
+      }
+    }
+  };
 
   app.get("/health", (c) => c.json({ ok: true, advertise: options.advertise }));
 
   app.get("/ice", (c) => c.json({ iceServers: iceServers(options.advertise) }));
 
   app.post("/pair", (c) => {
+    pruneRooms();
+    if (pairFromLoopbackOnly && !clientIsLoopback(c)) {
+      return c.json({ error: "pair minting is local-only" }, 403);
+    }
     const record = store.mint();
     const url = pairUrl(options.host, options.port, record.token);
     return c.json({
       token: record.token,
       expiresAt: record.expiresAt,
       url,
-      relay: `ws://${options.host}:${options.port}/ws/${record.token}`,
-      companion: options.companionWs,
+      relay: allowCompanionProxy
+        ? `ws://${options.host}:${options.port}/ws/${record.token}`
+        : `ws://${options.host}:${options.port}/signal/${record.token}`,
+      companion: allowCompanionProxy ? options.companionWs : undefined,
       iceServers: iceServers(options.advertise),
       advertise: options.advertise,
     });
   });
 
   app.get("/pair/:token", (c) => {
+    pruneRooms();
     const record = store.get(c.req.param("token"));
     if (!record) {
       return c.json({ error: "invalid or expired pair token" }, 404);
@@ -55,7 +99,7 @@ export function createTunnel(options: TunnelOptions): TunnelApp {
     return c.json({
       token: record.token,
       expiresAt: record.expiresAt,
-      companion: options.companionWs,
+      companion: allowCompanionProxy ? options.companionWs : undefined,
     });
   });
 
@@ -67,7 +111,8 @@ export function createTunnel(options: TunnelOptions): TunnelApp {
       const queue: string[] = [];
       return {
         onOpen(_event, ws) {
-          if (!token || !store.get(token)) {
+          pruneRooms();
+          if (!token || !store.get(token) || !allowCompanionProxy) {
             ws.close();
             return;
           }
@@ -83,9 +128,13 @@ export function createTunnel(options: TunnelOptions): TunnelApp {
           });
           upstream.addEventListener("close", () => ws.close());
         },
-        onMessage(event) {
+        onMessage(event, ws) {
           const data = String(event.data);
           if (!upstream || upstream.readyState !== WebSocket.OPEN) {
+            if (queue.length >= maxWsQueue) {
+              ws.close();
+              return;
+            }
             queue.push(data);
             return;
           }
@@ -104,6 +153,7 @@ export function createTunnel(options: TunnelOptions): TunnelApp {
       const token = pathToken(c.req.param("token"));
       return {
         onOpen(_event, ws) {
+          pruneRooms();
           if (!token || !store.get(token)) {
             ws.close();
             return;
@@ -126,6 +176,7 @@ export function createTunnel(options: TunnelOptions): TunnelApp {
         },
         onClose(_event, ws) {
           rooms.get(token)?.remove(ws);
+          dropEmptyRoom(token);
         },
       };
     }),

@@ -29,6 +29,7 @@ export class PairStore {
   private readonly tokens = new Map<string, PairRecord>();
 
   mint(now = Date.now()): PairRecord {
+    this.prune(now);
     const record = mintPairToken(now);
     this.tokens.set(record.token, record);
     return record;
@@ -43,5 +44,20 @@ export class PairStore {
       return undefined;
     }
     return record;
+  }
+
+  prune(now = Date.now()): number {
+    let removed = 0;
+    for (const [token, record] of this.tokens) {
+      if (!isUsablePair(record, now)) {
+        this.tokens.delete(token);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  size(): number {
+    return this.tokens.size;
   }
 }

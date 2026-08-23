@@ -66,3 +66,38 @@ describe("tunnel http + ws proxy", () => {
     companion.stop();
   });
 });
+
+  test("does not proxy companion websocket when advertising", async () => {
+    const companion = serveCompanionEcho();
+    const { app, websocket } = createTunnel({
+      host: "192.168.1.20",
+      port: 0,
+      advertise: true,
+      companionWs: `ws://127.0.0.1:${companion.port}`,
+      allowCompanionProxy: false,
+      pairFromLoopbackOnly: false,
+    });
+    const tunnel = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: app.fetch,
+      websocket,
+    });
+    const minted = await fetch(`http://127.0.0.1:${tunnel.port}/pair`, { method: "POST" });
+    const body = (await minted.json()) as { token: string; companion?: string; url: string; relay: string };
+    expect(body.companion).toBeUndefined();
+    expect(body.url).not.toContain("127.0.0.1");
+    expect(body.relay).toContain("/signal/");
+
+    const closed = await new Promise<boolean>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${tunnel.port}/ws/${body.token}`);
+      ws.addEventListener("open", () => ws.send("should-not-echo"));
+      ws.addEventListener("message", () => resolve(false));
+      ws.addEventListener("close", () => resolve(true));
+      setTimeout(() => resolve(true), 500);
+    });
+    expect(closed).toBe(true);
+
+    tunnel.stop();
+    companion.stop();
+  });

@@ -23,6 +23,10 @@ export class SignalRoom {
     this.peers.delete(peer);
   }
 
+  size(): number {
+    return this.peers.size;
+  }
+
   fanout(from: { send(data: string): void }, message: SignalMessage): number {
     const payload = JSON.stringify(message);
     let sent = 0;

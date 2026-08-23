@@ -335,7 +335,10 @@ impl CompanionHost {
 
     fn poll_bridge(&mut self) -> bool {
         let mut dirty = false;
-        while let Ok((raw, reply)) = self.bridge_rx.try_recv() {
+        for _ in 0..32 {
+            let Ok((raw, reply)) = self.bridge_rx.try_recv() else {
+                break;
+            };
             dirty = true;
             let response = self.apply_bridge_json(&raw);
             let _ = reply.send(response);
@@ -356,13 +359,17 @@ impl CompanionHost {
                 data: BridgeSnapshot::from(&self.snapshot()),
             },
             BridgeRequest::Prompt { text } => {
-                self.input = text;
-                self.send_prompt();
+                self.dispatch_prompt(text, false);
                 BridgeResponse::Ok
             }
             BridgeRequest::Queue { text } => {
-                if let Some(session) = self.active_session_mut() {
-                    session.follow_ups.push(text);
+                let busy = self.active_session().map(|s| s.busy).unwrap_or(false);
+                if busy {
+                    if let Some(session) = self.active_session_mut() {
+                        session.follow_ups.push_back(text);
+                    }
+                } else {
+                    self.dispatch_prompt(text, false);
                 }
                 BridgeResponse::Ok
             }
@@ -485,22 +492,24 @@ impl CompanionHost {
         if text.starts_with('/') {
             self.input.clear();
             self.push_system(format!(
-                "unknown command: {text}. Try /login, /clear, /coding, /computer."
+                "unknown command: {text}. Try /login, /clear, /coding, /computer, /effort, /scope."
             ));
             return;
         }
 
-        self.dispatch_prompt(text);
+        self.dispatch_prompt(text, true);
     }
 
-    fn dispatch_prompt(&mut self, text: String) {
+    fn dispatch_prompt(&mut self, text: String, clear_composer: bool) {
         let agent = {
             let Some(session) = self.active_session_mut() else {
                 return;
             };
             if session.busy {
-                session.follow_ups.push(text);
-                self.input.clear();
+                session.follow_ups.push_back(text);
+                if clear_composer {
+                    self.input.clear();
+                }
                 return;
             }
             let Some(agent) = session.agent.clone() else {
@@ -516,7 +525,9 @@ impl CompanionHost {
             session.busy = true;
             agent
         };
-        self.input.clear();
+        if clear_composer {
+            self.input.clear();
+        }
         let session_idx = self.active_session;
         let tx = self.event_tx.clone();
         runtime().handle().spawn(async move {
@@ -530,18 +541,14 @@ impl CompanionHost {
 
     fn drain_follow_up(&mut self, idx: usize) {
         let next = self.sessions.get_mut(idx).and_then(|session| {
-            if session.follow_ups.is_empty() {
-                None
-            } else {
-                Some(session.follow_ups.remove(0))
-            }
+            session.follow_ups.pop_front()
         });
         let Some(text) = next else {
             return;
         };
         let previous = self.active_session;
         self.active_session = idx;
-        self.dispatch_prompt(text);
+        self.dispatch_prompt(text, false);
         self.active_session = previous;
     }
 
@@ -696,8 +703,10 @@ mod tests {
         assert_eq!(snap.queued, 1);
         assert_eq!(snap.composer_action, "queue");
         assert_eq!(
-            host.active_session().map(|s| s.follow_ups.as_slice()),
-            Some(["later".to_string()].as_slice())
+            host
+                .active_session()
+                .map(|s| s.follow_ups.iter().cloned().collect::<Vec<_>>()),
+            Some(vec!["later".to_string()])
         );
     }
 
@@ -706,7 +715,7 @@ mod tests {
         let mut host = CompanionHost::boot();
         if let Some(session) = host.active_session_mut() {
             session.busy = true;
-            session.follow_ups.push("next turn".into());
+            session.follow_ups.push_back("next turn".into());
         }
         let idx = host.active_session;
         let _ = host.event_tx.send(CompanionEvent::PromptFinished(idx));
@@ -843,5 +852,26 @@ mod tests {
                 .iter()
                 .any(|message| message.content.contains("hello\nworld\nmor")));
         }
+    }
+    #[test]
+    fn remote_prompt_keeps_desktop_draft() {
+        let mut host = CompanionHost::boot();
+        host.input = "desktop draft".into();
+        let _ = host.apply_bridge_json(r#"{"v":1,"op":"prompt","text":"from phone"}"#);
+        assert_eq!(host.input, "desktop draft");
+    }
+
+    #[test]
+    fn drain_follow_up_keeps_composer() {
+        let mut host = CompanionHost::boot();
+        host.input = "still typing".into();
+        if let Some(session) = host.active_session_mut() {
+            session.busy = true;
+            session.follow_ups.push_back("queued".into());
+        }
+        let idx = host.active_session;
+        let _ = host.event_tx.send(CompanionEvent::PromptFinished(idx));
+        host.poll();
+        assert_eq!(host.input, "still typing");
     }
 }

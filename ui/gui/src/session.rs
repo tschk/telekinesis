@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use rx4::agent::{Agent, CancellationHandle, Event as Rx4Event, ToolSource};
@@ -92,7 +93,7 @@ pub struct AgentSession {
     pub busy: bool,
     pub model: String,
     pub context_pct: usize,
-    pub follow_ups: Vec<String>,
+    pub follow_ups: VecDeque<String>,
 }
 
 impl AgentSession {
@@ -117,7 +118,7 @@ impl AgentSession {
             busy: false,
             model: model.to_string(),
             context_pct: 0,
-            follow_ups: Vec::new(),
+            follow_ups: VecDeque::new(),
         }
     }
 

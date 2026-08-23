@@ -1,35 +1,32 @@
 import { createTunnel } from "./app.ts";
+import { resolveListenConfig } from "./listen.ts";
 
 const advertise = process.argv.includes("--advertise") || process.env.TK_TUNNEL_ADVERTISE === "1";
 const port = Number(process.env.TK_TUNNEL_PORT ?? 8787);
-const host = advertise ? (process.env.TK_ADVERTISE_HOST ?? "0.0.0.0") : "127.0.0.1";
-const publicHost = process.env.TK_ADVERTISE_HOST ?? (advertise ? host : "127.0.0.1");
 const companionWs = process.env.TK_COMPANION_WS ?? "ws://127.0.0.1:17421";
 
-const { app, websocket } = createTunnel({
-  host: publicHost === "0.0.0.0" ? "127.0.0.1" : publicHost,
-  port,
+const listen = resolveListenConfig({
   advertise,
-  companionWs,
+  advertiseHost: process.env.TK_ADVERTISE_HOST,
 });
 
-const listenHost = advertise ? "0.0.0.0" : "127.0.0.1";
-
-export default {
+const { app, websocket } = createTunnel({
+  host: listen.publicHost,
   port,
-  hostname: listenHost,
-  fetch: app.fetch,
-  websocket,
-};
+  advertise: listen.advertise,
+  companionWs,
+  allowCompanionProxy: !listen.advertise,
+  pairFromLoopbackOnly: listen.advertise,
+});
 
 if (import.meta.main) {
   const server = Bun.serve({
     port,
-    hostname: listenHost,
+    hostname: listen.bindHost,
     fetch: app.fetch,
     websocket,
   });
   console.log(
-    `telekinesis tunnel ${server.hostname}:${server.port} companion=${companionWs} advertise=${advertise}`,
+    `telekinesis tunnel ${server.hostname}:${server.port} companion=${companionWs} advertise=${listen.advertise} pairHost=${listen.publicHost}`,
   );
 }

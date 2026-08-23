@@ -22,6 +22,15 @@ describe("pairing", () => {
     expect(isUsablePair(undefined)).toBe(false);
   });
 
+  test("prunes expired tokens without a later get", () => {
+    const store = new PairStore();
+    store.mint(1_000);
+    store.mint(1_000);
+    expect(store.size()).toBe(2);
+    expect(store.prune(1_000 + 30 * 60 * 1000 + 1)).toBe(2);
+    expect(store.size()).toBe(0);
+  });
+
   test("loopback ice list is empty; advertise adds stun", () => {
     expect(iceServers(false)).toEqual([]);
     expect(iceServers(true)).toEqual([{ urls: "stun:stun.cloudflare.com:3478" }]);

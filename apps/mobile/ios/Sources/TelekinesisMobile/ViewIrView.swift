@@ -52,9 +52,18 @@ struct ViewIrNodeView: View {
             Text(node.label ?? node.content ?? "action")
                 .foregroundStyle(Color.white)
         default:
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(node.children ?? []) { child in
-                    ViewIrNodeView(node: child)
+            let children = node.children ?? []
+            if node.axis == "row" || node.axis == "horizontal" {
+                HStack(alignment: .center, spacing: 8) {
+                    ForEach(children) { child in
+                        ViewIrNodeView(node: child)
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(children) { child in
+                        ViewIrNodeView(node: child)
+                    }
                 }
             }
         }
