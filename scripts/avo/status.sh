@@ -20,6 +20,12 @@ scored = [row for row in rows if row.get("kind") in ("accept", "reject", "error"
 best = None
 best_tick = None
 since_best = 0
+for row in rows:
+    if row.get("kind") == "baseline":
+        obj = float(row.get("objective", 0))
+        if best is None or obj > best:
+            best = obj
+            best_tick = row.get("tick", 0)
 for row in scored:
     obj = float(row.get("objective", 0))
     if row.get("kind") == "accept" and (best is None or obj > best):

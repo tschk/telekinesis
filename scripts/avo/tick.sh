@@ -92,6 +92,11 @@ fi
 avo_acquire_lock
 trap avo_release_lock EXIT
 
+AVO_START_BRANCH=$(avo_current_branch)
+AVO_START_HEAD=$(avo_git rev-parse HEAD)
+avo_capture_pre_tick
+avo_ensure_baseline
+
 tick=$(avo_tick_number)
 prompt="$(avo_task_dir)/prompt.txt"
 avo_build_driver_prompt "$prompt"
@@ -107,11 +112,29 @@ PY
   avo_fail "agent failed"
 fi
 
-if ! score_json=$(avo_run_score); then
+if ! avo_revalidate_git_identity; then
   avo_restore_tree
   avo_ledger_append error "$(python3 - "$tick" <<'PY'
 import json, sys
-print(json.dumps({"tick": int(sys.argv[1]), "correct": False, "objective": 0, "note": "score infra failure"}))
+print(json.dumps({"tick": int(sys.argv[1]), "correct": False, "objective": 0, "note": "agent changed branch or HEAD"}))
+PY
+)"
+  avo_fail "agent changed branch or HEAD unexpectedly"
+fi
+
+avo_capture_candidate
+
+if ! score_json=$(avo_run_score); then
+  avo_persist_candidate "$tick" error
+  avo_restore_tree
+  avo_ledger_append error "$(python3 - "$tick" "${AVO_CAND_REF:-}" "${AVO_CAND_PATCH:-}" <<'PY'
+import json, sys
+row = {"tick": int(sys.argv[1]), "correct": False, "objective": 0, "note": "score infra failure"}
+if sys.argv[2]:
+    row["candidate"] = sys.argv[2]
+if sys.argv[3]:
+    row["patch"] = sys.argv[3]
+print(json.dumps(row))
 PY
 )"
   avo_fail "score command failed"
@@ -136,16 +159,31 @@ PY
 
 if [ "$(avo_should_commit "$correct" "$objective" "$stddev" "$best")" = yes ]; then
   avo_commit_candidate "avo($AVO_TASK): tick $tick objective=$objective"
-  commit=$(git -C "$AVO_ROOT" rev-parse --short HEAD)
+  commit=$(avo_git rev-parse --short HEAD)
   payload=$(python3 - "$payload" "$commit" <<'PY'
 import json, sys
 row = json.loads(sys.argv[1])
 row["commit"] = sys.argv[2]
+row["candidate"] = sys.argv[2]
 print(json.dumps(row))
 PY
 )
   avo_ledger_append accept "$payload"
+  AVO_START_HEAD=$(avo_git rev-parse HEAD)
+  AVO_START_BRANCH=$(avo_current_branch)
+  avo_capture_pre_tick
 else
+  avo_persist_candidate "$tick" reject
+  payload=$(python3 - "$payload" "${AVO_CAND_REF:-}" "${AVO_CAND_PATCH:-}" <<'PY'
+import json, sys
+row = json.loads(sys.argv[1])
+if sys.argv[2]:
+    row["candidate"] = sys.argv[2]
+if sys.argv[3]:
+    row["patch"] = sys.argv[3]
+print(json.dumps(row))
+PY
+)
   avo_restore_tree
   avo_ledger_append reject "$payload"
 fi

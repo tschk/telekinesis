@@ -66,10 +66,19 @@ exit 0 when evaluation *completed* (pass or fail); non-zero is infra failure:
 {"correct": true, "objective": 0.87, "metrics": {"elapsed_s": 0.4}, "note": "what changed", "artifacts": []}
 ```
 
-`correct` is the hard gate. `objective` is higher-is-better. `note` is what
-the next agent reads. `score-example.sh` runs `AVO_TEST_CMD` as the
-correctness gate; on success the default objective is `1/elapsed_s`. Failed
-tests force `objective` to 0.
+`correct` is the hard gate and must be a JSON boolean (`true`/`false`).
+A string such as `"false"` is rejected as infra failure (fail closed).
+`objective` is higher-is-better. `note` is what the next agent reads.
+`score-example.sh` runs `AVO_TEST_CMD` as the correctness gate; on success
+the default objective is `1/elapsed_s`. Failed tests force `objective` to 0.
+
+The host scores the starting tree as a baseline before the first accept, so
+the first candidate is ratcheted. Rejected candidates are persisted as an
+immutable `refs/avo/<task>/reject/<tick>` commit plus a patch under
+`.avo/<task>/rejected/` and fed back in `P_t`. Restore returns to the
+pre-tick branch/HEAD and only drops that tick's edits; it never
+`git clean -fd`s the user's pre-existing untracked files or allowed dirty
+work.
 
 Accept rule: `objective + k*stddev >= best + min_improvement`.
 Defaults: `AVO_MIN_IMPROVEMENT=0`, `AVO_NOISE_K=1`, `stddev` from

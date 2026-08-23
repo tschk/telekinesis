@@ -10,6 +10,10 @@ avo_fail() {
   exit 1
 }
 
+avo_git() {
+  git -C "$AVO_ROOT" "$@"
+}
+
 avo_git_root() {
   git rev-parse --show-toplevel 2>/dev/null || avo_die "usage: run from a git repository (or pass --init <task>)"
 }
@@ -38,6 +42,13 @@ avo_branch_name() {
   printf 'avo/%s\n' "$AVO_TASK"
 }
 
+avo_exclude_path() {
+  (
+    cd "$AVO_ROOT" || exit 1
+    git rev-parse --git-path info/exclude
+  )
+}
+
 avo_read_json_file() {
   local file=$1
   local expr=$2
@@ -52,15 +63,17 @@ avo_load_current() {
   if [ -n "${AVO_TASK:-}" ]; then
     return 0
   fi
+  local branch
+  branch=$(avo_git rev-parse --abbrev-ref HEAD)
+  case "$branch" in
+    avo/*)
+      AVO_TASK=${branch#avo/}
+      return 0
+      ;;
+  esac
   if [ -f "$AVO_ROOT/.avo/current" ]; then
     AVO_TASK=$(tr -d '[:space:]' <"$AVO_ROOT/.avo/current")
-    return 0
   fi
-  local branch
-  branch=$(git -C "$AVO_ROOT" rev-parse --abbrev-ref HEAD)
-  case "$branch" in
-    avo/*) AVO_TASK=${branch#avo/} ;;
-  esac
 }
 
 avo_load_config() {
@@ -77,7 +90,7 @@ avo_load_config() {
 }
 
 avo_write_config() {
-  local dir cfg
+  local dir cfg exclude
   dir=$(avo_task_dir)
   mkdir -p "$dir"
   cfg=$(avo_config_path)
@@ -97,13 +110,15 @@ PY
   if [ ! -f "$dir/notes.md" ]; then
     printf '%s\n' "$AVO_GOAL" >"$dir/notes.md"
   fi
-  if ! grep -qxF '.avo/' "$AVO_ROOT/.git/info/exclude" 2>/dev/null; then
-    printf '%s\n' '.avo/' >>"$AVO_ROOT/.git/info/exclude"
+  exclude=$(avo_exclude_path)
+  mkdir -p "$(dirname "$exclude")"
+  if ! grep -qxF '.avo/' "$exclude" 2>/dev/null; then
+    printf '%s\n' '.avo/' >>"$exclude"
   fi
 }
 
 avo_current_branch() {
-  git -C "$AVO_ROOT" rev-parse --abbrev-ref HEAD
+  avo_git rev-parse --abbrev-ref HEAD
 }
 
 avo_refuse_main() {
@@ -142,13 +157,13 @@ avo_init() {
   local expected
   expected=$(avo_branch_name)
   if [ "$(avo_current_branch)" != "$expected" ]; then
-    git -C "$AVO_ROOT" checkout -q -b "$expected"
+    avo_git checkout -q -b "$expected"
   fi
   avo_write_config
 }
 
 avo_dirty() {
-  if [ -n "$(git -C "$AVO_ROOT" status --porcelain --untracked-files=no)" ]; then
+  if [ -n "$(avo_git status --porcelain --untracked-files=no)" ]; then
     return 0
   fi
   return 1
@@ -158,38 +173,216 @@ avo_lock_dir() {
   printf '%s/lock\n' "$(avo_task_dir)"
 }
 
+avo_pid_live() {
+  local pid=$1
+  [ -n "$pid" ] || return 1
+  if kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  [ -d "/proc/$pid" ]
+}
+
 avo_acquire_lock() {
-  local lock pid
+  local lock stale pid
   lock=$(avo_lock_dir)
   mkdir -p "$(avo_task_dir)"
-  if [ -d "$lock" ]; then
-    pid=$(tr -d '[:space:]' <"$lock/pid" 2>/dev/null || true)
-    if [ -n "$pid" ] && { kill -0 "$pid" 2>/dev/null || [ -d "/proc/$pid" ]; }; then
-      avo_fail "tick locked by pid $pid"
-    fi
-    rm -rf "$lock"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s\n' "$$" >"$lock/pid"
+    return 0
   fi
-  mkdir "$lock" || avo_fail "tick locked"
-  printf '%s\n' "$$" >"$lock/pid"
+  pid=$(tr -d '[:space:]' <"$lock/pid" 2>/dev/null || true)
+  if avo_pid_live "$pid"; then
+    avo_fail "tick locked by pid $pid"
+  fi
+  stale="${lock}.stale.$$"
+  if mv "$lock" "$stale" 2>/dev/null; then
+    rm -rf "$stale"
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s\n' "$$" >"$lock/pid"
+      return 0
+    fi
+  fi
+  avo_fail "tick locked"
 }
 
 avo_release_lock() {
-  rm -rf "$(avo_lock_dir)"
+  local lock pid
+  lock=$(avo_lock_dir)
+  [ -d "$lock" ] || return 0
+  pid=$(tr -d '[:space:]' <"$lock/pid" 2>/dev/null || true)
+  if [ "$pid" = "$$" ]; then
+    rm -rf "$lock"
+  fi
+}
+
+avo_pre_dir() {
+  printf '%s/pre\n' "$(avo_task_dir)"
+}
+
+avo_reset_index() {
+  (
+    cd "$AVO_ROOT" || exit 1
+    git reset -q
+    git read-tree HEAD
+  )
+}
+
+avo_write_index_tree() {
+  (
+    cd "$AVO_ROOT" || exit 1
+    git write-tree
+  )
+}
+
+avo_capture_pre_tick() {
+  local pred
+  pred=$(avo_pre_dir)
+  rm -rf "$pred"
+  mkdir -p "$pred"
+  AVO_START_BRANCH=${AVO_START_BRANCH:-$(avo_current_branch)}
+  AVO_START_HEAD=${AVO_START_HEAD:-$(avo_git rev-parse HEAD)}
+  avo_git rev-parse --abbrev-ref HEAD >"$pred/branch"
+  avo_git rev-parse HEAD >"$pred/head"
+  avo_git status --porcelain -uall >"$pred/status" || true
+  avo_git ls-files --others --exclude-standard >"$pred/untracked" || true
+  (
+    cd "$AVO_ROOT" || exit 1
+    git add -u
+    git reset -q -- .avo .last-prompt 2>/dev/null || true
+  )
+  AVO_PRE_TREE=$(avo_write_index_tree)
+  printf '%s\n' "$AVO_PRE_TREE" >"$pred/tree"
+  avo_reset_index
+}
+
+avo_unstage_protected() {
+  local pred f
+  pred=$(avo_pre_dir)
+  (
+    cd "$AVO_ROOT" || exit 1
+    git reset -q -- .avo .last-prompt 2>/dev/null || true
+    if [ -f "$pred/untracked" ]; then
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        git reset -q -- "$f" 2>/dev/null || true
+      done <"$pred/untracked"
+    fi
+  )
+}
+
+avo_capture_candidate() {
+  local pred
+  pred=$(avo_pre_dir)
+  (
+    cd "$AVO_ROOT" || exit 1
+    if [ -n "${AVO_PRE_TREE:-}" ]; then
+      git read-tree "$AVO_PRE_TREE"
+    else
+      git read-tree HEAD
+    fi
+    git add -A
+  )
+  avo_unstage_protected
+  AVO_CAND_TREE=$(avo_write_index_tree)
+  printf '%s\n' "$AVO_CAND_TREE" >"$pred/candidate.tree"
+  avo_reset_index
+}
+
+avo_remove_tick_untracked() {
+  local pred f
+  pred=$(avo_pre_dir)
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      .avo|.avo/*|.last-prompt) continue ;;
+    esac
+    if [ -f "$pred/untracked" ] && grep -qxF "$f" "$pred/untracked"; then
+      continue
+    fi
+    rm -rf "$AVO_ROOT/$f"
+  done < <(avo_git ls-files --others --exclude-standard)
+}
+
+avo_checkout_start_branch() {
+  local start_branch=$AVO_START_BRANCH
+  local start_head=$AVO_START_HEAD
+  local branch
+  branch=$(avo_current_branch)
+  if [ "$branch" != "$start_branch" ]; then
+    if avo_git show-ref --verify --quiet "refs/heads/$start_branch"; then
+      avo_git checkout -q -f "$start_branch"
+    else
+      avo_git checkout -q -f -B "$start_branch" "$start_head"
+    fi
+  fi
+  if [ "$(avo_git rev-parse --abbrev-ref HEAD)" != "$start_branch" ]; then
+    avo_fail "unable to return to start branch $start_branch"
+  fi
+  avo_git reset -q --hard "$start_head"
 }
 
 avo_restore_tree() {
-  git -C "$AVO_ROOT" reset -q --hard HEAD
-  git -C "$AVO_ROOT" clean -q -fd -e .avo -e .last-prompt
+  local pred tree
+  [ -n "${AVO_START_HEAD:-}" ] || avo_fail "missing pre-tick HEAD; refuse to reset to an unexpected commit"
+  [ -n "${AVO_START_BRANCH:-}" ] || avo_fail "missing pre-tick branch; refuse to reset to an unexpected commit"
+  avo_checkout_start_branch
+  pred=$(avo_pre_dir)
+  tree=${AVO_PRE_TREE:-}
+  if [ -z "$tree" ] && [ -f "$pred/tree" ]; then
+    tree=$(tr -d '[:space:]' <"$pred/tree")
+  fi
+  if [ -n "$tree" ]; then
+    avo_git restore --source="$tree" --worktree --staged .
+    avo_git reset -q
+  fi
+  avo_remove_tick_untracked
+}
+
+avo_revalidate_git_identity() {
+  local branch head
+  branch=$(avo_current_branch)
+  head=$(avo_git rev-parse HEAD)
+  if [ "$branch" = "HEAD" ] || [ "$branch" != "$AVO_START_BRANCH" ]; then
+    return 1
+  fi
+  if [ "$head" != "$AVO_START_HEAD" ]; then
+    avo_git reset -q --mixed "$AVO_START_HEAD"
+    branch=$(avo_current_branch)
+    head=$(avo_git rev-parse HEAD)
+    if [ "$branch" != "$AVO_START_BRANCH" ] || [ "$head" != "$AVO_START_HEAD" ]; then
+      return 1
+    fi
+  fi
+  return 0
 }
 
 avo_commit_candidate() {
   local msg=$1
+  [ -n "${AVO_CAND_TREE:-}" ] || avo_fail "missing candidate tree; refuse to stage scorer side effects"
   (
-    cd "$AVO_ROOT"
-    git add -A
-    git reset -q -- .avo .last-prompt 2>/dev/null || true
+    cd "$AVO_ROOT" || exit 1
+    git read-tree "$AVO_CAND_TREE"
     git commit -q --allow-empty -m "$msg"
+    git checkout -q -f HEAD -- .
   )
+}
+
+avo_persist_candidate() {
+  local tick=$1
+  local kind=$2
+  local commit patchdir patch
+  AVO_CAND_REF=
+  AVO_CAND_PATCH=
+  [ -n "${AVO_CAND_TREE:-}" ] || return 0
+  [ -n "${AVO_START_HEAD:-}" ] || return 0
+  commit=$(avo_git commit-tree "$AVO_CAND_TREE" -p "$AVO_START_HEAD" -m "avo($AVO_TASK): $kind tick $tick") || return 0
+  avo_git update-ref "refs/avo/${AVO_TASK}/${kind}/${tick}" "$commit"
+  patchdir="$(avo_task_dir)/rejected"
+  mkdir -p "$patchdir"
+  patch="$patchdir/tick-${tick}.patch"
+  avo_git diff --binary "$AVO_START_HEAD" "$commit" >"$patch" || true
+  AVO_CAND_REF=$commit
+  AVO_CAND_PATCH=${patch#"$AVO_ROOT"/}
 }
 
 avo_ledger_append() {
@@ -228,12 +421,24 @@ try:
 except FileNotFoundError:
     rows = []
 for row in rows:
-    if row.get("kind") != "accept":
+    if row.get("kind") not in ("accept", "baseline"):
         continue
     obj = float(row.get("objective", 0))
     if best is None or obj > best:
         best = obj
 print("" if best is None else best)
+PY
+}
+
+avo_has_baseline() {
+  python3 - "$(avo_ledger_path)" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    rows = [json.loads(line) for line in open(path) if line.strip()]
+except FileNotFoundError:
+    rows = []
+print("yes" if any(row.get("kind") in ("baseline", "accept") for row in rows) else "no")
 PY
 }
 
@@ -294,10 +499,10 @@ raw = sys.argv[1]
 obj = json.loads(raw)
 if "correct" not in obj or "objective" not in obj or "note" not in obj:
     raise SystemExit("score JSON must include correct, objective, note")
-correct = bool(obj["correct"])
+if not isinstance(obj["correct"], bool):
+    raise SystemExit('score JSON "correct" must be a JSON boolean')
+correct = obj["correct"]
 objective = 0.0 if not correct else float(obj["objective"])
-if not correct:
-    objective = 0.0
 metrics = obj.get("metrics") or {}
 stddev = float(metrics.get("stddev", metrics.get("sigma", 0)) or 0)
 print(json.dumps({
@@ -327,7 +532,7 @@ min_imp = float(min_imp or 0)
 noise_k = float(noise_k or 1)
 margin = noise_k * stddev
 if best == "":
-    print("yes")
+    print("no")
     raise SystemExit
 print("yes" if objective + margin >= float(best) + min_imp else "no")
 PY
@@ -342,15 +547,20 @@ try:
     rows = [json.loads(line) for line in open(path) if line.strip()]
 except FileNotFoundError:
     rows = []
-rows = [row for row in rows if row.get("kind") in ("accept", "reject")]
+rows = [row for row in rows if row.get("kind") in ("accept", "reject", "baseline")]
 rows = rows[-n:]
 if not rows:
     print("(empty — this is the first variation)")
     raise SystemExit
 for row in rows:
+    cand = row.get("candidate") or row.get("commit") or "-"
+    patch = row.get("patch") or ""
+    extra = f" candidate={cand}"
+    if patch:
+        extra += f" patch={patch}"
     print(
         f"tick {row.get('tick')} kind={row.get('kind')} correct={row.get('correct')} "
-        f"objective={row.get('objective')} note={row.get('note')}"
+        f"objective={row.get('objective')} note={row.get('note')}{extra}"
     )
 PY
 }
@@ -385,14 +595,15 @@ avo_build_driver_prompt() {
     printf '%s\n' "Scoring function f:"
     printf '%s\n' "  $AVO_SCORE $AVO_ROOT"
     printf '%s\n' "  JSON {correct, objective, metrics, note, artifacts}"
-    printf '%s\n' "  Incorrect candidates score objective 0. Host commits only if correct and objective >= best so far (within noise margin)."
+    printf '%s\n' "  correct must be a JSON boolean. Incorrect candidates score objective 0."
+    printf '%s\n' "  Host commits only if correct and objective >= baseline/best so far (within noise margin)."
     if [ -n "$best" ]; then
-      printf '%s\n' "  Best committed objective so far: $best"
+      printf '%s\n' "  Best committed or baseline objective so far: $best"
     else
       printf '%s\n' "  No committed best yet."
     fi
     printf '\n'
-    printf '%s\n' "Lineage P_t (recent scored candidates):"
+    printf '%s\n' "Lineage P_t (recent scored candidates, including persisted rejects):"
     avo_lineage_text
     if [ -f "$(avo_task_dir)/supervisor.md" ]; then
       printf '\n'
@@ -425,21 +636,74 @@ avo_run_score() {
   avo_parse_score "$raw"
 }
 
+avo_ensure_baseline() {
+  local score_json correct objective note
+  if [ "$(avo_has_baseline)" = yes ]; then
+    return 0
+  fi
+  if ! score_json=$(avo_run_score); then
+    avo_restore_tree
+    avo_fail "baseline score failed"
+  fi
+  correct=$(python3 -c 'import json,sys; print("true" if json.loads(sys.argv[1])["correct"] else "false")' "$score_json")
+  objective=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["objective"])' "$score_json")
+  note=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["note"])' "$score_json")
+  avo_ledger_append baseline "$(python3 - "$correct" "$objective" "$note" "$AVO_START_HEAD" <<'PY'
+import json, sys
+print(json.dumps({
+    "tick": 0,
+    "correct": sys.argv[1] == "true",
+    "objective": float(sys.argv[2]),
+    "note": "baseline " + sys.argv[3],
+    "commit": sys.argv[4],
+}))
+PY
+)"
+  avo_restore_tree
+}
+
 avo_run_supervisor() {
-  local dir prompt
+  local dir prompt st
+  AVO_START_BRANCH=$(avo_current_branch)
+  AVO_START_HEAD=$(avo_git rev-parse HEAD)
+  avo_capture_pre_tick
   dir=$(avo_task_dir)
   prompt="$dir/supervisor.prompt"
   avo_build_supervisor_prompt "$prompt"
+  if [ -z "${AVO_SUPERVISOR_MODEL:-}" ]; then
+    {
+      printf '%s\n' "Stall detected: no new best for ${AVO_STALL_AFTER:-3} ticks."
+      printf '%s\n' "No AVO_SUPERVISOR_MODEL set; host-only stall note."
+    } >"$dir/supervisor.md"
+    avo_restore_tree
+    avo_ledger_append supervisor "$(python3 - "$AVO_TASK" <<'PY'
+import json, sys
+print(json.dumps({"task": sys.argv[1], "model": "", "note": "supervisor redirect"}))
+PY
+)"
+    return 0
+  fi
+  set +e
+  AVO_MODEL="$AVO_SUPERVISOR_MODEL" "$AVO_AGENT" "$AVO_ROOT" "$prompt" >"$dir/supervisor.md.tmp" 2>&1
+  st=$?
+  set -e
+  if [ "$st" -ne 0 ]; then
+    rm -f "$dir/supervisor.md.tmp"
+    avo_restore_tree
+    avo_ledger_append supervisor_error "$(python3 - "$AVO_TASK" "${AVO_SUPERVISOR_MODEL:-}" <<'PY'
+import json, sys
+print(json.dumps({"task": sys.argv[1], "model": sys.argv[2], "note": "supervisor failed"}))
+PY
+)"
+    return 0
+  fi
   {
     printf '%s\n' "Stall detected: no new best for ${AVO_STALL_AFTER:-3} ticks."
     printf '%s\n' "Propose new directions from the trajectory."
     printf '\n'
-    if [ -n "${AVO_SUPERVISOR_MODEL:-}" ]; then
-      AVO_MODEL="$AVO_SUPERVISOR_MODEL" "$AVO_AGENT" "$AVO_ROOT" "$prompt" || true
-    else
-      printf '%s\n' "No AVO_SUPERVISOR_MODEL set; host-only stall note."
-    fi
+    cat "$dir/supervisor.md.tmp"
   } >"$dir/supervisor.md"
+  rm -f "$dir/supervisor.md.tmp"
   avo_restore_tree
   avo_ledger_append supervisor "$(python3 - "$AVO_TASK" "${AVO_SUPERVISOR_MODEL:-}" <<'PY'
 import json, sys
