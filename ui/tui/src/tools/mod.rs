@@ -138,6 +138,18 @@ mod tests {
     }
 
     #[test]
+    fn builtin_registry_exposes_hashline_edit() {
+        let manager = Arc::new(parking_lot::Mutex::new(SubagentManager::new()));
+        let names = registered_tool_names(&build_tool_registry_with_profile(
+            &manager,
+            &[],
+            ToolProfile::Minimal,
+        ));
+        assert!(names.iter().any(|name| name == "hashline_edit"));
+        assert!(names.iter().any(|name| name == "read"));
+    }
+
+    #[test]
     fn default_and_full_share_one_profile_row() {
         let manager = Arc::new(parking_lot::Mutex::new(SubagentManager::new()));
         let default = registered_tool_names(&build_tool_registry_with_profile(

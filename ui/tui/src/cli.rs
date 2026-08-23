@@ -52,6 +52,27 @@ fn parse_run_args(args: &[String], allow_prompt: bool) -> Result<ExecArgs, Strin
                     .ok_or_else(|| "--cwd requires a directory".to_string())?;
                 parsed.cwd = Some(PathBuf::from(dir));
             }
+            "--prewalk" => parsed.prewalk = true,
+            "--smol-model" => {
+                index += 1;
+                let model = args
+                    .get(index)
+                    .ok_or_else(|| "--smol-model requires a name".to_string())?;
+                if model.is_empty() {
+                    return Err("--smol-model requires a name".to_string());
+                }
+                parsed.smol_model = Some(model.clone());
+            }
+            "--investigate-model" => {
+                index += 1;
+                let model = args
+                    .get(index)
+                    .ok_or_else(|| "--investigate-model requires a name".to_string())?;
+                if model.is_empty() {
+                    return Err("--investigate-model requires a name".to_string());
+                }
+                parsed.investigate_model = Some(model.clone());
+            }
             "-" if allow_prompt => parsed.prompt = None,
             _ if is_continue_arg(arg) => {}
             _ if arg.starts_with("--") => return Err(format!("Unknown option: {arg}")),
@@ -95,8 +116,9 @@ pub fn print_help() {
     println!("  tk -c           Continue newest session for this project");
     println!("  tk exec \"<prompt>\"   Run one turn headlessly, final text on stdout");
     println!(
-        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --model <name>, --no-yolo)"
+        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --model <name>, --no-yolo,"
     );
+    println!("                       --prewalk, --smol-model <name>, --investigate-model <name>)");
     println!("  tk --no-yolo    Headless stdin run that denies Ask-class tools");
     println!(
         "  tk login <provider>  OAuth login (openai, claude, grok, gemini, copilot, kimi, antigravity)"
@@ -118,6 +140,9 @@ pub fn print_help() {
     println!("  OPENROUTER_API_KEY  OpenRouter API key");
     println!("  TK_PLAN_APPROVAL    ask (default), off, or bypass whole-turn plans");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
+    println!("  RX4_PREWALK         1/true to enable investigate-then-apply");
+    println!("  RX4_SMOL_MODEL      apply model id after the first write");
+    println!("  RX4_INVESTIGATE_MODEL  optional plan/investigate model id");
     println!("                      (cu_* needs --features computer-use or full)");
     println!("                      (MCP needs --features mcp or full)");
     println!("                      (web_search needs --features search or full)");
@@ -206,6 +231,24 @@ mod tests {
         assert_eq!(parsed.prompt.as_deref(), Some("task"));
         assert!(parse_exec_args(&["--model".into()]).is_err());
         assert!(parse_exec_args(&["--model".into(), "".into(), "task".into()]).is_err());
+    }
+
+    #[test]
+    fn exec_parses_prewalk_flags() {
+        let parsed = parse_exec_args(&[
+            "--prewalk".into(),
+            "--smol-model".into(),
+            "smol".into(),
+            "--investigate-model".into(),
+            "big".into(),
+            "task".into(),
+        ])
+        .unwrap();
+        assert!(parsed.prewalk);
+        assert_eq!(parsed.smol_model.as_deref(), Some("smol"));
+        assert_eq!(parsed.investigate_model.as_deref(), Some("big"));
+        assert_eq!(parsed.prompt.as_deref(), Some("task"));
+        assert!(parse_exec_args(&["--smol-model".into()]).is_err());
     }
 
     #[test]

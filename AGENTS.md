@@ -36,7 +36,7 @@ flowchart TD
 - **Rust** — the entire product is Rust
 - crepuscularity-tui (`ui/tui`) — ratatui-based TUI with hot-reloadable
   `shell.crepus` template — **primary surface**
-- **rx4** crate — latest version from crates.io. Default `tk` features:
+- **rx4** crate — git `tschk/rotary` @ `441ce52` for harness APIs. Default `tk` features:
   providers + builtin-tools. Opt-in: `mcp`, `search` (darash), computer-use,
   skills, graph-memory. `--features full` enables all of those.
 - tokio — async runtime, channels between TUI and agent loop
@@ -95,7 +95,7 @@ cd ui/tui && cargo clippy
   runtime owns future multi-surface transport; do not add surface-specific
   harness loops.
 - New agent features land in **rotary (rx4)** first, then surface via slash
-  commands here.
+  commands here. Hosts call `rx4::hashline`, `rx4::prewalk`, and `rx4::avo`.
 - Prefer small slash commands that map to rx4 methods.
 - telekinesis owns pi protocol compat — rotary no longer carries it.
 - Product layer surfaces: MCP config (`ui/tui/src/mcp_config.rs` + `/mcp`,

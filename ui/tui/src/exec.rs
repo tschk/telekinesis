@@ -6,6 +6,7 @@ use rx4::agent::Event as Rx4Event;
 use rx4::provider::Role;
 use rx4::ModelRegistry;
 
+use crate::harness::{apply_prewalk_exec_env, sync_prewalk_model};
 use crate::host::build_agent;
 use crate::models::host_model_info;
 use crate::providers::setup_providers;
@@ -19,6 +20,9 @@ pub struct ExecArgs {
     pub help: bool,
     pub no_yolo: bool,
     pub model: Option<String>,
+    pub prewalk: bool,
+    pub smol_model: Option<String>,
+    pub investigate_model: Option<String>,
 }
 
 fn exec_help() {
@@ -33,6 +37,9 @@ fn exec_help() {
     eprintln!("  --cwd <dir>     Workspace to run against (default: current directory)");
     eprintln!("  --model <name>  Override the first configured provider's default model");
     eprintln!("  --no-yolo       Deny Ask-class tools (default non-TTY/exec is AlwaysAllow)");
+    eprintln!("  --prewalk       Enable rx4 prewalk (or set RX4_PREWALK=1)");
+    eprintln!("  --smol-model <name>  Apply model after the first write (RX4_SMOL_MODEL)");
+    eprintln!("  --investigate-model <name>  Plan model (RX4_INVESTIGATE_MODEL)");
     eprintln!("  --help          Show this help");
     eprintln!();
     eprintln!("Only the final text goes to stdout; status and errors go to stderr.");
@@ -54,6 +61,11 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         exec_help();
         return Ok(());
     }
+    apply_prewalk_exec_env(
+        parsed.prewalk,
+        parsed.smol_model.as_deref(),
+        parsed.investigate_model.as_deref(),
+    );
     let json = parsed.json;
 
     if let Some(dir) = &parsed.cwd {
@@ -129,7 +141,9 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         workspace.display()
     );
 
+    sync_prewalk_model(&mut agent);
     let result = rt.block_on(agent.prompt(&prompt));
+    sync_prewalk_model(&mut agent);
     if let Err(error) = result {
         exec_failure(json, &error.to_string());
     }

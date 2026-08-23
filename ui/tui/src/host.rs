@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use parking_lot::Mutex as ParkingMutex;
 use rx4::agent::Agent;
-use rx4::hooks::{HookDecision, HookEvent, HookRegistry};
 use rx4::mode::{self, Scope};
 use rx4::provider::Provider;
 use rx4::subagent::SubagentManager;
 use rx4::ModelRegistry;
 
+use crate::harness::{apply_prewalk_model, install_host_hooks, session_prewalk};
 use crate::models::host_model_info;
 use crate::product_policy;
 use crate::tools::{self, McpToolSpec};
@@ -114,24 +114,9 @@ pub fn apply_scope(agent: &mut Agent, scope: Scope) {
     agent.set_policy(agent.policy.clone());
     let base = include_str!("../SYSTEM_PROMPT.md");
     agent.set_system_prompt(mode::compose_prompt(Some(base), &profile));
-    install_scope_hooks(agent, scope);
-}
-
-fn install_scope_hooks(agent: &mut Agent, scope: Scope) {
-    let hooks = HookRegistry::new();
-    hooks.add(move |event: &HookEvent| match event {
-        HookEvent::BeforeTool { tool } => {
-            if host_tool_allowed(scope, &tool.name) {
-                HookDecision::Allow
-            } else {
-                HookDecision::Deny {
-                    reason: format!("tool not in scope {}: {}", scope.name(), tool.name),
-                }
-            }
-        }
-        _ => HookDecision::Allow,
-    });
-    agent.set_hooks(hooks);
+    let prewalk = session_prewalk(&agent.model);
+    apply_prewalk_model(agent, &prewalk.lock());
+    install_host_hooks(agent, scope, prewalk);
 }
 
 pub fn host_tool_allowed(scope: Scope, tool_name: &str) -> bool {

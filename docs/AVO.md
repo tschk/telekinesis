@@ -53,3 +53,9 @@ the example scorer prints this contract.
 
 There is no `tk avo` subcommand. The default binary stays slim; rx4 stays
 `default-features = false` with providers + builtin-tools only.
+
+## Engine helpers
+
+Rust hosts call `rx4::avo` (`commit_if_better`, `objective_f`, `lineage_p_t`,
+`StallDetector`). Do not copy those helpers into telekinesis. The avo-lite
+scripts above stay the product loop; this crate only exposes the engine API.

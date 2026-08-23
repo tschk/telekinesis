@@ -3,6 +3,7 @@ pub mod channel_approver;
 pub mod cli;
 pub mod codex_provider;
 pub mod exec;
+pub mod harness;
 pub mod host;
 pub mod markdown;
 #[cfg(feature = "mcp")]
