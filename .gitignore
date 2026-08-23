@@ -10,3 +10,4 @@ dist/
 ui/tui/target/
 ui/gui/target/
 .pi-subagents/
+.avo/

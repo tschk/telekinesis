@@ -50,7 +50,7 @@ XAI_API_KEY=... tk
 
 Default non-TTY / `tk exec` is yolo (`AlwaysAllow`); `--no-yolo` denies
 Ask-class tools. `--model` overrides the first configured provider's default
-model (used by the avo-lite adapter in [AVO.md](AVO.md)).
+model (used by the AVO loop in [AVO.md](AVO.md)).
 
 ## OAuth providers
 

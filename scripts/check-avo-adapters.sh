@@ -52,3 +52,29 @@ if printf '%s\n' "$out" | grep -F -- '--no-yolo' >/dev/null; then
   echo "agent-tk must not pass --no-yolo" >&2
   exit 1
 fi
+
+out=$(cd "$workdir" && TK="$workdir/tk" AVO_MODEL=supervisor-strong AVO_DRIVER_MODEL=grok-4.5 "$agent" . prompt.txt)
+printf '%s\n' "$out" | grep -F -- '--model supervisor-strong' >/dev/null
+if printf '%s\n' "$out" | grep -F -- '--no-yolo' >/dev/null; then
+  echo "agent-tk must not pass --no-yolo" >&2
+  exit 1
+fi
+
+passdir="$workdir/passdir"
+mkdir -p "$passdir"
+printf '#!/bin/sh\nexit 0\n' >"$passdir/t.sh"
+chmod +x "$passdir/t.sh"
+AVO_TEST_CMD="$passdir/t.sh" "$score" "$passdir" | python3 -c '
+import json, sys
+obj = json.load(sys.stdin)
+assert obj["correct"] is True
+assert float(obj["objective"]) > 0
+assert "elapsed_s" in obj["metrics"]
+'
+AVO_TEST_CMD="false" "$score" "$passdir" | python3 -c '
+import json, sys
+obj = json.load(sys.stdin)
+assert obj["correct"] is False
+assert obj["objective"] == 0
+assert obj["note"] == "tests failed"
+'
