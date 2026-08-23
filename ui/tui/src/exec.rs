@@ -72,6 +72,16 @@ fn exec_help() {
     eprintln!("Only the final text goes to stdout; status and errors go to stderr.");
 }
 
+/// Codex SSE/body decode and similar transport failures that are worth one retry.
+pub fn is_transient_provider_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    (lower.contains("stream")
+        && (lower.contains("decod") || lower.contains("read failed")))
+        || lower.contains("error decoding response body")
+        || lower.contains("connection reset")
+        || lower.contains("unexpected eof")
+}
+
 fn exec_failure(json: bool, message: &str) -> ! {
     if json {
         println!(
@@ -172,7 +182,13 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
     );
 
     sync_prewalk_model(&mut agent);
-    let result = rt.block_on(agent.prompt(&prompt));
+    let mut result = rt.block_on(agent.prompt(&prompt));
+    if let Err(error) = &result {
+        if is_transient_provider_error(&error.to_string()) {
+            eprintln!("· retrying once after transient provider error: {error}");
+            result = rt.block_on(agent.prompt(&prompt));
+        }
+    }
     if let Err(error) = result {
         exec_failure(json, &error.to_string());
     }
@@ -215,6 +231,16 @@ mod tests {
             ..ExecArgs::default()
         };
         assert!(denied.no_yolo);
+    }
+
+    #[test]
+    fn transient_provider_error_matches_codex_stream_decode() {
+        assert!(is_transient_provider_error(
+            "provider error: api error: codex stream read failed: error decoding response body"
+        ));
+        assert!(is_transient_provider_error("error decoding response body"));
+        assert!(!is_transient_provider_error("no provider credentials; run `tk login`"));
+        assert!(!is_transient_provider_error("empty prompt"));
     }
 
     #[test]
