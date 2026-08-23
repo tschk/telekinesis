@@ -540,9 +540,10 @@ impl CompanionHost {
     }
 
     fn drain_follow_up(&mut self, idx: usize) {
-        let next = self.sessions.get_mut(idx).and_then(|session| {
-            session.follow_ups.pop_front()
-        });
+        let next = self
+            .sessions
+            .get_mut(idx)
+            .and_then(|session| session.follow_ups.pop_front());
         let Some(text) = next else {
             return;
         };
@@ -703,8 +704,7 @@ mod tests {
         assert_eq!(snap.queued, 1);
         assert_eq!(snap.composer_action, "queue");
         assert_eq!(
-            host
-                .active_session()
+            host.active_session()
                 .map(|s| s.follow_ups.iter().cloned().collect::<Vec<_>>()),
             Some(vec!["later".to_string()])
         );
