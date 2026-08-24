@@ -6557,8 +6557,18 @@ dependencies = [
  "rs_ai_oauth",
  "rx4",
  "serde_json",
+ "telekinesis-router",
  "tokio",
  "tray-icon",
+]
+
+[[package]]
+name = "telekinesis-router"
+version = "0.1.0"
+dependencies = [
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

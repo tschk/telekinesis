@@ -19,7 +19,7 @@ flowchart TD
     TUI["TUI (crepuscularity-tui)<br/>sidebar · themes · slash palette"]
     CLI["CLI<br/>login · exec (headless one-shot)"]
     Pi["pi protocol compat<br/>JSONL v3 · RPC · extensions · QuickJS"]
-    Slash["slash commands<br/>/model /scope /mcp /todo /clear /cost"]
+    Slash["slash commands<br/>/model /scope /mcp /todo /clear /cost /usage"]
   end
   TK -->|"tokio channels — in-process"| RX4
   subgraph RX4["rx4 harness engine"]

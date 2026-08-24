@@ -117,6 +117,7 @@ pub fn print_help() {
     println!("  /config               Interactive config menu");
     println!("  /config show          Show runtime configuration and auth status");
     println!("  /sessions /resume <n> List and switch JSONL sessions");
+    println!("  /usage                Local request/token totals (not invoices)");
     println!("  tk --help       Show this help");
     println!();
     println!("ENVIRONMENT:");
@@ -232,7 +233,10 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(parsed.provider.as_deref(), Some("clinepass"));
-        assert_eq!(parsed.model.as_deref(), Some("cline-pass/deepseek-v4-flash"));
+        assert_eq!(
+            parsed.model.as_deref(),
+            Some("cline-pass/deepseek-v4-flash")
+        );
         assert!(parse_exec_args(&["--provider".into()]).is_err());
         assert!(parse_exec_args(&["--provider".into(), "".into(), "task".into()]).is_err());
     }

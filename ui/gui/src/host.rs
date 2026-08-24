@@ -85,6 +85,7 @@ pub struct HostSnapshot {
     pub context_pct: usize,
     pub status: String,
     pub provider: String,
+    pub usage: String,
     pub messages: Vec<MessageItem>,
     pub login_busy: bool,
     pub permission_pending: bool,
@@ -153,6 +154,7 @@ impl CompanionHost {
             coding,
             coding_cancel,
             model,
+            provider_id,
             approval_rx,
         } = setup;
         let mut computer = AgentSession::new(
@@ -162,8 +164,10 @@ impl CompanionHost {
             &model,
         );
         computer.cancellation = Some(computer_use_cancel);
+        computer.provider_id = provider_id.clone();
         let mut code = AgentSession::new("coding", SessionKind::Coding, Some(coding), &model);
         code.cancellation = Some(coding_cancel);
+        code.provider_id = provider_id;
         self.sessions = vec![computer, code];
         self.active_session = 0;
         self.approval_rx = Some(approval_rx);
@@ -205,17 +209,19 @@ impl CompanionHost {
             "login required".into()
         };
         let provider = if connected {
-            match model.as_str() {
-                "gpt-5.5" => "ChatGPT Codex",
-                "gpt-5.4" => "OpenAI",
-                "claude-sonnet-4-5" => "Claude",
-                "grok-4.5" => "xAI",
-                "gemini-2.0-flash" => "Google Gemini",
-                "kimi-k2.5" => "Kimi",
-                _ => "AI",
-            }
+            session
+                .map(|s| {
+                    telekinesis_router::by_id(&s.provider_id)
+                        .map(|spec| spec.name.to_string())
+                        .unwrap_or_else(|| match s.provider_id.as_str() {
+                            "openai-codex" => "ChatGPT Codex".into(),
+                            "moonshot" => "Kimi".into(),
+                            other => other.to_string(),
+                        })
+                })
+                .unwrap_or_else(|| "AI".into())
         } else {
-            "none"
+            "none".into()
         };
         HostSnapshot {
             input: self.input.clone(),
@@ -224,7 +230,8 @@ impl CompanionHost {
             connected,
             context_pct,
             status,
-            provider: provider.into(),
+            provider,
+            usage: telekinesis_router::format_short(&telekinesis_router::load_log()),
             messages: session
                 .map(AgentSession::render_messages)
                 .unwrap_or_default(),

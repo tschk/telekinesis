@@ -127,6 +127,8 @@ div w-full h-fit flex-col
       span w-fit text-xs text-zinc-600
         "${cost}"
       span w-fit text-xs text-zinc-600
+        "· {usage}"
+      span w-fit text-xs text-zinc-600
         "· {project} ({branch})"
     div h-[1] flex-row gap-2
       span w-fit text-xs text-indigo-400

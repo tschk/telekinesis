@@ -3109,11 +3109,21 @@ dependencies = [
  "rx4",
  "serde",
  "serde_json",
+ "telekinesis-router",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "telekinesis-router"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -49,7 +49,7 @@ pub(crate) const SESSION_PERSIST_INTERVAL: std::time::Duration =
 
 /// (command, description) — pi-style autocomplete shows the description next
 /// to each command name.
-pub(crate) const SLASH_COMMANDS: [(&str, &str); 23] = [
+pub(crate) const SLASH_COMMANDS: [(&str, &str); 24] = [
     ("/login", "sign in with a provider"),
     ("/providers", "browse and configure providers"),
     ("/provider", "alias for /providers"),
@@ -90,6 +90,7 @@ pub(crate) const SLASH_COMMANDS: [(&str, &str); 23] = [
     ("/todo", "session todo note"),
     ("/clear", "clear messages and reset cost"),
     ("/cost", "show cost breakdown"),
+    ("/usage", "local request/token totals per provider"),
     (
         "/commands",
         "list commands (with /commands <name> for usage)",
@@ -937,6 +938,15 @@ impl App {
         }
     }
 
+    pub(crate) fn active_provider_id(&self) -> String {
+        if let Some(provider) = self.providers.get(self.provider_choice) {
+            return provider.id.clone();
+        }
+        telekinesis_router::infer_from_model(&self.model)
+            .map(|spec| spec.id.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
     pub(crate) fn refresh_cost(&mut self) {
         let total = self
             .agent
@@ -1111,6 +1121,10 @@ impl App {
         tpl.set("project", self.project.clone());
         tpl.set("branch", self.branch.clone());
         tpl.set("cost", format!("{:.3}", self.cost));
+        tpl.set(
+            "usage",
+            telekinesis_router::format_short(&telekinesis_router::load_log()),
+        );
         tpl.set("context_pct", self.context_pct.to_string());
         tpl.set("context_window", format_tokens(self.context_window));
         tpl.set("context_color", context_color(self.context_pct));
@@ -1422,6 +1436,13 @@ impl App {
                 self.output_tokens += usage.output_tokens;
                 self.cache_read_tokens += usage.cache_read_tokens;
                 self.cache_write_tokens += usage.cache_write_tokens;
+                let _ = telekinesis_router::record_turn(
+                    &self.active_provider_id(),
+                    usage.input_tokens as u64,
+                    usage.output_tokens as u64,
+                    usage.cache_read_tokens as u64,
+                    usage.cache_write_tokens as u64,
+                );
             }
             Rx4Event::CompactionStart { .. } => {
                 self.messages.push(ChatMessage {

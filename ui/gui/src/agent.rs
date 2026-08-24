@@ -84,9 +84,15 @@ fn host_model_registry(provider: &dyn rx4::Provider, model: &str) -> ModelRegist
     ModelRegistry::from_models([info])
 }
 
-fn setup_provider(rt: &tokio::runtime::Runtime) -> Option<(Arc<dyn rx4::Provider>, String)> {
+fn setup_provider(
+    rt: &tokio::runtime::Runtime,
+) -> Option<(Arc<dyn rx4::Provider>, String, String)> {
     if let Some(token) = saved_token("openai", rt) {
-        return Some((codex_provider::provider_arc(token), "gpt-5.5".into()));
+        return Some((
+            codex_provider::provider_arc(token),
+            "gpt-5.5".into(),
+            "openai-codex".into(),
+        ));
     }
 
     if let Some(key) = env_key("OPENAI_API_KEY") {
@@ -98,6 +104,7 @@ fn setup_provider(rt: &tokio::runtime::Runtime) -> Option<(Arc<dyn rx4::Provider
                 "OpenAI",
             )),
             "gpt-5.4".into(),
+            "openai".into(),
         ));
     }
 
@@ -105,6 +112,7 @@ fn setup_provider(rt: &tokio::runtime::Runtime) -> Option<(Arc<dyn rx4::Provider
         return Some((
             Arc::new(OpenAIProvider::anthropic(token)),
             "claude-sonnet-4-5".into(),
+            "anthropic".into(),
         ));
     }
 
@@ -117,6 +125,7 @@ fn setup_provider(rt: &tokio::runtime::Runtime) -> Option<(Arc<dyn rx4::Provider
                 "xAI",
             )),
             "grok-4.5".into(),
+            "xai".into(),
         ));
     }
 
@@ -129,6 +138,7 @@ fn setup_provider(rt: &tokio::runtime::Runtime) -> Option<(Arc<dyn rx4::Provider
                 "Google Gemini",
             )),
             "gemini-2.0-flash".into(),
+            "google".into(),
         ));
     }
 
@@ -141,7 +151,25 @@ fn setup_provider(rt: &tokio::runtime::Runtime) -> Option<(Arc<dyn rx4::Provider
                 "Kimi",
             )),
             "kimi-k2.5".into(),
+            "moonshot".into(),
         ));
+    }
+
+    for spec in telekinesis_router::API_KEY_PROVIDERS {
+        if matches!(spec.id, "openai" | "xai" | "google") {
+            continue;
+        }
+        let Some(key) = telekinesis_router::env_key(spec) else {
+            continue;
+        };
+        let model = telekinesis_router::normalize_model(spec, spec.default_model);
+        let client: Arc<dyn rx4::Provider> = match spec.api {
+            telekinesis_router::ProviderApi::OpenAiCompatible => Arc::new(
+                OpenAIProvider::with_base_url(spec.base_url, key, spec.id, spec.name),
+            ),
+            telekinesis_router::ProviderApi::Anthropic => Arc::new(OpenAIProvider::anthropic(key)),
+        };
+        return Some((client, model, spec.id.to_string()));
     }
 
     None
@@ -153,6 +181,7 @@ pub struct AgentSetup {
     pub coding: Arc<Mutex<Agent>>,
     pub coding_cancel: CancellationHandle,
     pub model: String,
+    pub provider_id: String,
     pub approval_rx: std::sync::mpsc::Receiver<(ToolCall, std::sync::mpsc::Sender<Decision>)>,
 }
 
@@ -201,7 +230,7 @@ pub fn setup_agents(
     rt: &tokio::runtime::Runtime,
     event_tx: tokio::sync::mpsc::UnboundedSender<CompanionEvent>,
 ) -> Option<AgentSetup> {
-    let (provider, model) = setup_provider(rt)?;
+    let (provider, model, provider_id) = setup_provider(rt)?;
     let (approver, approval_rx) = ChannelApprover::pair();
     let approver: Arc<dyn rx4::permissions::Approver> = Arc::new(approver);
 
@@ -228,6 +257,7 @@ pub fn setup_agents(
         coding,
         coding_cancel,
         model,
+        provider_id,
         approval_rx,
     })
 }

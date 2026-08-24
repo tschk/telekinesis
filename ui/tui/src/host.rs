@@ -176,6 +176,7 @@ pub(crate) fn build_agent(
     let _ = agent.enable_os_sandbox();
     apply_scope(&mut agent, Scope::Coding);
     attach_optional_engine(&mut agent);
+    isolate_agent(&mut agent);
     (agent, subagent_manager)
 }
 
@@ -195,6 +196,17 @@ fn attach_optional_engine(agent: &mut Agent) {
             agent.set_skill_engine(engine);
         }
     }
+    #[cfg(feature = "graph-memory")]
+    {
+        // Fresh in-memory graph per agent; never load a shared persist file.
+        agent.set_graph_memory(rx4::GraphMemory::new());
+        agent.enable_auto_dream(true);
+    }
+}
+
+/// Default ON: empty conversation + private memory for this TUI process.
+pub fn isolate_agent(agent: &mut Agent) {
+    agent.messages.write().clear();
     #[cfg(feature = "graph-memory")]
     {
         agent.set_graph_memory(rx4::GraphMemory::new());
@@ -219,6 +231,13 @@ mod tests {
             assert!(prefs_path().is_none());
             assert!(history_path().is_none());
         }
+    }
+
+    #[test]
+    fn isolate_agent_leaves_fresh_agent_empty() {
+        let mut agent = Agent::new();
+        isolate_agent(&mut agent);
+        assert!(agent.messages.read().is_empty());
     }
 
     #[test]

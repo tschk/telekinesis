@@ -9,4 +9,5 @@ dist/
 .env.local
 ui/tui/target/
 ui/gui/target/
+ui/router/target/
 .pi-subagents/

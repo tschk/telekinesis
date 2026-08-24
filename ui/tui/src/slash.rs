@@ -177,7 +177,7 @@ pub(crate) fn handle_slash_command(
             app.messages.push(ChatMessage {
                 role: "system".to_string(),
                 content: format!(
-                    "Commands: /providers (or /provider, /auth), /apikey <provider> (or /keys), /login [provider], /config, /model [name], {}, /plan <task>, /review [target], /sessions, /resume <n>, /subagent spawn|list|cancel, /budget [<cost>|cost <usd>|time <seconds>|turns <count>|clear], /plan-approval ask|bypass|off, /mcp, /search, /todo, /clear, /cost, /commands, /help, /quit\nKeys: / command suggestions (with descriptions): Up/Down select, Tab insert, Enter apply · /providers: type search, Enter details, Esc cancel · /model <partial> completes model names · model selector: type search (fuzzy, cross-provider), Left/Right provider, Up/Down model, Enter apply, Esc cancel · config menu: Up/Down select, Enter apply, Esc close · ←/→ cursor, Ctrl/Alt+←/→ word, Ctrl+A/E line start/end, Ctrl+K/U delete to end/start, Ctrl+W delete word, Ctrl+Z undo, Home/End line start/end · Alt+Shift+←/→ scope · Shift+Tab effort · Shift+Enter newline · Esc/Ctrl+C interrupt (Ctrl+C clears draft) · Ctrl+B header · Ctrl+L clear",
+                    "Commands: /providers (or /provider, /auth), /apikey <provider> (or /keys), /login [provider], /config, /model [name], {}, /plan <task>, /review [target], /sessions, /resume <n>, /subagent spawn|list|cancel, /budget [<cost>|cost <usd>|time <seconds>|turns <count>|clear], /plan-approval ask|bypass|off, /mcp, /search, /todo, /clear, /cost, /usage, /commands, /help, /quit\nKeys: / command suggestions (with descriptions): Up/Down select, Tab insert, Enter apply · /providers: type search, Enter details, Esc cancel · /model <partial> completes model names · model selector: type search (fuzzy, cross-provider), Left/Right provider, Up/Down model, Enter apply, Esc cancel · config menu: Up/Down select, Enter apply, Esc close · ←/→ cursor, Ctrl/Alt+←/→ word, Ctrl+A/E line start/end, Ctrl+K/U delete to end/start, Ctrl+W delete word, Ctrl+Z undo, Home/End line start/end · Alt+Shift+←/→ scope · Shift+Tab effort · Shift+Enter newline · Esc/Ctrl+C interrupt (Ctrl+C clears draft) · Ctrl+B header · Ctrl+L clear",
                     scope_usage().replacen("Usage: ", "", 1)
                 ),
                 is_tool: false,
@@ -284,6 +284,12 @@ pub(crate) fn handle_slash_command(
                     is_streaming: false,
                 });
             }
+        }
+        "/usage" => {
+            push_system_message(
+                app,
+                telekinesis_router::format_table(&telekinesis_router::load_log()),
+            );
         }
         "/cost" => {
             app.refresh_cost();
