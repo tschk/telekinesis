@@ -1074,6 +1074,8 @@ dependencies = [
 [[package]]
 name = "rs_ai_core"
 version = "0.2.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3aea8e877a8e860b22f62f5ad9dd0eb6b391ff1216a3194af1f51f6e0d11f94d"
 dependencies = [
  "async-trait",
  "base64",
@@ -1097,7 +1099,9 @@ dependencies = [
 
 [[package]]
 name = "rs_ai_providers"
-version = "0.2.31"
+version = "0.2.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56c47ca3361dfd3743076f4ef6c7cfb8bc3d52218506ff613566dd638826e880"
 dependencies = [
  "async-trait",
  "base64",
