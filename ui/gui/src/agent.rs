@@ -168,6 +168,7 @@ fn setup_provider(
                 OpenAIProvider::with_base_url(spec.base_url, key, spec.id, spec.name),
             ),
             telekinesis_router::ProviderApi::Anthropic => Arc::new(OpenAIProvider::anthropic(key)),
+            telekinesis_router::ProviderApi::Custom => continue,
         };
         return Some((client, model, spec.id.to_string()));
     }
