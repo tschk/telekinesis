@@ -503,6 +503,12 @@ pub(crate) struct App {
     /// Searchable provider/API-key catalog, distinct from runtime config.
     pub(crate) provider_menu_open: bool,
     pub(crate) provider_catalog_choice: usize,
+    /// OAuth login provider selector (crepuscularity-rendered).
+    pub(crate) login_menu_open: bool,
+    pub(crate) oauth_provider_choice: usize,
+    /// API-key detail overlay (crepuscularity-rendered help panel).
+    pub(crate) apikey_detail_open: bool,
+    pub(crate) apikey_detail_provider: Option<&'static provider_catalog::ProviderSpec>,
     /// Only the live TUI persists prefs; `App::new()` (tests) leaves them alone.
     pub(crate) prefs_enabled: bool,
     pub(crate) prompt_char: String,
@@ -597,6 +603,10 @@ impl App {
             config_choice: 0,
             provider_menu_open: false,
             provider_catalog_choice: 0,
+            login_menu_open: false,
+            oauth_provider_choice: 0,
+            apikey_detail_open: false,
+            apikey_detail_provider: None,
             prefs_enabled: false,
             prompt_char: ">".to_string(),
             agent_mode: "coding".to_string(),
@@ -1046,6 +1056,54 @@ impl App {
             Vec::new()
         };
         tpl.set("model_rows", TemplateValue::List(model_rows));
+        // OAuth login menu
+        tpl.set("login_menu_open", self.login_menu_open);
+        let login_rows: Vec<TemplateContext> = if self.login_menu_open {
+            rs_ai_oauth::OAuthProvider::all()
+                .iter()
+                .enumerate()
+                .map(|(index, oauth)| {
+                    let mut row = TemplateContext::new();
+                    let name = oauth.name();
+                    row.set("id", name);
+                    row.set(
+                        "display",
+                        match oauth {
+                            rs_ai_oauth::OAuthProvider::ChatGpt => "ChatGPT Codex",
+                            rs_ai_oauth::OAuthProvider::Xai => "xAI Grok",
+                            rs_ai_oauth::OAuthProvider::Claude => "Anthropic Claude",
+                            rs_ai_oauth::OAuthProvider::Gemini => "Google Gemini",
+                            rs_ai_oauth::OAuthProvider::Antigravity => "Antigravity",
+                            rs_ai_oauth::OAuthProvider::Copilot => "GitHub Copilot",
+                            rs_ai_oauth::OAuthProvider::Kimi => "Kimi",
+                        },
+                    );
+                    row.set(
+                        "configured",
+                        crate::providers::provider_is_configured(name),
+                    );
+                    row.set("selected", index == self.oauth_provider_choice);
+                    row
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        tpl.set("login_rows", TemplateValue::List(login_rows));
+        // API-key detail panel
+        tpl.set("apikey_detail_open", self.apikey_detail_open);
+        if let Some(provider) = self.apikey_detail_provider {
+            tpl.set("apikey_name", provider.name);
+            tpl.set("apikey_id", provider.id);
+            tpl.set("apikey_env", provider.env_vars.join(", "));
+            tpl.set("apikey_url", provider.base_url);
+            tpl.set("apikey_default_model", provider.default_model);
+            tpl.set("apikey_models", provider.models.join(", "));
+            tpl.set(
+                "apikey_configured",
+                provider_catalog::env_key(provider).is_some(),
+            );
+        }
         let file_rows = if self.file_suggestions.is_empty() {
             Vec::new()
         } else {
@@ -2136,6 +2194,43 @@ impl App {
         self.provider_menu_open = false;
         self.provider_catalog_choice = 0;
         self.clear_input();
+    }
+
+    pub(crate) fn open_login_menu(&mut self) {
+        self.close_config();
+        self.selecting_model = false;
+        self.login_menu_open = true;
+        self.oauth_provider_choice = 0;
+        self.clear_input();
+    }
+
+    pub(crate) fn close_login_menu(&mut self) {
+        self.login_menu_open = false;
+        self.oauth_provider_choice = 0;
+        self.clear_input();
+    }
+
+    pub(crate) fn move_login_choice(&mut self, delta: isize) {
+        let len = rs_ai_oauth::OAuthProvider::all().len();
+        if len != 0 {
+            self.oauth_provider_choice =
+                (self.oauth_provider_choice as isize + delta).rem_euclid(len as isize) as usize;
+        }
+    }
+
+    pub(crate) fn selected_oauth_provider(&self) -> Option<rs_ai_oauth::OAuthProvider> {
+        rs_ai_oauth::OAuthProvider::all().get(self.oauth_provider_choice).copied()
+    }
+
+    pub(crate) fn open_apikey_detail(&mut self, provider: &'static provider_catalog::ProviderSpec) {
+        self.close_provider_menu();
+        self.apikey_detail_open = true;
+        self.apikey_detail_provider = Some(provider);
+    }
+
+    pub(crate) fn close_apikey_detail(&mut self) {
+        self.apikey_detail_open = false;
+        self.apikey_detail_provider = None;
     }
 
     pub(crate) fn move_provider_catalog_choice(&mut self, delta: isize) {

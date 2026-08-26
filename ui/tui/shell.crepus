@@ -65,6 +65,53 @@ div w-full h-fit flex-col
           if {configured}
             span text-xs text-green-400
               "    configured"
+    else if {login_menu_open}
+      div h-fit flex-col
+        span text-sm text-indigo-400
+          "OAuth login · select a provider"
+        for oauth in {login_rows}
+          if {selected}
+            span text-sm text-indigo-300
+              "  › {display} ({id})"
+          else
+            span text-xs text-zinc-500
+              "    {display} ({id})"
+          if {configured}
+            span text-xs text-green-400
+              "    configured"
+        span text-xs text-zinc-600
+          "↑/↓ select · enter start browser login · esc cancel"
+    else if {apikey_detail_open}
+      div h-fit flex-col
+        span text-sm text-indigo-400
+          "{apikey_name} ({apikey_id})"
+        span text-xs text-zinc-500
+          "  status: "
+          if {apikey_configured}
+            span text-xs text-green-400
+              "configured"
+          else
+            span text-xs text-amber-400
+              "not configured"
+        span text-xs text-zinc-500
+          "  API key env: {apikey_env}"
+        span text-xs text-zinc-500
+          "  endpoint: {apikey_url}"
+        span text-xs text-zinc-500
+          "  default model: {apikey_default_model}"
+        span text-xs text-zinc-500
+          "  models: {apikey_models}"
+        div h-[1]
+        span text-xs text-zinc-600
+          "Set it in your shell, then restart tk:"
+        span text-xs text-indigo-400
+          "  export {apikey_env}='<your-api-key>'"
+        span text-xs text-zinc-600
+          "Use /model to select a configured provider's model."
+        span text-xs text-zinc-600
+          "Keys are read from the environment only."
+        span text-xs text-zinc-600
+          "esc close"
     else if {config_open}
       div h-fit flex-col
         span text-sm text-indigo-400

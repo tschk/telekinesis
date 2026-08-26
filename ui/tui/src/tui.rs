@@ -22,7 +22,7 @@ use crate::models::initial_model_registry;
 #[cfg(feature = "pi-compat")]
 use crate::pi::{self, PiEntryType, PiSession};
 use crate::providers::{
-    api_key_help, choose_provider, push_system_message, run_login, setup_providers,
+    choose_provider, push_system_message, run_login, run_login_from_tui, setup_providers,
 };
 use crate::slash::{clean_search_text, handle_slash_command};
 use crate::tools::discover_mcp_tools;
@@ -446,9 +446,8 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                             match key.code {
                                 KeyCode::Enter => {
                                     if let Some(provider) = app.selected_provider_catalog() {
-                                        let detail = api_key_help(provider);
                                         app.close_provider_menu();
-                                        push_system_message(&mut app, detail);
+                                        app.open_apikey_detail(provider);
                                     }
                                 }
                                 KeyCode::Esc => {
@@ -469,6 +468,36 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                                     app.reset_provider_catalog_choice();
                                 }
                                 _ => {}
+                            }
+                            continue;
+                        }
+                        (_code, _mods) if app.login_menu_open => {
+                            match key.code {
+                                KeyCode::Enter => {
+                                    if let Some(oauth) = app.selected_oauth_provider() {
+                                        app.close_login_menu();
+                                        let result = run_login_from_tui(Some(oauth.name()));
+                                        push_system_message(
+                                            &mut app,
+                                            match result {
+                                                Ok(()) => "Login complete. Restart tk to load the new provider.".to_string(),
+                                                Err(error) => format!("Login failed: {error}"),
+                                            },
+                                        );
+                                    }
+                                }
+                                KeyCode::Esc => {
+                                    app.close_login_menu();
+                                }
+                                KeyCode::Up => app.move_login_choice(-1),
+                                KeyCode::Down => app.move_login_choice(1),
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        (_code, _mods) if app.apikey_detail_open => {
+                            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                                app.close_apikey_detail();
                             }
                             continue;
                         }

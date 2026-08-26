@@ -15,7 +15,7 @@ use crate::mcp_config;
 #[cfg(feature = "pi-compat")]
 use crate::pi::{self, PiEntryType, PiSession};
 use crate::provider_catalog;
-use crate::providers::{api_key_help, providers_summary, push_system_message, run_login_from_tui};
+use crate::providers::{providers_summary, push_system_message, run_login_from_tui};
 #[cfg(feature = "pi-compat")]
 use crate::tui::{restored_chat, session_files};
 
@@ -212,21 +212,24 @@ pub(crate) fn handle_slash_command(
             });
         }
         "/login" => {
-            let provider = (!arg.is_empty()).then_some(arg);
-            let result = run_login_from_tui(provider);
-            push_system_message(
-                app,
-                match result {
-                    Ok(()) => "Login complete. Restart tk to load the new provider.".to_string(),
-                    Err(error) => format!("Login failed: {error}"),
-                },
-            );
+            if arg.is_empty() {
+                app.open_login_menu();
+            } else {
+                let result = run_login_from_tui(Some(arg));
+                push_system_message(
+                    app,
+                    match result {
+                        Ok(()) => "Login complete. Restart tk to load the new provider.".to_string(),
+                        Err(error) => format!("Login failed: {error}"),
+                    },
+                );
+            }
         }
         "/providers" | "/provider" | "/auth" => {
             if arg.is_empty() {
                 app.open_provider_menu();
             } else if let Some(provider) = provider_catalog::find(arg) {
-                push_system_message(app, api_key_help(provider));
+                app.open_apikey_detail(provider);
             } else {
                 push_system_message(
                     app,
@@ -236,7 +239,7 @@ pub(crate) fn handle_slash_command(
         }
         "/apikey" | "/keys" => {
             if let Some(provider) = provider_catalog::find(arg) {
-                push_system_message(app, api_key_help(provider));
+                app.open_apikey_detail(provider);
             } else if arg.is_empty() {
                 app.open_provider_menu();
             } else {
@@ -260,16 +263,19 @@ pub(crate) fn handle_slash_command(
                     push_system_message(app, summary);
                 }
                 "login" => {
-                    let provider = (!rest.is_empty()).then_some(rest);
-                    let result = run_login_from_tui(provider);
-                    push_system_message(
-                        app,
-                        match result {
-                            Ok(()) => "Login complete. Restart tk to load the new provider."
-                                .to_string(),
-                            Err(error) => format!("Login failed: {error}"),
-                        },
-                    );
+                    if rest.is_empty() {
+                        app.open_login_menu();
+                    } else {
+                        let result = run_login_from_tui(Some(rest));
+                        push_system_message(
+                            app,
+                            match result {
+                                Ok(()) => "Login complete. Restart tk to load the new provider."
+                                    .to_string(),
+                                Err(error) => format!("Login failed: {error}"),
+                            },
+                        );
+                    }
                 }
                 "model" if !rest.is_empty() => {
                     handle_slash_command(app, &format!("/model {rest}"), agent, tx);
