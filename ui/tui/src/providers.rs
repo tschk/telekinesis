@@ -94,11 +94,11 @@ pub(crate) fn api_key_help(provider: &provider_catalog::ProviderSpec) -> String 
         "{} ({})\n  status: {configured}\n  API key: {}\n  endpoint: {}\n  default model: {}\n  catalog: {}\n\nSet it in your shell, then restart tk:\n  export {}='<your-api-key>'\n\nUse /model to select a configured provider's model. Keys are read from the environment only and are never written to session files or preferences.",
         provider.name,
         provider.id,
-        provider.env,
+        provider.env_vars.join(", "),
         provider.base_url,
         provider.default_model,
         provider.models.join(", "),
-        provider.env,
+        provider.env_vars[0],
     )
 }
 
@@ -113,7 +113,7 @@ pub(crate) fn providers_summary(app: &App) -> String {
             };
             format!(
                 "  {name:<25} {status:<14} {}",
-                provider.env,
+                provider.env_vars.join(", "),
                 name = provider.name
             )
         })
@@ -303,24 +303,24 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
             .iter()
             .filter(|spec| !matches!(spec.id, "openai" | "xai" | "google"))
             .filter_map(|spec| {
-                provider_catalog::env_key(spec).map(|key| {
-                    let client: Arc<dyn Provider> = match spec.api {
-                        provider_catalog::ProviderApi::OpenAiCompatible => Arc::new(
-                            OpenAIProvider::with_base_url(spec.base_url, key, spec.id, spec.name),
-                        ),
-                        provider_catalog::ProviderApi::Anthropic => {
-                            Arc::new(OpenAIProvider::anthropic(key))
-                        }
-                    };
-                    (
-                        ConfiguredProvider {
-                            id: spec.id.to_string(),
-                            name: spec.name.to_string(),
-                            client,
-                        },
-                        spec.default_model.to_string(),
-                    )
-                })
+                let key = provider_catalog::env_key(spec)?;
+                let client: Arc<dyn Provider> = match spec.api {
+                    provider_catalog::ProviderApi::OpenAiCompatible => Arc::new(
+                        OpenAIProvider::with_base_url(spec.base_url, key, spec.id, spec.name),
+                    ),
+                    provider_catalog::ProviderApi::Anthropic => {
+                        Arc::new(OpenAIProvider::anthropic(key))
+                    }
+                    provider_catalog::ProviderApi::Custom => return None,
+                };
+                Some((
+                    ConfiguredProvider {
+                        id: spec.id.to_string(),
+                        name: spec.name.to_string(),
+                        client,
+                    },
+                    spec.default_model.to_string(),
+                ))
             }),
     );
     if let Some(key) = std::env::var("OPENROUTER_API_KEY")

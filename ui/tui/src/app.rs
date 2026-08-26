@@ -996,7 +996,7 @@ impl App {
                     let mut row = TemplateContext::new();
                     row.set("name", provider.name);
                     row.set("id", provider.id);
-                    row.set("env", provider.env);
+                    row.set("env", provider.env_vars.join(", "));
                     row.set("configured", provider_catalog::env_key(provider).is_some());
                     row.set("selected", index == self.provider_catalog_choice);
                     row
@@ -2116,7 +2116,7 @@ impl App {
                     "{} {} {} {} {}",
                     provider.id,
                     provider.name,
-                    provider.env,
+                    provider.env_vars.join(" "),
                     provider.aliases.join(" "),
                     provider.models.join(" ")
                 )
@@ -2438,7 +2438,7 @@ mod tests {
             assert!(super::provider_catalog::find(provider).is_some());
         }
         assert_eq!(
-            super::provider_catalog::find("claude").unwrap().env,
+            super::provider_catalog::find("claude").unwrap().env_vars[0],
             "ANTHROPIC_API_KEY"
         );
     }
@@ -3316,7 +3316,7 @@ mod tests {
         assert!(app
             .messages
             .iter()
-            .any(|message| message.content.contains("Commands:")));
+            .any(|message| message.content.contains("Commands\n")));
 
         app.messages.clear();
         handle_slash_command(&mut app, "/commands model", &agent, &tx);

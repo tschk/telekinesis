@@ -15,7 +15,7 @@ mod tests {
         let spec = find("clinepass").expect("id");
         assert_eq!(spec.id, "clinepass");
         assert_eq!(spec.base_url, "https://api.cline.bot/api/v1");
-        assert_eq!(spec.env, "CLINE_API_KEY");
+        assert_eq!(spec.env_vars, &["CLINE_API_KEY"]);
         assert_eq!(find("cline-pass").map(|p| p.id), Some("clinepass"));
         assert_eq!(find("Cline-pass").map(|p| p.id), Some("clinepass"));
     }

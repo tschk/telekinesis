@@ -177,7 +177,32 @@ pub(crate) fn handle_slash_command(
             app.messages.push(ChatMessage {
                 role: "system".to_string(),
                 content: format!(
-                    "Commands: /providers (or /provider, /auth), /apikey <provider> (or /keys), /login [provider], /config, /model [name], {}, /plan <task>, /review [target], /sessions, /resume <n>, /subagent spawn|list|cancel, /budget [<cost>|cost <usd>|time <seconds>|turns <count>|clear], /plan-approval ask|bypass|off, /mcp, /search, /todo, /clear, /cost, /usage, /commands, /help, /quit\nKeys: / command suggestions (with descriptions): Up/Down select, Tab insert, Enter apply · /providers: type search, Enter details, Esc cancel · /model <partial> completes model names · model selector: type search (fuzzy, cross-provider), Left/Right provider, Up/Down model, Enter apply, Esc cancel · config menu: Up/Down select, Enter apply, Esc close · ←/→ cursor, Ctrl/Alt+←/→ word, Ctrl+A/E line start/end, Ctrl+K/U delete to end/start, Ctrl+W delete word, Ctrl+Z undo, Home/End line start/end · Alt+Shift+←/→ scope · Shift+Tab effort · Shift+Enter newline · Esc/Ctrl+C interrupt (Ctrl+C clears draft) · Ctrl+B header · Ctrl+L clear",
+                    "Commands\n\
+                    /providers (or /provider, /auth) — browse providers\n\
+                    /apikey <provider> (or /keys) — show API-key setup\n\
+                    /login [provider] — OAuth sign in\n\
+                    /config — interactive config\n\
+                    /model [name] — switch model\n\
+                    {} — scope modes\n\
+                    /plan <task> — read-only plan\n\
+                    /review [target] — read-only review\n\
+                    /sessions — list saved sessions\n\
+                    /resume <n> — resume a session\n\
+                    /subagent spawn|list|cancel — manage subagents\n\
+                    /budget [cost|time|turns|clear] — usage limits\n\
+                    /plan-approval ask|bypass|off — plan gating\n\
+                    /mcp — MCP tools\n\
+                    /search — web search\n\
+                    /todo — session note\n\
+                    /clear — reset conversation\n\
+                    /cost — show cost\n\
+                    /usage — local usage stats\n\
+                    /commands [name] — command help\n\
+                    /help — this message\n\
+                    /quit (/exit) — exit\n\n\
+                    Keys: ↑/↓ select suggestion, Tab insert, Enter apply · \
+                    Esc/Ctrl+C interrupt · Ctrl+L clear · Shift+Enter newline \
+                    · Alt+Shift+←/→ scope · Shift+Tab effort · Ctrl+B header",
                     scope_usage().replacen("Usage: ", "", 1)
                 ),
                 is_tool: false,
