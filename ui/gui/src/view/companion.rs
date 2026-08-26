@@ -214,6 +214,7 @@ impl Render for CompanionView {
         let connected = snap.connected;
         let status: SharedString = snap.status.into();
         let provider: SharedString = snap.provider.into();
+        let usage: SharedString = snap.usage.into();
         let session_name: SharedString = snap.session_name.into();
         let computer_active = snap.computer_active;
         let coding_active = snap.coding_active;

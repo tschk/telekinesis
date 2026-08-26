@@ -49,7 +49,7 @@ pub(crate) const SESSION_PERSIST_INTERVAL: std::time::Duration =
 
 /// (command, description) — pi-style autocomplete shows the description next
 /// to each command name.
-pub(crate) const SLASH_COMMANDS: [(&str, &str); 23] = [
+pub(crate) const SLASH_COMMANDS: [(&str, &str); 24] = [
     ("/login", "sign in with a provider"),
     ("/providers", "browse and configure providers"),
     ("/provider", "alias for /providers"),
@@ -90,6 +90,7 @@ pub(crate) const SLASH_COMMANDS: [(&str, &str); 23] = [
     ("/todo", "session todo note"),
     ("/clear", "clear messages and reset cost"),
     ("/cost", "show cost breakdown"),
+    ("/usage", "local request/token totals per provider"),
     (
         "/commands",
         "list commands (with /commands <name> for usage)",
@@ -502,6 +503,12 @@ pub(crate) struct App {
     /// Searchable provider/API-key catalog, distinct from runtime config.
     pub(crate) provider_menu_open: bool,
     pub(crate) provider_catalog_choice: usize,
+    /// OAuth login provider selector (crepuscularity-rendered).
+    pub(crate) login_menu_open: bool,
+    pub(crate) oauth_provider_choice: usize,
+    /// API-key detail overlay (crepuscularity-rendered help panel).
+    pub(crate) apikey_detail_open: bool,
+    pub(crate) apikey_detail_provider: Option<&'static provider_catalog::ProviderSpec>,
     /// Only the live TUI persists prefs; `App::new()` (tests) leaves them alone.
     pub(crate) prefs_enabled: bool,
     pub(crate) prompt_char: String,
@@ -596,6 +603,10 @@ impl App {
             config_choice: 0,
             provider_menu_open: false,
             provider_catalog_choice: 0,
+            login_menu_open: false,
+            oauth_provider_choice: 0,
+            apikey_detail_open: false,
+            apikey_detail_provider: None,
             prefs_enabled: false,
             prompt_char: ">".to_string(),
             agent_mode: "coding".to_string(),
@@ -937,6 +948,15 @@ impl App {
         }
     }
 
+    pub(crate) fn active_provider_id(&self) -> String {
+        if let Some(provider) = self.providers.get(self.provider_choice) {
+            return provider.id.clone();
+        }
+        telekinesis_router::infer_from_model(&self.model)
+            .map(|spec| spec.id.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
     pub(crate) fn refresh_cost(&mut self) {
         let total = self
             .agent
@@ -986,8 +1006,11 @@ impl App {
                     let mut row = TemplateContext::new();
                     row.set("name", provider.name);
                     row.set("id", provider.id);
-                    row.set("env", provider.env);
-                    row.set("configured", provider_catalog::env_key(provider).is_some());
+                    row.set("env", provider.env_vars.join(", "));
+                    row.set(
+                        "configured",
+                        provider_catalog::resolve_key(provider).is_some(),
+                    );
                     row.set("selected", index == self.provider_catalog_choice);
                     row
                 })
@@ -1036,6 +1059,51 @@ impl App {
             Vec::new()
         };
         tpl.set("model_rows", TemplateValue::List(model_rows));
+        // OAuth login menu
+        tpl.set("login_menu_open", self.login_menu_open);
+        let login_rows: Vec<TemplateContext> = if self.login_menu_open {
+            rs_ai_oauth::OAuthProvider::all()
+                .iter()
+                .enumerate()
+                .map(|(index, oauth)| {
+                    let mut row = TemplateContext::new();
+                    let name = oauth.name();
+                    row.set("id", name);
+                    row.set(
+                        "display",
+                        match oauth {
+                            rs_ai_oauth::OAuthProvider::ChatGpt => "ChatGPT Codex",
+                            rs_ai_oauth::OAuthProvider::Xai => "xAI Grok",
+                            rs_ai_oauth::OAuthProvider::Claude => "Anthropic Claude",
+                            rs_ai_oauth::OAuthProvider::Gemini => "Google Gemini",
+                            rs_ai_oauth::OAuthProvider::Antigravity => "Antigravity",
+                            rs_ai_oauth::OAuthProvider::Copilot => "GitHub Copilot",
+                            rs_ai_oauth::OAuthProvider::Kimi => "Kimi",
+                        },
+                    );
+                    row.set("configured", crate::providers::provider_is_configured(name));
+                    row.set("selected", index == self.oauth_provider_choice);
+                    row
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        tpl.set("login_rows", TemplateValue::List(login_rows));
+        // API-key detail panel
+        tpl.set("apikey_detail_open", self.apikey_detail_open);
+        if let Some(provider) = self.apikey_detail_provider {
+            tpl.set("apikey_name", provider.name);
+            tpl.set("apikey_id", provider.id);
+            tpl.set("apikey_env", provider.env_vars.join(", "));
+            tpl.set("apikey_url", provider.base_url);
+            tpl.set("apikey_default_model", provider.default_model);
+            tpl.set("apikey_models", provider.models.join(", "));
+            tpl.set(
+                "apikey_configured",
+                provider_catalog::resolve_key(provider).is_some(),
+            );
+        }
         let file_rows = if self.file_suggestions.is_empty() {
             Vec::new()
         } else {
@@ -1111,6 +1179,10 @@ impl App {
         tpl.set("project", self.project.clone());
         tpl.set("branch", self.branch.clone());
         tpl.set("cost", format!("{:.3}", self.cost));
+        tpl.set(
+            "usage",
+            telekinesis_router::format_short(&telekinesis_router::load_log()),
+        );
         tpl.set("context_pct", self.context_pct.to_string());
         tpl.set("context_window", format_tokens(self.context_window));
         tpl.set("context_color", context_color(self.context_pct));
@@ -1422,6 +1494,13 @@ impl App {
                 self.output_tokens += usage.output_tokens;
                 self.cache_read_tokens += usage.cache_read_tokens;
                 self.cache_write_tokens += usage.cache_write_tokens;
+                let _ = telekinesis_router::record_turn(
+                    &self.active_provider_id(),
+                    usage.input_tokens as u64,
+                    usage.output_tokens as u64,
+                    usage.cache_read_tokens as u64,
+                    usage.cache_write_tokens as u64,
+                );
             }
             Rx4Event::CompactionStart { .. } => {
                 self.messages.push(ChatMessage {
@@ -2080,7 +2159,19 @@ impl App {
         }
     }
 
+    fn close_overlays(&mut self) {
+        self.config_open = false;
+        self.config_choice = 0;
+        self.provider_menu_open = false;
+        self.provider_catalog_choice = 0;
+        self.login_menu_open = false;
+        self.oauth_provider_choice = 0;
+        self.apikey_detail_open = false;
+        self.apikey_detail_provider = None;
+    }
+
     pub(crate) fn open_config(&mut self) {
+        self.close_overlays();
         self.config_open = true;
         self.config_choice = 0;
         self.clear_input();
@@ -2095,7 +2186,7 @@ impl App {
                     "{} {} {} {} {}",
                     provider.id,
                     provider.name,
-                    provider.env,
+                    provider.env_vars.join(" "),
                     provider.aliases.join(" "),
                     provider.models.join(" ")
                 )
@@ -2104,7 +2195,7 @@ impl App {
     }
 
     pub(crate) fn open_provider_menu(&mut self) {
-        self.close_config();
+        self.close_overlays();
         self.selecting_model = false;
         self.provider_menu_open = true;
         self.provider_catalog_choice = 0;
@@ -2115,6 +2206,46 @@ impl App {
         self.provider_menu_open = false;
         self.provider_catalog_choice = 0;
         self.clear_input();
+    }
+
+    pub(crate) fn open_login_menu(&mut self) {
+        self.close_overlays();
+        self.selecting_model = false;
+        self.login_menu_open = true;
+        self.oauth_provider_choice = 0;
+        self.clear_input();
+    }
+
+    pub(crate) fn close_login_menu(&mut self) {
+        self.login_menu_open = false;
+        self.oauth_provider_choice = 0;
+        self.clear_input();
+    }
+
+    pub(crate) fn move_login_choice(&mut self, delta: isize) {
+        let len = rs_ai_oauth::OAuthProvider::all().len();
+        if len != 0 {
+            self.oauth_provider_choice =
+                (self.oauth_provider_choice as isize + delta).rem_euclid(len as isize) as usize;
+        }
+    }
+
+    pub(crate) fn selected_oauth_provider(&self) -> Option<rs_ai_oauth::OAuthProvider> {
+        rs_ai_oauth::OAuthProvider::all()
+            .get(self.oauth_provider_choice)
+            .copied()
+    }
+
+    pub(crate) fn open_apikey_detail(&mut self, provider: &'static provider_catalog::ProviderSpec) {
+        self.close_overlays();
+        self.apikey_detail_open = true;
+        self.apikey_detail_provider = Some(provider);
+        self.clear_input();
+    }
+
+    pub(crate) fn close_apikey_detail(&mut self) {
+        self.apikey_detail_open = false;
+        self.apikey_detail_provider = None;
     }
 
     pub(crate) fn move_provider_catalog_choice(&mut self, delta: isize) {
@@ -2417,9 +2548,36 @@ mod tests {
             assert!(super::provider_catalog::find(provider).is_some());
         }
         assert_eq!(
-            super::provider_catalog::find("claude").unwrap().env,
+            super::provider_catalog::find("claude").unwrap().env_vars[0],
             "ANTHROPIC_API_KEY"
         );
+    }
+
+    #[test]
+    fn overlay_menus_are_exclusive() {
+        let mut app = App::new();
+        let spec = &super::provider_catalog::API_KEY_PROVIDERS[0];
+        app.open_provider_menu();
+        app.open_login_menu();
+        assert!(app.login_menu_open);
+        assert!(!app.provider_menu_open);
+        assert!(!app.config_open);
+        assert!(!app.apikey_detail_open);
+        app.open_apikey_detail(spec);
+        assert!(app.apikey_detail_open);
+        assert!(!app.login_menu_open);
+        assert!(!app.provider_menu_open);
+        assert!(!app.config_open);
+        app.open_config();
+        assert!(app.config_open);
+        assert!(!app.apikey_detail_open);
+        assert!(!app.login_menu_open);
+        assert!(!app.provider_menu_open);
+        app.open_provider_menu();
+        assert!(app.provider_menu_open);
+        assert!(!app.config_open);
+        assert!(!app.login_menu_open);
+        assert!(!app.apikey_detail_open);
     }
 
     #[test]
@@ -3295,7 +3453,7 @@ mod tests {
         assert!(app
             .messages
             .iter()
-            .any(|message| message.content.contains("Commands:")));
+            .any(|message| message.content.contains("Commands\n")));
 
         app.messages.clear();
         handle_slash_command(&mut app, "/commands model", &agent, &tx);

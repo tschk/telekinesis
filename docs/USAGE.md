@@ -75,6 +75,7 @@ model (used by the avo-lite adapter in [AVO.md](AVO.md)).
 | plan approval | whole-turn rx4 preview before tool execution; y/n in the TUI |
 | context usage bar | green/amber/red percentage of context window |
 | cost tracking | running cost in status bar, `/cost` for breakdown |
+| usage totals | local request/token counts per provider, `/usage` and status line |
 | themes | auto, dark, light, dracula, nord, gruvbox, tokyo-night, catppuccin |
 | streaming cursor | blinking cursor at end of streaming content |
 | role colors | user=blue, assistant=green, tool=amber, system=zinc |

@@ -90,6 +90,7 @@ pub struct AgentSession {
     pub streaming_content: String,
     pub busy: bool,
     pub model: String,
+    pub provider_id: String,
     pub context_pct: usize,
 }
 
@@ -114,6 +115,9 @@ impl AgentSession {
             streaming_content: String::new(),
             busy: false,
             model: model.to_string(),
+            provider_id: telekinesis_router::infer_from_model(model)
+                .map(|spec| spec.id.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
             context_pct: 0,
         }
     }
@@ -161,7 +165,16 @@ impl AgentSession {
                     .unwrap_or(0);
                 None
             }
-            Rx4Event::Usage { .. } => None,
+            Rx4Event::Usage { usage, .. } => {
+                let _ = telekinesis_router::record_turn(
+                    &self.provider_id,
+                    usage.input_tokens as u64,
+                    usage.output_tokens as u64,
+                    usage.cache_read_tokens as u64,
+                    usage.cache_write_tokens as u64,
+                );
+                None
+            }
             Rx4Event::CompactionStart { .. } => {
                 self.messages
                     .push(MessageItem::new("tool:context", "compacting"));
