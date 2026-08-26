@@ -113,10 +113,12 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
     let model = parsed
         .model
         .as_deref()
-        .map(|model| match crate::provider_catalog::by_id(&configured.id) {
-            Some(spec) => crate::provider_catalog::normalize_model(spec, model),
-            None => model.to_string(),
-        })
+        .map(
+            |model| match crate::provider_catalog::by_id(&configured.id) {
+                Some(spec) => crate::provider_catalog::normalize_model(spec, model),
+                None => model.to_string(),
+            },
+        )
         .unwrap_or(default_model);
     let (mut agent, _subagent_manager) = build_agent(
         Some(configured.client),
@@ -186,8 +188,7 @@ fn requested_provider(explicit: Option<&str>) -> Option<String> {
 }
 
 fn provider_matches(id: &str, name: &str, query: &str) -> bool {
-    crate::provider_catalog::find(query)
-        .is_some_and(|spec| spec.id == id)
+    crate::provider_catalog::find(query).is_some_and(|spec| spec.id == id)
         || id.eq_ignore_ascii_case(query)
         || name.eq_ignore_ascii_case(query)
 }
@@ -198,25 +199,42 @@ pub(crate) fn pick_configured_provider(
     explicit_model: Option<&str>,
 ) -> Option<(crate::app::ConfiguredProvider, String)> {
     let requested = requested_provider(explicit_provider).or_else(|| {
-        explicit_model.and_then(crate::provider_catalog::infer_from_model).map(|spec| spec.id.to_string())
+        explicit_model
+            .and_then(crate::provider_catalog::infer_from_model)
+            .map(|spec| spec.id.to_string())
     });
     if let Some(query) = requested {
-        return providers.into_iter().find(|(provider, _)| {
-            provider_matches(&provider.id, &provider.name, &query)
-        });
+        return providers
+            .into_iter()
+            .find(|(provider, _)| provider_matches(&provider.id, &provider.name, &query));
     }
     providers.into_iter().next()
 }
 
-fn missing_provider_message(explicit_provider: Option<&str>, explicit_model: Option<&str>) -> String {
+fn missing_provider_message(
+    explicit_provider: Option<&str>,
+    explicit_model: Option<&str>,
+) -> String {
     match requested_provider(explicit_provider).or_else(|| {
         explicit_model
             .and_then(crate::provider_catalog::infer_from_model)
             .map(|spec| spec.id.to_string())
     }) {
-        Some(id) => format!(
-            "provider {id} is not configured; set CLINE_API_KEY or run with a key OpenCode already stored"
-        ),
+        Some(id) => {
+            let hint = crate::provider_catalog::find(&id)
+                .map(|spec| {
+                    let env = spec.env_vars.join(" or ");
+                    if spec.id == "clinepass" {
+                        format!("set {env} or reuse OpenCode auth.json")
+                    } else {
+                        format!("set {env}")
+                    }
+                })
+                .unwrap_or_else(|| {
+                    "run `tk login <provider>` or set that provider's API key".to_string()
+                });
+            format!("provider {id} is not configured; {hint}")
+        }
         None => "no provider credentials; run `tk login <provider>`".to_string(),
     }
 }
@@ -224,6 +242,22 @@ fn missing_provider_message(explicit_provider: Option<&str>, explicit_model: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_provider_message_matches_requested_provider() {
+        let groq = missing_provider_message(Some("groq"), None);
+        assert!(groq.contains("groq"));
+        assert!(groq.contains("GROQ_API_KEY"));
+        assert!(!groq.contains("CLINE_API_KEY"));
+        let cline = missing_provider_message(Some("clinepass"), None);
+        assert!(cline.contains("CLINE_API_KEY"));
+        assert!(cline.contains("OpenCode"));
+        let unknown = missing_provider_message(Some("not-a-provider"), None);
+        assert!(unknown.contains("not-a-provider"));
+        assert!(!unknown.contains("CLINE_API_KEY"));
+        let none = missing_provider_message(None, None);
+        assert!(none.contains("tk login"));
+    }
 
     #[test]
     fn no_yolo_is_opt_in_on_exec_args() {

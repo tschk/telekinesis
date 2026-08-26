@@ -27,6 +27,18 @@ pub fn opencode_auth_path() -> Option<std::path::PathBuf> {
     Some(data.join("opencode").join("auth.json"))
 }
 
+/// Env first, then OpenCode `auth.json` for Cline-pass.
+pub fn resolve_key(spec: &ProviderSpec) -> Option<String> {
+    env_key(spec).or_else(|| {
+        if spec.id != "clinepass" {
+            return None;
+        }
+        let path = opencode_auth_path()?;
+        let json = std::fs::read_to_string(path).ok()?;
+        cline_api_key_from_opencode_auth(&json)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +82,42 @@ mod tests {
             cline_api_key_from_opencode_auth(r#"{"cline-pass":{"type":"api","key":"  "}}"#),
             None
         );
+    }
+
+    #[test]
+    fn resolve_key_uses_opencode_auth_when_env_missing() {
+        let spec = find("clinepass").unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "tk-opencode-auth-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let auth = dir.join("auth.json");
+        std::fs::write(
+            &auth,
+            r#"{"cline-pass":{"type":"api","key":"sk-from-opencode"}}"#,
+        )
+        .unwrap();
+        let prev_auth = std::env::var_os("OPENCODE_AUTH_PATH");
+        let prev_key = std::env::var_os("CLINE_API_KEY");
+        std::env::set_var("OPENCODE_AUTH_PATH", &auth);
+        std::env::remove_var("CLINE_API_KEY");
+        assert_eq!(resolve_key(spec).as_deref(), Some("sk-from-opencode"));
+        std::env::set_var("CLINE_API_KEY", "sk-from-env");
+        assert_eq!(resolve_key(spec).as_deref(), Some("sk-from-env"));
+        match prev_auth {
+            Some(value) => std::env::set_var("OPENCODE_AUTH_PATH", value),
+            None => std::env::remove_var("OPENCODE_AUTH_PATH"),
+        }
+        match prev_key {
+            Some(value) => std::env::set_var("CLINE_API_KEY", value),
+            None => std::env::remove_var("CLINE_API_KEY"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

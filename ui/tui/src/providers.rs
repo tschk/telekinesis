@@ -66,7 +66,7 @@ pub(crate) fn run_login_from_tui(provider: Option<&str>) -> anyhow::Result<()> {
 
 pub(crate) fn provider_is_configured(provider: &str) -> bool {
     provider_catalog::find(provider)
-        .and_then(provider_catalog::env_key)
+        .and_then(provider_catalog::resolve_key)
         .is_some()
         || oauth_provider(provider)
             .and_then(|oauth| rs_ai_oauth::credentials::load(&oauth))
@@ -85,7 +85,7 @@ pub(crate) fn push_system_message(app: &mut App, content: impl Into<String>) {
 }
 
 pub(crate) fn api_key_help(provider: &provider_catalog::ProviderSpec) -> String {
-    let configured = if provider_catalog::env_key(provider).is_some() {
+    let configured = if provider_catalog::resolve_key(provider).is_some() {
         "configured in this process"
     } else {
         "not configured"
@@ -106,7 +106,7 @@ pub(crate) fn providers_summary(app: &App) -> String {
     let api_keys = provider_catalog::API_KEY_PROVIDERS
         .iter()
         .map(|provider| {
-            let status = if provider_catalog::env_key(provider).is_some() {
+            let status = if provider_catalog::resolve_key(provider).is_some() {
                 "configured"
             } else {
                 "not configured"
@@ -303,7 +303,7 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
             .iter()
             .filter(|spec| !matches!(spec.id, "openai" | "xai" | "google"))
             .filter_map(|spec| {
-                let key = provider_catalog::env_key(spec)?;
+                let key = provider_catalog::resolve_key(spec)?;
                 let client: Arc<dyn Provider> = match spec.api {
                     provider_catalog::ProviderApi::OpenAiCompatible => Arc::new(
                         OpenAIProvider::with_base_url(spec.base_url, key, spec.id, spec.name),

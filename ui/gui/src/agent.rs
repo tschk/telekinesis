@@ -159,7 +159,7 @@ fn setup_provider(
         if matches!(spec.id, "openai" | "xai" | "google") {
             continue;
         }
-        let Some(key) = telekinesis_router::env_key(spec) else {
+        let Some(key) = telekinesis_router::resolve_key(spec) else {
             continue;
         };
         let model = telekinesis_router::normalize_model(spec, spec.default_model);

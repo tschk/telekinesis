@@ -1007,7 +1007,10 @@ impl App {
                     row.set("name", provider.name);
                     row.set("id", provider.id);
                     row.set("env", provider.env_vars.join(", "));
-                    row.set("configured", provider_catalog::env_key(provider).is_some());
+                    row.set(
+                        "configured",
+                        provider_catalog::resolve_key(provider).is_some(),
+                    );
                     row.set("selected", index == self.provider_catalog_choice);
                     row
                 })
@@ -1078,10 +1081,7 @@ impl App {
                             rs_ai_oauth::OAuthProvider::Kimi => "Kimi",
                         },
                     );
-                    row.set(
-                        "configured",
-                        crate::providers::provider_is_configured(name),
-                    );
+                    row.set("configured", crate::providers::provider_is_configured(name));
                     row.set("selected", index == self.oauth_provider_choice);
                     row
                 })
@@ -1101,7 +1101,7 @@ impl App {
             tpl.set("apikey_models", provider.models.join(", "));
             tpl.set(
                 "apikey_configured",
-                provider_catalog::env_key(provider).is_some(),
+                provider_catalog::resolve_key(provider).is_some(),
             );
         }
         let file_rows = if self.file_suggestions.is_empty() {
@@ -2159,7 +2159,19 @@ impl App {
         }
     }
 
+    fn close_overlays(&mut self) {
+        self.config_open = false;
+        self.config_choice = 0;
+        self.provider_menu_open = false;
+        self.provider_catalog_choice = 0;
+        self.login_menu_open = false;
+        self.oauth_provider_choice = 0;
+        self.apikey_detail_open = false;
+        self.apikey_detail_provider = None;
+    }
+
     pub(crate) fn open_config(&mut self) {
+        self.close_overlays();
         self.config_open = true;
         self.config_choice = 0;
         self.clear_input();
@@ -2183,7 +2195,7 @@ impl App {
     }
 
     pub(crate) fn open_provider_menu(&mut self) {
-        self.close_config();
+        self.close_overlays();
         self.selecting_model = false;
         self.provider_menu_open = true;
         self.provider_catalog_choice = 0;
@@ -2197,7 +2209,7 @@ impl App {
     }
 
     pub(crate) fn open_login_menu(&mut self) {
-        self.close_config();
+        self.close_overlays();
         self.selecting_model = false;
         self.login_menu_open = true;
         self.oauth_provider_choice = 0;
@@ -2219,13 +2231,16 @@ impl App {
     }
 
     pub(crate) fn selected_oauth_provider(&self) -> Option<rs_ai_oauth::OAuthProvider> {
-        rs_ai_oauth::OAuthProvider::all().get(self.oauth_provider_choice).copied()
+        rs_ai_oauth::OAuthProvider::all()
+            .get(self.oauth_provider_choice)
+            .copied()
     }
 
     pub(crate) fn open_apikey_detail(&mut self, provider: &'static provider_catalog::ProviderSpec) {
-        self.close_provider_menu();
+        self.close_overlays();
         self.apikey_detail_open = true;
         self.apikey_detail_provider = Some(provider);
+        self.clear_input();
     }
 
     pub(crate) fn close_apikey_detail(&mut self) {
@@ -2536,6 +2551,33 @@ mod tests {
             super::provider_catalog::find("claude").unwrap().env_vars[0],
             "ANTHROPIC_API_KEY"
         );
+    }
+
+    #[test]
+    fn overlay_menus_are_exclusive() {
+        let mut app = App::new();
+        let spec = &super::provider_catalog::API_KEY_PROVIDERS[0];
+        app.open_provider_menu();
+        app.open_login_menu();
+        assert!(app.login_menu_open);
+        assert!(!app.provider_menu_open);
+        assert!(!app.config_open);
+        assert!(!app.apikey_detail_open);
+        app.open_apikey_detail(spec);
+        assert!(app.apikey_detail_open);
+        assert!(!app.login_menu_open);
+        assert!(!app.provider_menu_open);
+        assert!(!app.config_open);
+        app.open_config();
+        assert!(app.config_open);
+        assert!(!app.apikey_detail_open);
+        assert!(!app.login_menu_open);
+        assert!(!app.provider_menu_open);
+        app.open_provider_menu();
+        assert!(app.provider_menu_open);
+        assert!(!app.config_open);
+        assert!(!app.login_menu_open);
+        assert!(!app.apikey_detail_open);
     }
 
     #[test]

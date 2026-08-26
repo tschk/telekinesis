@@ -1,7 +1,9 @@
 //! Local request/token activity per provider. Not invoices.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -107,17 +109,70 @@ pub fn load_log() -> UsageLog {
         .unwrap_or_default()
 }
 
-pub fn record_event(event: &UsageEvent) -> UsageLog {
-    let mut log = load_log();
-    log.record(event);
-    if let Some(path) = usage_path() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(raw) = serde_json::to_string_pretty(&log) {
-            let _ = std::fs::write(path, raw);
-        }
+static USAGE_MUTEX: Mutex<()> = Mutex::new(());
+
+#[cfg(unix)]
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
     }
+    const LOCK_EX: i32 = 2;
+    let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_exclusive(_file: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn lock_usage(path: &Path) -> Option<File> {
+    let lock_path = path.with_extension("json.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+        .ok()?;
+    let _ = lock_exclusive(&file);
+    Some(file)
+}
+
+fn write_log(path: &Path, log: &UsageLog) {
+    let Ok(raw) = serde_json::to_string_pretty(log) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, &raw).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::write(path, raw);
+    }
+}
+
+pub fn record_event(event: &UsageEvent) -> UsageLog {
+    let _in_process = USAGE_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(path) = usage_path() else {
+        let mut log = UsageLog::default();
+        log.record(event);
+        return log;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _file_lock = lock_usage(&path);
+    let mut log: UsageLog = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    log.record(event);
+    write_log(&path, &log);
     log
 }
 
@@ -181,15 +236,24 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static ISOLATE: AtomicU64 = AtomicU64::new(0);
+    static TEST_ENV: Mutex<()> = Mutex::new(());
 
     fn with_temp_log<F: FnOnce()>(f: F) {
+        let _guard = TEST_ENV
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let n = ISOLATE.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("tk-usage-test-{n}"));
+        let dir = std::env::temp_dir().join(format!("tk-usage-test-{}-{n}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("usage.json");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("json.lock"));
+        let _ = std::fs::remove_file(path.with_extension("json.tmp"));
         std::env::set_var("TELEKINESIS_USAGE_PATH", &path);
         f();
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("json.lock"));
+        let _ = std::fs::remove_file(path.with_extension("json.tmp"));
         std::env::remove_var("TELEKINESIS_USAGE_PATH");
     }
 
@@ -208,6 +272,27 @@ mod tests {
             assert!(table.contains("openai"));
             assert!(table.contains("3 req"));
             assert_eq!(format_short(&log), "3 req · 26 tok");
+        });
+    }
+
+    #[test]
+    fn concurrent_writers_keep_all_events() {
+        with_temp_log(|| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    std::thread::spawn(|| {
+                        for _ in 0..25 {
+                            record_turn("clinepass", 1, 0, 0, 0);
+                        }
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            let log = load_log();
+            assert_eq!(log.providers["clinepass"].requests, 200);
+            assert_eq!(log.providers["clinepass"].input_tokens, 200);
         });
     }
 
