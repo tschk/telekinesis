@@ -504,17 +504,9 @@ pub(crate) struct App {
     pub(crate) provider_menu_open: bool,
     pub(crate) provider_catalog_choice: usize,
     /// OAuth login provider selector (crepuscularity-rendered).
-    pub(crate) login_menu_open: bool,
-    pub(crate) oauth_provider_choice: usize,
-    /// API-key detail overlay (crepuscularity-rendered help panel).
-    pub(crate) apikey_detail_open: bool,
-    pub(crate) apikey_detail_provider: Option<&'static provider_catalog::ProviderSpec>,
-    /// API-key input mode: type a key and save to keychain.
-    pub(crate) apikey_input_open: bool,
-    pub(crate) apikey_edit_buffer: String,
-    /// Action selector in the API-key detail panel.
-    pub(crate) apikey_action_choice: usize,
-    pub(crate) apikey_status: Option<String>,
+    pub(crate) login_menu: crate::login_menu::LoginMenu,
+    /// API-key management panel (keychain save/delete) — see apikey.rs.
+    pub(crate) apikey: crate::apikey::ApikeyPanel,
     /// Only the live TUI persists prefs; `App::new()` (tests) leaves them alone.
     pub(crate) prefs_enabled: bool,
     pub(crate) prompt_char: String,
@@ -617,14 +609,8 @@ impl App {
             config_choice: 0,
             provider_menu_open: false,
             provider_catalog_choice: 0,
-            login_menu_open: false,
-            oauth_provider_choice: 0,
-            apikey_detail_open: false,
-            apikey_detail_provider: None,
-            apikey_input_open: false,
-            apikey_edit_buffer: String::new(),
-            apikey_action_choice: 0,
-            apikey_status: None,
+            login_menu: crate::login_menu::LoginMenu::default(),
+            apikey: crate::apikey::ApikeyPanel::default(),
             prefs_enabled: false,
             prompt_char: ">".to_string(),
             agent_mode: "coding".to_string(),
@@ -1077,79 +1063,9 @@ impl App {
             Vec::new()
         };
         tpl.set("model_rows", TemplateValue::List(model_rows));
-        // OAuth login menu
-        tpl.set("login_menu_open", self.login_menu_open);
-        let login_rows: Vec<TemplateContext> = if self.login_menu_open {
-            rs_ai_oauth::OAuthProvider::all()
-                .iter()
-                .enumerate()
-                .map(|(index, oauth)| {
-                    let mut row = TemplateContext::new();
-                    let name = oauth.name();
-                    row.set("id", name);
-                    row.set(
-                        "display",
-                        match oauth {
-                            rs_ai_oauth::OAuthProvider::ChatGpt => "ChatGPT Codex",
-                            rs_ai_oauth::OAuthProvider::Xai => "xAI Grok",
-                            rs_ai_oauth::OAuthProvider::Claude => "Anthropic Claude",
-                            rs_ai_oauth::OAuthProvider::Gemini => "Google Gemini",
-                            rs_ai_oauth::OAuthProvider::Antigravity => "Antigravity",
-                            rs_ai_oauth::OAuthProvider::Copilot => "GitHub Copilot",
-                            rs_ai_oauth::OAuthProvider::Kimi => "Kimi",
-                        },
-                    );
-                    row.set(
-                        "configured",
-                        crate::providers::provider_is_configured(name),
-                    );
-                    row.set("selected", index == self.oauth_provider_choice);
-                    row
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        tpl.set("login_rows", TemplateValue::List(login_rows));
+        self.login_menu.set_template(tpl);
         // API-key detail panel
-        tpl.set("apikey_detail_open", self.apikey_detail_open);
-        tpl.set("apikey_input_open", self.apikey_input_open);
-        tpl.set("apikey_edit_buffer", self.apikey_edit_buffer.clone());
-        let apikey_action_rows: Vec<TemplateContext> = if self.apikey_detail_open
-            && !self.apikey_input_open
-        {
-            self.apikey_actions()
-                .into_iter()
-                .enumerate()
-                .map(|(index, action)| {
-                    let mut row = TemplateContext::new();
-                    row.set("action", action);
-                    row.set("selected", index == self.apikey_action_choice);
-                    row
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        tpl.set(
-            "apikey_action_rows",
-            TemplateValue::List(apikey_action_rows),
-        );
-        tpl.set(
-            "apikey_status",
-            self.apikey_status.clone().unwrap_or_default(),
-        );
-        if let Some(provider) = self.apikey_detail_provider {
-            tpl.set("apikey_name", provider.name);
-            tpl.set("apikey_id", provider.id);
-            tpl.set("apikey_env", provider.env_vars.join(", "));
-            tpl.set("apikey_url", provider.base_url);
-            tpl.set("apikey_default_model", provider.default_model);
-            tpl.set("apikey_models", provider.models.join(", "));
-            let configured = provider_catalog::env_key(provider).is_some();
-            tpl.set("apikey_configured", configured);
-            tpl.set("apikey_has_keychain", provider_catalog::has_provider_key(provider.id));
-        }
+        self.apikey.set_template(tpl);
         let file_rows = if self.file_suggestions.is_empty() {
             Vec::new()
         } else {
@@ -2294,107 +2210,8 @@ impl App {
     pub(crate) fn open_login_menu(&mut self) {
         self.close_config();
         self.selecting_model = false;
-        self.login_menu_open = true;
-        self.oauth_provider_choice = 0;
+        self.login_menu.open();
         self.clear_input();
-    }
-
-    pub(crate) fn close_login_menu(&mut self) {
-        self.login_menu_open = false;
-        self.oauth_provider_choice = 0;
-        self.clear_input();
-    }
-
-    pub(crate) fn move_login_choice(&mut self, delta: isize) {
-        let len = rs_ai_oauth::OAuthProvider::all().len();
-        if len != 0 {
-            self.oauth_provider_choice =
-                (self.oauth_provider_choice as isize + delta).rem_euclid(len as isize) as usize;
-        }
-    }
-
-    pub(crate) fn selected_oauth_provider(&self) -> Option<rs_ai_oauth::OAuthProvider> {
-        rs_ai_oauth::OAuthProvider::all().get(self.oauth_provider_choice).copied()
-    }
-
-    pub(crate) fn open_apikey_detail(&mut self, provider: &'static provider_catalog::ProviderSpec) {
-        self.close_provider_menu();
-        self.apikey_detail_open = true;
-        self.apikey_detail_provider = Some(provider);
-    }
-
-    pub(crate) fn close_apikey_detail(&mut self) {
-        self.apikey_detail_open = false;
-        self.apikey_detail_provider = None;
-        self.apikey_input_open = false;
-        self.apikey_edit_buffer.clear();
-        self.apikey_action_choice = 0;
-        self.apikey_status = None;
-    }
-
-    /// Actions shown in the detail panel: always Save + Close, Delete only
-    /// when a keychain entry exists.
-    pub(crate) fn apikey_actions(&self) -> Vec<&'static str> {
-        let mut actions = vec!["Save API key", "Close"];
-        if let Some(provider) = self.apikey_detail_provider {
-            if provider_catalog::has_provider_key(provider.id) {
-                actions.insert(1, "Delete key");
-            }
-        }
-        actions
-    }
-
-    pub(crate) fn move_apikey_action(&mut self, delta: isize) {
-        let len = self.apikey_actions().len();
-        if len != 0 {
-            self.apikey_action_choice =
-                (self.apikey_action_choice as isize + delta).rem_euclid(len as isize) as usize;
-        }
-    }
-
-    pub(crate) fn open_apikey_input(&mut self) {
-        self.apikey_input_open = true;
-        self.apikey_edit_buffer.clear();
-    }
-
-    /// Run the highlighted action. Returns a status message.
-    pub(crate) fn run_apikey_action(&mut self) -> Option<String> {
-        let action = *self.apikey_actions().get(self.apikey_action_choice)?;
-        match action {
-            "Save API key" => {
-                self.open_apikey_input();
-                None
-            }
-            "Delete key" => {
-                if let Some(provider) = self.apikey_detail_provider {
-                    let result =
-                        provider_catalog::delete_provider_key(provider.id);
-                    Some(match result {
-                        Ok(()) => format!("Deleted {} key from keychain.", provider.name),
-                        Err(e) => format!("Delete failed: {e}"),
-                    })
-                } else {
-                    None
-                }
-            }
-            _ => {
-                self.close_apikey_detail();
-                None
-            }
-        }
-    }
-
-    pub(crate) fn commit_apikey_input(&mut self) -> Result<(), String> {
-        let key = self.apikey_edit_buffer.trim().to_string();
-        if key.is_empty() {
-            return Err("key cannot be empty".into());
-        }
-        if let Some(provider) = self.apikey_detail_provider {
-            provider_catalog::save_provider_key(provider.id, &key)?;
-            self.apikey_input_open = false;
-            self.apikey_edit_buffer.clear();
-        }
-        Ok(())
     }
 
     pub(crate) fn move_provider_catalog_choice(&mut self, delta: isize) {
@@ -2709,7 +2526,7 @@ mod tests {
         app.input = "opencode".to_string();
         app.reset_provider_catalog_choice();
         assert_eq!(app.selected_provider_catalog().unwrap().id, "opencode-go");
-        let details = crate::providers::api_key_help(app.selected_provider_catalog().unwrap());
+        let details = crate::apikey::help_text(app.selected_provider_catalog().unwrap());
         assert!(details.contains("OPENCODE_API_KEY"));
         assert!(details.contains("never written"));
     }

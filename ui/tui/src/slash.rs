@@ -229,7 +229,7 @@ pub(crate) fn handle_slash_command(
             if arg.is_empty() {
                 app.open_provider_menu();
             } else if let Some(provider) = provider_catalog::find(arg) {
-                app.open_apikey_detail(provider);
+                app.apikey.open(provider);
             } else {
                 push_system_message(
                     app,
@@ -239,7 +239,7 @@ pub(crate) fn handle_slash_command(
         }
         "/apikey" | "/keys" => {
             if let Some(provider) = provider_catalog::find(arg) {
-                app.open_apikey_detail(provider);
+                app.apikey.open(provider);
             } else if arg.is_empty() {
                 app.open_provider_menu();
             } else {

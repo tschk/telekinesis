@@ -377,7 +377,11 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
         if crossterm::event::poll(std::time::Duration::from_millis(100))? {
             match crossterm::event::read()? {
                 Event::Paste(pasted) => {
-                    app.paste(&pasted);
+                    if app.apikey.input_open {
+                        app.apikey.paste(&pasted);
+                    } else {
+                        app.paste(&pasted);
+                    }
                     if app.selecting_model {
                         app.reset_model_choice();
                     }
@@ -447,7 +451,7 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                                 KeyCode::Enter => {
                                     if let Some(provider) = app.selected_provider_catalog() {
                                         app.close_provider_menu();
-                                        app.open_apikey_detail(provider);
+                                        app.apikey.open(provider);
                                     }
                                 }
                                 KeyCode::Esc => {
@@ -471,11 +475,11 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                             }
                             continue;
                         }
-                        (_code, _mods) if app.login_menu_open => {
+                        (_code, _mods) if app.login_menu.open => {
                             match key.code {
                                 KeyCode::Enter => {
-                                    if let Some(oauth) = app.selected_oauth_provider() {
-                                        app.close_login_menu();
+                                    if let Some(oauth) = app.login_menu.selected() {
+                                        app.login_menu.close();
                                         let result = run_login_from_tui(Some(oauth.name()));
                                         push_system_message(
                                             &mut app,
@@ -487,61 +491,16 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                                     }
                                 }
                                 KeyCode::Esc => {
-                                    app.close_login_menu();
+                                    app.login_menu.close();
                                 }
-                                KeyCode::Up => app.move_login_choice(-1),
-                                KeyCode::Down => app.move_login_choice(1),
+                                KeyCode::Up => app.login_menu.move_choice(-1),
+                                KeyCode::Down => app.login_menu.move_choice(1),
                                 _ => {}
                             }
                             continue;
                         }
-                        (_code, _mods) if app.apikey_detail_open => {
-                            if app.apikey_input_open {
-                                match key.code {
-                                    KeyCode::Enter => {
-                                        match app.commit_apikey_input() {
-                                            Ok(()) => {
-                                                app.apikey_status = Some("Saved to OS keychain.".into());
-                                            }
-                                            Err(e) => {
-                                                app.apikey_status = Some(format!("Save failed: {e}"));
-                                                app.apikey_input_open = false;
-                                            }
-                                        }
-                                    }
-                                    KeyCode::Esc => {
-                                        app.apikey_input_open = false;
-                                        app.apikey_edit_buffer.clear();
-                                    }
-                                    KeyCode::Backspace => {
-                                        app.apikey_edit_buffer.pop();
-                                    }
-                                    KeyCode::Char(c) => {
-                                        app.apikey_edit_buffer.push(c);
-                                    }
-                                    _ => {}
-                                }
-                            } else if app.apikey_status.is_some() {
-                                match key.code {
-                                    KeyCode::Esc => app.close_apikey_detail(),
-                                    _ => {
-                                        app.apikey_status = None;
-                                        app.apikey_action_choice = 0;
-                                    }
-                                }
-                            } else {
-                                match key.code {
-                                    KeyCode::Esc => app.close_apikey_detail(),
-                                    KeyCode::Enter => {
-                                        if let Some(status) = app.run_apikey_action() {
-                                            app.apikey_status = Some(status);
-                                        }
-                                    }
-                                    KeyCode::Up => app.move_apikey_action(-1),
-                                    KeyCode::Down => app.move_apikey_action(1),
-                                    _ => {}
-                                }
-                            }
+                        (_code, _mods) if app.apikey.open => {
+                            app.apikey.handle_key(key.code);
                             continue;
                         }
                         (KeyCode::Enter, KeyModifiers::SHIFT) => {

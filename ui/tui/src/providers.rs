@@ -84,24 +84,6 @@ pub(crate) fn push_system_message(app: &mut App, content: impl Into<String>) {
     });
 }
 
-pub(crate) fn api_key_help(provider: &provider_catalog::ProviderSpec) -> String {
-    let configured = if provider_catalog::env_key(provider).is_some() {
-        "configured in this process"
-    } else {
-        "not configured"
-    };
-    format!(
-        "{} ({})\n  status: {configured}\n  API key: {}\n  endpoint: {}\n  default model: {}\n  catalog: {}\n\nSet it in your shell, then restart tk:\n  export {}='<your-api-key>'\n\nUse /model to select a configured provider's model. Keys are read from the environment only and are never written to session files or preferences.",
-        provider.name,
-        provider.id,
-        provider.env_vars.join(", "),
-        provider.base_url,
-        provider.default_model,
-        provider.models.join(", "),
-        provider.env_vars[0],
-    )
-}
-
 pub(crate) fn providers_summary(app: &App) -> String {
     let api_keys = provider_catalog::API_KEY_PROVIDERS
         .iter()
