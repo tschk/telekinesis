@@ -1,12 +1,12 @@
 [package]
 name = "telekinesis-router"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MPL-2.0"
 description = "Shared provider catalog, key resolution, and local usage totals"
 
 [dependencies]
-rs_ai_providers = "0.2"
+rs_ai_providers = "0.2.33"
 dirs = "6"
 keyring = "4"
 serde = { version = "1", features = ["derive"] }

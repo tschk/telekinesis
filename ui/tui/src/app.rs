@@ -498,8 +498,7 @@ pub(crate) struct App {
     pub(crate) plan_rx: Option<tokio::sync::mpsc::Receiver<PendingPlanApproval>>,
     pub(crate) approval_mode: Option<ApprovalMode>,
     /// Interactive `/config` menu state.
-    pub(crate) config_open: bool,
-    pub(crate) config_choice: usize,
+    pub(crate) config: crate::config_menu::ConfigMenu,
     /// Searchable provider/API-key catalog, distinct from runtime config.
     /// Searchable provider catalog menu — see provider_menu.rs.
     pub(crate) provider_menu: crate::provider_menu::ProviderMenu,
@@ -605,8 +604,7 @@ impl App {
             approval_rx: None,
             plan_rx: None,
             approval_mode: None,
-            config_open: false,
-            config_choice: 0,
+            config: crate::config_menu::ConfigMenu::default(),
             provider_menu: crate::provider_menu::ProviderMenu::default(),
             login_menu: crate::login_menu::LoginMenu::default(),
             apikey: crate::apikey::ApikeyPanel::default(),
@@ -984,24 +982,8 @@ impl App {
         tpl.set("effort", self.effort.clone());
         tpl.set("input_color", effort_color(&self.effort));
         tpl.set("selecting_model", self.selecting_model);
-        tpl.set("config_open", self.config_open);
         self.provider_menu.set_template(tpl, self.input.trim());
-        let config_rows = if self.config_open {
-            self.config_menu_rows()
-                .into_iter()
-                .enumerate()
-                .map(|(index, (label, hint))| {
-                    let mut row = TemplateContext::new();
-                    row.set("label", label);
-                    row.set("hint", hint);
-                    row.set("selected", index == self.config_choice);
-                    row
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        tpl.set("config_rows", TemplateValue::List(config_rows));
+        self.config.set_template(tpl, self);
         tpl.set(
             "selected_provider",
             self.providers
@@ -2116,27 +2098,6 @@ impl App {
         self.persist_prefs();
     }
 
-    pub(crate) fn config_menu_rows(&self) -> Vec<(String, &'static str)> {
-        vec![
-            (format!("model · {}", self.model), "open model selector"),
-            (
-                format!("scope · {}", self.agent_mode),
-                "cycle with the config menu or Alt+Shift+←/→",
-            ),
-            (
-                format!("effort · {}", self.effort),
-                "cycle reasoning effort",
-            ),
-            (
-                format!("providers · {}", self.provider_names()),
-                "log in with a new provider",
-            ),
-            (
-                "show configuration".to_string(),
-                "print the runtime summary",
-            ),
-        ]
-    }
     pub(crate) fn provider_names(&self) -> String {
         if self.providers.is_empty() {
             "none".to_string()
@@ -2150,8 +2111,7 @@ impl App {
     }
 
     pub(crate) fn open_config(&mut self) {
-        self.config_open = true;
-        self.config_choice = 0;
+        self.config.open();
         self.clear_input();
     }
 
@@ -2175,17 +2135,12 @@ impl App {
     }
 
     pub(crate) fn close_config(&mut self) {
-        self.config_open = false;
-        self.config_choice = 0;
+        self.config.close();
     }
 
     pub(crate) fn move_config_choice(&mut self, delta: isize) {
-        let len = self.config_menu_rows().len();
-        if len == 0 {
-            return;
-        }
-        self.config_choice =
-            (self.config_choice as isize + delta).rem_euclid(len as isize) as usize;
+        let len = crate::config_menu::ConfigMenu::rows(self).len();
+        self.config.move_choice(delta, len);
     }
 
     /// Run the currently highlighted config-menu entry. Returns `true` when the
@@ -2195,7 +2150,7 @@ impl App {
         agent: &Arc<Mutex<Agent>>,
         tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
     ) -> bool {
-        match self.config_choice {
+        match self.config.choice() {
             0 => {
                 self.close_config();
                 self.open_model_selector();
@@ -3041,8 +2996,8 @@ mod tests {
 
         let mut template = load_template(None).unwrap();
         let mut app = App::new();
-        app.config_open = true;
-        app.config_choice = 1;
+        app.config.open();
+        for _ in 0..1 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
         app.messages.push(ChatMessage {
             role: "assistant".to_string(),
             content: String::new(),
@@ -3101,22 +3056,22 @@ mod tests {
     #[test]
     fn config_menu_opens_and_activates() {
         let mut app = App::new();
-        app.config_open = false;
+        app.config.close();
         app.open_config();
-        assert!(app.config_open);
-        assert_eq!(app.config_choice, 0);
+        assert!(app.config.open);
+        assert_eq!(app.config.choice(), 0);
         let agent = rx4::agent::Agent::new();
         let agent = Arc::new(Mutex::new(agent));
         let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         // Choice 1 cycles scope in place and keeps the menu open.
-        app.config_choice = 1;
+        while app.config.choice() != 1 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
         assert!(app.activate_config(&agent, &_tx));
-        assert!(app.config_open);
+        assert!(app.config.open);
         // Choice 4 shows the summary; a `false` return tells the caller to close.
-        app.config_choice = 4;
+        while app.config.choice() != 4 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
         assert!(!app.activate_config(&agent, &_tx));
         app.close_config();
-        assert!(!app.config_open);
+        assert!(!app.config.open);
         assert!(app.messages.iter().any(|m| m.role == "system"));
     }
 

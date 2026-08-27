@@ -1,5 +1,6 @@
 pub mod apikey;
 pub mod app;
+pub mod config_menu;
 pub mod login_menu;
 pub mod provider_menu;
 pub mod channel_approver;

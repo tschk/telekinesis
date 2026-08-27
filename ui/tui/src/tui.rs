@@ -277,6 +277,20 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     }
 
     let mut app = App::new();
+    // One-time key discovery from other harnesses (OpenCode auth.json).
+    if !telekinesis_router::already_imported() {
+        telekinesis_router::mark_imported();
+        match telekinesis_router::import_from_opencode() {
+            Ok(ids) if !ids.is_empty() => push_system_message(
+                &mut app,
+                format!(
+                    "Imported API keys from OpenCode into your OS keychain: {}",
+                    ids.join(", ")
+                ),
+            ),
+            _ => {}
+        }
+    }
     app.set_model(model);
     app.effort = effort;
     app.agent_mode = restored_scope
@@ -424,7 +438,7 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                         }
                     }
                     match (key.code, key.modifiers) {
-                        (_code, _mods) if app.config_open => {
+                        (_code, _mods) if app.config.open => {
                             match key.code {
                                 KeyCode::Enter => {
                                     if !app.activate_config(&agent, &event_tx) {

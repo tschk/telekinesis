@@ -2780,9 +2780,9 @@ dependencies = [
 
 [[package]]
 name = "rs_ai_providers"
-version = "0.2.32"
+version = "0.2.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56c47ca3361dfd3743076f4ef6c7cfb8bc3d52218506ff613566dd638826e880"
+checksum = "79b382731a6cc186bd0ce7c1dbfd562aab1d137b4bcf040c8926b61caa53d6fe"
 dependencies = [
  "async-trait",
  "base64",
@@ -3478,7 +3478,7 @@ dependencies = [
 
 [[package]]
 name = "telekinesis-router"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dirs",
  "keyring",
