@@ -190,6 +190,10 @@ pub fn print_help() {
 
 pub fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version") {
+        println!("tk {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     match parse_command(&args, interactive) {
         Ok(Command::Login { provider }) => run_login(provider.as_deref()),
