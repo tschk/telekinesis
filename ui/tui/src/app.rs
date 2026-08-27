@@ -1300,7 +1300,9 @@ impl App {
         let agent = agent.clone();
         tokio::spawn(async move {
             let mut agent = agent.lock().await;
+            crate::harness::sync_prewalk_model(&mut agent);
             let result = agent.prompt(&text).await;
+            crate::harness::sync_prewalk_model(&mut agent);
             if let Err(error) = result {
                 if !matches!(error, AgentError::Cancelled) {
                     let _ = tx.send(AppEvent::PromptFailed { prompt: text });

@@ -23,8 +23,10 @@ flowchart TD
 
 ## Wire
 
-- rx4 is consumed as a published Cargo dependency. Coordinated local work may
-  temporarily use a path dependency.
+- rx4 is consumed as a git dependency on `tschk/rotary` (`feat/rx4-agent-harness`
+  / `441ce52`) with `default-features = false`. The default `tk` surface keeps
+  `providers` + `builtin-tools` only. Hosts call rotary APIs; they do not own
+  hashline, prewalk, or AVO dialects.
 - `ui/tui/src/main.rs` currently imports rx4 directly and drives the loop
   in-process via tokio channels. A shared telekinesis host runtime is the
   target boundary for additional surfaces.
@@ -58,6 +60,13 @@ cd ui/tui && cargo check
 `Scope` (Coding/Research/Plan/Ask/ComputerUse), `ToolRegistry`,
 `register_builtin_tools`, `computer_use::register_tools`, `McpClient` (feature `mcp`).
 
+Harness APIs (do not reimplement):
+
+- `rx4::hashline` / `HashlineSight` — tagged reads; builtin `read` with
+  `"hashline": true` and `hashline_edit`
+- `rx4::prewalk::Prewalk` — `RX4_PREWALK`, `RX4_SMOL_MODEL`, `RX4_INVESTIGATE_MODEL`
+- `rx4::avo` — `objective_f`, `lineage_p_t`, `commit_if_better`, `StallDetector`
+
 Events: `Rx4Event` lifecycle (AgentStart, TurnStart, MessageStart/Delta/End,
 ToolCall, **ApprovalRequired** (includes `arguments`), ToolExecutionStart/End,
 TurnEnd, AgentEnd, Error) delivered over a tokio channel.
@@ -81,6 +90,9 @@ See the canonical decision record:
 | module | role |
 |---|---|
 | `agent` | event-driven loop, tool registry, streaming, parallel tool execution |
+| `hashline` | tagged reads + fail-closed PUT/CUT/MV/REM (`hashline_edit`) |
+| `prewalk` | investigate → apply model switch on first write |
+| `avo` | scored lineage, commit-if-better, stall detect |
 | `provider` | multi-provider openai-compatible client, websocket prewarming |
 | `tools` | builtins: read/write/edit/bash/grep/find/ls; scope lists also name spawn_agent/code_intel aliases |
 | `computer_use` | computer-use tools (`cu_*`, 13) via Praefectus |

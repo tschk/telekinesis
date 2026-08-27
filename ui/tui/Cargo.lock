@@ -2715,8 +2715,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "rx4"
 version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b222155db4bc48a7faaf84a530d982cc26be5c81ce4e2109fc7a0a6e54124461"
+source = "git+https://github.com/tschk/rotary.git?rev=580da854a7ddbc4f2937726c0f8e2b26290a5872#580da854a7ddbc4f2937726c0f8e2b26290a5872"
 dependencies = [
  "async-trait",
  "cancellation-token",

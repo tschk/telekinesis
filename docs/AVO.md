@@ -93,3 +93,5 @@ adapter contract and the host loop (lineage, ratchet, stall→supervisor, lock,
 never push).
 
 rx4 stays `default-features = false` with providers + builtin-tools only.
+
+## Engine helpers

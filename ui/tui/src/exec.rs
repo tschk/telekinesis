@@ -6,6 +6,7 @@ use rx4::agent::Event as Rx4Event;
 use rx4::provider::Role;
 use rx4::ModelRegistry;
 
+use crate::harness::{apply_prewalk_exec_env, sync_prewalk_model};
 use crate::host::build_agent;
 use crate::models::host_model_info;
 use crate::providers::setup_providers;
@@ -18,8 +19,35 @@ pub struct ExecArgs {
     pub cwd: Option<PathBuf>,
     pub help: bool,
     pub no_yolo: bool,
-    pub model: Option<String>,
+pub model: Option<String>,
     pub provider: Option<String>,
+    pub effort: Option<String>,
+    pub mcp: bool,
+    pub prewalk: bool,
+    pub smol_model: Option<String>,
+    pub investigate_model: Option<String>,
+}
+
+pub fn parse_effort_level(value: &str) -> Result<String, String> {
+    match value {
+        "low" | "medium" | "high" | "xhigh" => Ok(value.to_string()),
+        _ => Err(format!(
+            "effort must be low, medium, high, or xhigh (got {value})"
+        )),
+    }
+}
+
+/// Flag wins; otherwise `TK_EFFORT` if it is a known level; else `low` for headless.
+pub fn resolve_exec_effort(explicit: Option<&str>) -> String {
+    if let Some(value) = explicit {
+        return value.to_string();
+    }
+    std::env::var("TK_EFFORT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| parse_effort_level(&value).ok())
+        .unwrap_or_else(|| "low".to_string())
 }
 
 fn exec_help() {
@@ -32,12 +60,28 @@ fn exec_help() {
     eprintln!("OPTIONS:");
     eprintln!("  --json          Emit {{\"ok\",\"text\",\"error\"}} on stdout instead of prose");
     eprintln!("  --cwd <dir>     Workspace to run against (default: current directory)");
-    eprintln!("  --provider <id> Use a configured provider (or TK_PROVIDER / model prefix)");
+eprintln!("  --provider <id> Use a configured provider (or TK_PROVIDER / model prefix)");
     eprintln!("  --model <name>  Override that provider's default model");
+    eprintln!("  --effort <lvl>  Reasoning effort: low (default), medium, high, xhigh");
+    eprintln!("  --thinking <lvl>  Alias for --effort (matches Codex/Pi flag names)");
+    eprintln!("  --mcp           Discover and register MCP tools (skipped by default)");
     eprintln!("  --no-yolo       Deny Ask-class tools (default non-TTY/exec is AlwaysAllow)");
+    eprintln!("  --prewalk       Enable rx4 prewalk (or set RX4_PREWALK=1)");
+    eprintln!("  --smol-model <name>  Apply model after the first write (RX4_SMOL_MODEL)");
+    eprintln!("  --investigate-model <name>  Plan model (RX4_INVESTIGATE_MODEL)");
     eprintln!("  --help          Show this help");
     eprintln!();
     eprintln!("Only the final text goes to stdout; status and errors go to stderr.");
+}
+
+/// Codex SSE/body decode and similar transport failures that are worth one retry.
+pub fn is_transient_provider_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    (lower.contains("stream")
+        && (lower.contains("decod") || lower.contains("read failed")))
+        || lower.contains("error decoding response body")
+        || lower.contains("connection reset")
+        || lower.contains("unexpected eof")
 }
 
 fn exec_failure(json: bool, message: &str) -> ! {
@@ -56,6 +100,11 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         exec_help();
         return Ok(());
     }
+    apply_prewalk_exec_env(
+        parsed.prewalk,
+        parsed.smol_model.as_deref(),
+        parsed.investigate_model.as_deref(),
+    );
     let json = parsed.json;
 
     if let Some(dir) = &parsed.cwd {
@@ -85,10 +134,9 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         exec_failure(json, "empty prompt");
     }
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let discover = rt.spawn(discover_mcp_tools());
     let providers = setup_providers(&rt);
     let Some((configured, default_model)) = pick_configured_provider(
         providers,
@@ -100,13 +148,15 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
             &missing_provider_message(parsed.provider.as_deref(), parsed.model.as_deref()),
         );
     };
-    let (mcp, errors) = match rt.block_on(discover) {
-        Ok(result) => result,
-        Err(error) => exec_failure(json, &format!("MCP discover failed: {error}")),
+    let mcp = if parsed.mcp {
+        let (mcp, errors) = rt.block_on(discover_mcp_tools());
+        for error in errors {
+            eprintln!("· {error}");
+        }
+        mcp
+    } else {
+        Vec::new()
     };
-    for error in errors {
-        eprintln!("· {error}");
-    }
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let configured_id = configured.id.clone();
@@ -118,10 +168,11 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
             None => model.to_string(),
         })
         .unwrap_or(default_model);
+    let effort = resolve_exec_effort(parsed.effort.as_deref());
     let (mut agent, _subagent_manager) = build_agent(
         Some(configured.client),
         &model,
-        "high",
+        &effort,
         workspace.clone(),
         ModelRegistry::from_models([host_model_info(&configured_id, &model)]),
         &mcp,
@@ -139,13 +190,21 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
     });
 
     eprintln!(
-        "· {} / {} in {}",
+        "· {} / {} / {} in {}",
         configured.name,
         model,
+        effort,
         workspace.display()
     );
 
-    let result = rt.block_on(agent.prompt(&prompt));
+    sync_prewalk_model(&mut agent);
+    let mut result = rt.block_on(agent.prompt(&prompt));
+    if let Err(error) = &result {
+        if is_transient_provider_error(&error.to_string()) {
+            eprintln!("· retrying once after transient provider error: {error}");
+            result = rt.block_on(agent.prompt(&prompt));
+        }
+    }
     if let Err(error) = result {
         exec_failure(json, &error.to_string());
     }
@@ -231,10 +290,32 @@ mod tests {
         assert!(!yolo.no_yolo);
         assert_eq!(yolo.model, None);
         assert_eq!(yolo.provider, None);
+        assert_eq!(yolo.effort, None);
+        assert!(!yolo.mcp);
         let denied = ExecArgs {
             no_yolo: true,
             ..ExecArgs::default()
         };
         assert!(denied.no_yolo);
+    }
+
+    #[test]
+    fn transient_provider_error_matches_codex_stream_decode() {
+        assert!(is_transient_provider_error(
+            "provider error: api error: codex stream read failed: error decoding response body"
+        ));
+        assert!(is_transient_provider_error("error decoding response body"));
+        assert!(!is_transient_provider_error("no provider credentials; run `tk login`"));
+        assert!(!is_transient_provider_error("empty prompt"));
+    }
+
+    #[test]
+    fn exec_effort_defaults_to_low_and_accepts_known_levels() {
+        for level in ["low", "medium", "high", "xhigh"] {
+            assert_eq!(parse_effort_level(level).unwrap(), level);
+        }
+        assert!(parse_effort_level("turbo").is_err());
+        assert_eq!(resolve_exec_effort(Some("high")), "high");
+        assert_eq!(resolve_exec_effort(Some("low")), "low");
     }
 }

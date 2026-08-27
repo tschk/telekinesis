@@ -52,6 +52,11 @@ Default non-TTY / `tk exec` is yolo (`AlwaysAllow`); `--no-yolo` denies
 Ask-class tools. `--model` overrides the first configured provider's default
 model (used by the AVO loop in [AVO.md](AVO.md)).
 
+Builtin `read` accepts `"hashline": true`; `hashline_edit` applies the
+engine script. Set `RX4_PREWALK=1` and `RX4_SMOL_MODEL` to investigate on the
+current (or `RX4_INVESTIGATE_MODEL`) model and switch one-way after the first
+write. AVO helpers are `rx4::avo` — see [AVO.md](AVO.md).
+
 ## OAuth providers
 
 | provider | flag |

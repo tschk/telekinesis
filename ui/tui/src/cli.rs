@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use crate::exec::{run_exec, ExecArgs};
+use crate::exec::{parse_effort_level, run_exec, ExecArgs};
 use crate::providers::run_login;
 use crate::tui::run_tui;
 
@@ -35,6 +35,15 @@ fn parse_run_args(args: &[String], allow_prompt: bool) -> Result<ExecArgs, Strin
             "--help" | "-h" => parsed.help = true,
             "--json" => parsed.json = true,
             "--no-yolo" => parsed.no_yolo = true,
+            "--mcp" => parsed.mcp = true,
+            "--effort" | "--thinking" => {
+                let flag = arg;
+                index += 1;
+                let level = args
+                    .get(index)
+                    .ok_or_else(|| format!("{flag} requires a level"))?;
+                parsed.effort = Some(parse_effort_level(level)?);
+            }
             "--model" => {
                 index += 1;
                 let model = args
@@ -61,6 +70,27 @@ fn parse_run_args(args: &[String], allow_prompt: bool) -> Result<ExecArgs, Strin
                     .get(index)
                     .ok_or_else(|| "--cwd requires a directory".to_string())?;
                 parsed.cwd = Some(PathBuf::from(dir));
+            }
+            "--prewalk" => parsed.prewalk = true,
+            "--smol-model" => {
+                index += 1;
+                let model = args
+                    .get(index)
+                    .ok_or_else(|| "--smol-model requires a name".to_string())?;
+                if model.is_empty() {
+                    return Err("--smol-model requires a name".to_string());
+                }
+                parsed.smol_model = Some(model.clone());
+            }
+            "--investigate-model" => {
+                index += 1;
+                let model = args
+                    .get(index)
+                    .ok_or_else(|| "--investigate-model requires a name".to_string())?;
+                if model.is_empty() {
+                    return Err("--investigate-model requires a name".to_string());
+                }
+                parsed.investigate_model = Some(model.clone());
             }
             "-" if allow_prompt => parsed.prompt = None,
             _ if is_continue_arg(arg) => {}
@@ -104,9 +134,9 @@ pub fn print_help() {
     println!("  tk              Start interactive TUI");
     println!("  tk -c           Continue newest session for this project");
     println!("  tk exec \"<prompt>\"   Run one turn headlessly, final text on stdout");
-    println!(
-        "                       (prompt from stdin with `-`; --json, --cwd <dir>, --provider <id>, --model <name>, --no-yolo)"
-    );
+    println!("                       (prompt from stdin with `-`; --json, --cwd <dir>, --provider <id>, --model <name>,");
+    println!("                       --effort|--thinking <low|medium|high|xhigh>, --mcp, --no-yolo,");
+    println!("                       --prewalk, --smol-model <name>, --investigate-model <name>)");
     println!("  tk --no-yolo    Headless stdin run that denies Ask-class tools");
     println!(
         "  tk login <provider>  OAuth login (openai, claude, grok, gemini, copilot, kimi, antigravity)"
@@ -129,8 +159,12 @@ pub fn print_help() {
     println!("  OPENROUTER_API_KEY  OpenRouter API key");
     println!("  CLINE_API_KEY       Cline-pass API key (or reuse OpenCode auth.json)");
     println!("  TK_PROVIDER         Default exec/TUI provider id (e.g. clinepass)");
+    println!("  TK_EFFORT           exec reasoning effort if --effort/--thinking omitted (default low)");
     println!("  TK_PLAN_APPROVAL    ask (default), off, or bypass whole-turn plans");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
+    println!("  RX4_PREWALK         1/true to enable investigate-then-apply");
+    println!("  RX4_SMOL_MODEL      apply model id after the first write");
+    println!("  RX4_INVESTIGATE_MODEL  optional plan/investigate model id");
     println!("                      (cu_* needs --features computer-use or full)");
     println!("                      (MCP needs --features mcp or full)");
     println!("                      (web_search needs --features search or full)");
@@ -213,6 +247,28 @@ mod tests {
     }
 
     #[test]
+    fn exec_parses_effort_thinking_alias_and_mcp() {
+        let parsed = parse_exec_args(&[
+            "--effort".into(),
+            "low".into(),
+            "--mcp".into(),
+            "task".into(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.effort.as_deref(), Some("low"));
+        assert!(parsed.mcp);
+        assert_eq!(parsed.prompt.as_deref(), Some("task"));
+        let alias = parse_exec_args(&["--thinking".into(), "xhigh".into(), "go".into()]).unwrap();
+        assert_eq!(alias.effort.as_deref(), Some("xhigh"));
+        assert!(!alias.mcp);
+        assert!(parse_exec_args(&["--effort".into()]).is_err());
+        assert!(parse_exec_args(&["--thinking".into(), "turbo".into()]).is_err());
+        let defaults = parse_exec_args(&["task".into()]).unwrap();
+        assert_eq!(defaults.effort, None);
+        assert!(!defaults.mcp);
+    }
+
+    #[test]
     fn exec_parses_model_for_avo_driver_and_supervisor() {
         let parsed =
             parse_exec_args(&["--model".into(), "grok-4.5".into(), "task".into()]).unwrap();
@@ -239,6 +295,24 @@ mod tests {
         );
         assert!(parse_exec_args(&["--provider".into()]).is_err());
         assert!(parse_exec_args(&["--provider".into(), "".into(), "task".into()]).is_err());
+    }
+
+    #[test]
+    fn exec_parses_prewalk_flags() {
+        let parsed = parse_exec_args(&[
+            "--prewalk".into(),
+            "--smol-model".into(),
+            "smol".into(),
+            "--investigate-model".into(),
+            "big".into(),
+            "task".into(),
+        ])
+        .unwrap();
+        assert!(parsed.prewalk);
+        assert_eq!(parsed.smol_model.as_deref(), Some("smol"));
+        assert_eq!(parsed.investigate_model.as_deref(), Some("big"));
+        assert_eq!(parsed.prompt.as_deref(), Some("task"));
+        assert!(parse_exec_args(&["--smol-model".into()]).is_err());
     }
 
     #[test]
