@@ -512,6 +512,9 @@ pub(crate) struct App {
     /// API-key input mode: type a key and save to keychain.
     pub(crate) apikey_input_open: bool,
     pub(crate) apikey_edit_buffer: String,
+    /// Action selector in the API-key detail panel.
+    pub(crate) apikey_action_choice: usize,
+    pub(crate) apikey_status: Option<String>,
     /// Only the live TUI persists prefs; `App::new()` (tests) leaves them alone.
     pub(crate) prefs_enabled: bool,
     pub(crate) prompt_char: String,
@@ -620,6 +623,8 @@ impl App {
             apikey_detail_provider: None,
             apikey_input_open: false,
             apikey_edit_buffer: String::new(),
+            apikey_action_choice: 0,
+            apikey_status: None,
             prefs_enabled: false,
             prompt_char: ">".to_string(),
             agent_mode: "coding".to_string(),
@@ -1110,6 +1115,30 @@ impl App {
         tpl.set("apikey_detail_open", self.apikey_detail_open);
         tpl.set("apikey_input_open", self.apikey_input_open);
         tpl.set("apikey_edit_buffer", self.apikey_edit_buffer.clone());
+        let apikey_action_rows: Vec<TemplateContext> = if self.apikey_detail_open
+            && !self.apikey_input_open
+        {
+            self.apikey_actions()
+                .into_iter()
+                .enumerate()
+                .map(|(index, action)| {
+                    let mut row = TemplateContext::new();
+                    row.set("action", action);
+                    row.set("selected", index == self.apikey_action_choice);
+                    row
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        tpl.set(
+            "apikey_action_rows",
+            TemplateValue::List(apikey_action_rows),
+        );
+        tpl.set(
+            "apikey_status",
+            self.apikey_status.clone().unwrap_or_default(),
+        );
         if let Some(provider) = self.apikey_detail_provider {
             tpl.set("apikey_name", provider.name);
             tpl.set("apikey_id", provider.id);
@@ -2299,11 +2328,60 @@ impl App {
         self.apikey_detail_provider = None;
         self.apikey_input_open = false;
         self.apikey_edit_buffer.clear();
+        self.apikey_action_choice = 0;
+        self.apikey_status = None;
+    }
+
+    /// Actions shown in the detail panel: always Save + Close, Delete only
+    /// when a keychain entry exists.
+    pub(crate) fn apikey_actions(&self) -> Vec<&'static str> {
+        let mut actions = vec!["Save API key", "Close"];
+        if let Some(provider) = self.apikey_detail_provider {
+            if provider_catalog::has_provider_key(provider.id) {
+                actions.insert(1, "Delete key");
+            }
+        }
+        actions
+    }
+
+    pub(crate) fn move_apikey_action(&mut self, delta: isize) {
+        let len = self.apikey_actions().len();
+        if len != 0 {
+            self.apikey_action_choice =
+                (self.apikey_action_choice as isize + delta).rem_euclid(len as isize) as usize;
+        }
     }
 
     pub(crate) fn open_apikey_input(&mut self) {
         self.apikey_input_open = true;
         self.apikey_edit_buffer.clear();
+    }
+
+    /// Run the highlighted action. Returns a status message.
+    pub(crate) fn run_apikey_action(&mut self) -> Option<String> {
+        let action = *self.apikey_actions().get(self.apikey_action_choice)?;
+        match action {
+            "Save API key" => {
+                self.open_apikey_input();
+                None
+            }
+            "Delete key" => {
+                if let Some(provider) = self.apikey_detail_provider {
+                    let result =
+                        provider_catalog::delete_provider_key(provider.id);
+                    Some(match result {
+                        Ok(()) => format!("Deleted {} key from keychain.", provider.name),
+                        Err(e) => format!("Delete failed: {e}"),
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => {
+                self.close_apikey_detail();
+                None
+            }
+        }
     }
 
     pub(crate) fn commit_apikey_input(&mut self) -> Result<(), String> {

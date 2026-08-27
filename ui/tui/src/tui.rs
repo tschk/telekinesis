@@ -21,7 +21,6 @@ use crate::host::{self, apply_scope, load_prefs, parse_host_scope};
 use crate::models::initial_model_registry;
 #[cfg(feature = "pi-compat")]
 use crate::pi::{self, PiEntryType, PiSession};
-use crate::provider_catalog;
 use crate::providers::{
     choose_provider, push_system_message, run_login, run_login_from_tui, setup_providers,
 };
@@ -501,8 +500,13 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                                 match key.code {
                                     KeyCode::Enter => {
                                         match app.commit_apikey_input() {
-                                            Ok(()) => push_system_message(&mut app, "API key saved to OS keychain."),
-                                            Err(e) => push_system_message(&mut app, format!("Failed to save key: {e}")),
+                                            Ok(()) => {
+                                                app.apikey_status = Some("Saved to OS keychain.".into());
+                                            }
+                                            Err(e) => {
+                                                app.apikey_status = Some(format!("Save failed: {e}"));
+                                                app.apikey_input_open = false;
+                                            }
                                         }
                                     }
                                     KeyCode::Esc => {
@@ -517,22 +521,24 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                                     }
                                     _ => {}
                                 }
+                            } else if app.apikey_status.is_some() {
+                                match key.code {
+                                    KeyCode::Esc => app.close_apikey_detail(),
+                                    _ => {
+                                        app.apikey_status = None;
+                                        app.apikey_action_choice = 0;
+                                    }
+                                }
                             } else {
                                 match key.code {
-                                    KeyCode::Esc | KeyCode::Enter => {
-                                        app.close_apikey_detail();
-                                    }
-                                    KeyCode::Char('s') => {
-                                        app.open_apikey_input();
-                                    }
-                                    KeyCode::Char('d') => {
-                                        if let Some(provider) = app.apikey_detail_provider {
-                                            match provider_catalog::delete_provider_key(provider.id) {
-                                                Ok(()) => push_system_message(&mut app, "API key deleted from keychain."),
-                                                Err(e) => push_system_message(&mut app, format!("Failed to delete key: {e}")),
-                                            }
+                                    KeyCode::Esc => app.close_apikey_detail(),
+                                    KeyCode::Enter => {
+                                        if let Some(status) = app.run_apikey_action() {
+                                            app.apikey_status = Some(status);
                                         }
                                     }
+                                    KeyCode::Up => app.move_apikey_action(-1),
+                                    KeyCode::Down => app.move_apikey_action(1),
                                     _ => {}
                                 }
                             }
