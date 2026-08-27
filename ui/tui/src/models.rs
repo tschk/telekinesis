@@ -38,10 +38,12 @@ pub(crate) const PI_OPENAI_GPT5: [&str; 21] = [
 ];
 
 pub(crate) fn context_window_for_model(model: &str) -> usize {
-    // pi 0.83.0 context windows for models outside rx4's registry.
+    // pi 0.83.0 context windows for models outside rx4's registry; newer
+    // models synced from the models.dev snapshot (2026-08).
     if model.starts_with("gpt-5.5") || model.starts_with("gpt-5.6") {
         GPT_5_CONTEXT_WINDOW
     } else {
+        let lower = model.to_ascii_lowercase();
         match model {
             "gpt-5.4-pro" => GPT_5_CONTEXT_WINDOW,
             "gpt-5.4-nano" | "gpt-5-mini" | "gpt-5-nano" | "gpt-5-pro" | "gpt-5.1" | "gpt-5.2"
@@ -50,9 +52,56 @@ pub(crate) fn context_window_for_model(model: &str) -> usize {
             | "gpt-5.2-chat-latest"
             | "gpt-5.3-chat-latest"
             | "gpt-5.3-codex-spark" => 128_000,
-            _ => 128_000,
+            _ => context_from_family(&lower),
         }
     }
+}
+
+/// Prefix-based windows for the models.dev catalog generation. Matched on
+/// lowercased ids so provider prefixes (`cline-pass/…`) don't hide the family.
+fn context_from_family(lower: &str) -> usize {
+    const M1M: usize = 1_000_000;
+    const M2M: usize = 2_000_000;
+    if lower.starts_with("deepseek-v4") {
+        return M1M;
+    }
+    if lower.starts_with("deepseek") {
+        return M1M; // deepseek-chat/reasoner also 1M in models.dev
+    }
+    if lower.starts_with("grok-4.20") || lower.contains("grok-4-1-fast") {
+        return M2M;
+    }
+    if lower.starts_with("grok-4") || lower.starts_with("grok-3") {
+        return M1M;
+    }
+    if lower.starts_with("claude-opus-4") || lower.starts_with("claude-sonnet-4") {
+        return M1M;
+    }
+    if lower.starts_with("claude-haiku") {
+        return 200_000;
+    }
+    if lower.starts_with("gemini-3") || lower.starts_with("gemini-2.5") {
+        return 1_048_576;
+    }
+    if lower.starts_with("kimi-k2") {
+        return 262_144;
+    }
+    if lower.starts_with("minimax-m2") || lower.starts_with("minimax-m") {
+        return 204_800;
+    }
+    if lower.starts_with("qwen3.6-max") || lower.starts_with("qwen3.6-plus") {
+        return 262_144;
+    }
+    if lower.starts_with("qwen3.6") || lower.starts_with("qwen3.5") {
+        return M1M;
+    }
+    if lower.starts_with("glm-5") || lower.starts_with("glm-4") {
+        return 200_000;
+    }
+    if lower.starts_with("mimo-v2") {
+        return 256_000;
+    }
+    128_000
 }
 
 pub(crate) fn host_model_info(provider: &str, id: &str) -> ModelInfo {

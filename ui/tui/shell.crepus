@@ -183,7 +183,7 @@ div w-full h-fit flex-col
                 "    @{path}"
           span text-xs text-zinc-600
             "↑/↓ file · tab insert"
-      span text-sm text-{input_color}
+      span text-sm text-{prompt_color}
         "{prompt_char} {input_before}{cursor}{input_after}"
 
   div h-fit flex-col

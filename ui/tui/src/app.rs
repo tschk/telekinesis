@@ -1075,6 +1075,14 @@ impl App {
         );
         tpl.set("cursor", blink_cursor(self.cursor_start));
         tpl.set("prompt_char", self.prompt_char.clone());
+        // While the agent works, the prompt symbol itself becomes the
+        // activity indicator: braille spin frames in amber instead of `>`.
+        if self.busy {
+            tpl.set("prompt_char", spinner_frame(self.spinner_start));
+            tpl.set("prompt_color", "amber-400");
+        } else {
+            tpl.set("prompt_color", effort_color(&self.effort));
+        }
         tpl.set("agent_mode", self.agent_mode.clone());
         tpl.set("providers_connecting", self.providers_connecting);
         tpl.set("permission_prompt", self.permission_prompt);
