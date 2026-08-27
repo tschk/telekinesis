@@ -9,6 +9,7 @@ use crate::tui::run_tui;
 pub enum Command {
     Login { provider: Option<String> },
     Help,
+    Version,
     Exec(ExecArgs),
     Tui { continue_session: bool },
     Headless(ExecArgs),
@@ -120,6 +121,7 @@ pub fn parse_command(args: &[String], interactive: bool) -> Result<Command, Stri
         }),
         Some("exec") => Ok(Command::Exec(parse_exec_args(&rest[1..])?)),
         Some("--help") | Some("-h") => Ok(Command::Help),
+        Some("--version") => Ok(Command::Version),
         _ if interactive => Ok(Command::Tui {
             continue_session: rest.iter().any(|arg| is_continue_arg(arg)),
         }),
@@ -149,6 +151,7 @@ pub fn print_help() {
     println!("  /sessions /resume <n> List and switch JSONL sessions");
     println!("  /usage                Local request/token totals (not invoices)");
     println!("  tk --help       Show this help");
+    println!("  tk --version    Show version");
     println!();
     println!("ENVIRONMENT:");
     println!("  XAI_API_KEY         xAI Grok API key");
@@ -192,6 +195,10 @@ pub fn run() -> anyhow::Result<()> {
         Ok(Command::Login { provider }) => run_login(provider.as_deref()),
         Ok(Command::Help) => {
             print_help();
+            Ok(())
+        }
+        Ok(Command::Version) => {
+            println!("tk {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Ok(Command::Exec(exec)) => run_exec(exec),
