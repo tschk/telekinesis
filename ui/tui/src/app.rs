@@ -509,6 +509,9 @@ pub(crate) struct App {
     /// API-key detail overlay (crepuscularity-rendered help panel).
     pub(crate) apikey_detail_open: bool,
     pub(crate) apikey_detail_provider: Option<&'static provider_catalog::ProviderSpec>,
+    /// API-key input mode: type a key and save to keychain.
+    pub(crate) apikey_input_open: bool,
+    pub(crate) apikey_edit_buffer: String,
     /// Only the live TUI persists prefs; `App::new()` (tests) leaves them alone.
     pub(crate) prefs_enabled: bool,
     pub(crate) prompt_char: String,
@@ -615,6 +618,8 @@ impl App {
             oauth_provider_choice: 0,
             apikey_detail_open: false,
             apikey_detail_provider: None,
+            apikey_input_open: false,
+            apikey_edit_buffer: String::new(),
             prefs_enabled: false,
             prompt_char: ">".to_string(),
             agent_mode: "coding".to_string(),
@@ -1103,6 +1108,8 @@ impl App {
         tpl.set("login_rows", TemplateValue::List(login_rows));
         // API-key detail panel
         tpl.set("apikey_detail_open", self.apikey_detail_open);
+        tpl.set("apikey_input_open", self.apikey_input_open);
+        tpl.set("apikey_edit_buffer", self.apikey_edit_buffer.clone());
         if let Some(provider) = self.apikey_detail_provider {
             tpl.set("apikey_name", provider.name);
             tpl.set("apikey_id", provider.id);
@@ -1110,10 +1117,9 @@ impl App {
             tpl.set("apikey_url", provider.base_url);
             tpl.set("apikey_default_model", provider.default_model);
             tpl.set("apikey_models", provider.models.join(", "));
-            tpl.set(
-                "apikey_configured",
-                provider_catalog::env_key(provider).is_some(),
-            );
+            let configured = provider_catalog::env_key(provider).is_some();
+            tpl.set("apikey_configured", configured);
+            tpl.set("apikey_has_keychain", provider_catalog::has_provider_key(provider.id));
         }
         let file_rows = if self.file_suggestions.is_empty() {
             Vec::new()
@@ -2291,6 +2297,26 @@ impl App {
     pub(crate) fn close_apikey_detail(&mut self) {
         self.apikey_detail_open = false;
         self.apikey_detail_provider = None;
+        self.apikey_input_open = false;
+        self.apikey_edit_buffer.clear();
+    }
+
+    pub(crate) fn open_apikey_input(&mut self) {
+        self.apikey_input_open = true;
+        self.apikey_edit_buffer.clear();
+    }
+
+    pub(crate) fn commit_apikey_input(&mut self) -> Result<(), String> {
+        let key = self.apikey_edit_buffer.trim().to_string();
+        if key.is_empty() {
+            return Err("key cannot be empty".into());
+        }
+        if let Some(provider) = self.apikey_detail_provider {
+            provider_catalog::save_provider_key(provider.id, &key)?;
+            self.apikey_input_open = false;
+            self.apikey_edit_buffer.clear();
+        }
+        Ok(())
     }
 
     pub(crate) fn move_provider_catalog_choice(&mut self, delta: isize) {

@@ -1,8 +1,9 @@
 //! Re-export of the shared inference router catalog.
 
 pub use telekinesis_router::{
-    by_id, cline_api_key_from_opencode_auth, env_key, find, infer_from_model, normalize_model,
-    opencode_auth_path, ProviderApi, ProviderSpec, API_KEY_PROVIDERS,
+    by_id, cline_api_key_from_opencode_auth, delete_provider_key, env_key, find,
+    has_provider_key, infer_from_model, load_provider_key, normalize_model, opencode_auth_path,
+    save_provider_key, ProviderApi, ProviderSpec, API_KEY_PROVIDERS,
 };
 
 #[cfg(test)]

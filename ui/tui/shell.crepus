@@ -93,6 +93,9 @@ div w-full h-fit flex-col
           else
             span text-xs text-amber-400
               "not configured"
+        if {apikey_has_keychain}
+          span text-xs text-green-400
+            "  keychain: saved"
         span text-xs text-zinc-500
           "  API key env: {apikey_env}"
         span text-xs text-zinc-500
@@ -101,17 +104,22 @@ div w-full h-fit flex-col
           "  default model: {apikey_default_model}"
         span text-xs text-zinc-500
           "  models: {apikey_models}"
-        div h-[1]
-        span text-xs text-zinc-600
-          "Set it in your shell, then restart tk:"
-        span text-xs text-indigo-400
-          "  export {apikey_env}='<your-api-key>'"
-        span text-xs text-zinc-600
-          "Use /model to select a configured provider's model."
-        span text-xs text-zinc-600
-          "Keys are read from the environment only."
-        span text-xs text-zinc-600
-          "esc close"
+        if {apikey_input_open}
+          div h-[1]
+          span text-xs text-indigo-400
+            "Paste API key, then press Enter to save:"
+          span text-sm text-indigo-300
+            "  {apikey_edit_buffer}▌"
+          span text-xs text-zinc-600
+            "Esc cancel"
+        else
+          div h-[1]
+          span text-xs text-zinc-400
+            "s  save key to OS keychain"
+          span text-xs text-zinc-400
+            "d  delete key from keychain"
+          span text-xs text-zinc-600
+            "esc close"
     else if {config_open}
       div h-fit flex-col
         span text-sm text-indigo-400

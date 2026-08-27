@@ -8,5 +8,6 @@ description = "Shared provider catalog, key resolution, and local usage totals"
 [dependencies]
 rs_ai_providers = "0.2"
 dirs = "6"
+keyring = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
