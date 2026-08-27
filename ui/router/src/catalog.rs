@@ -23,25 +23,57 @@ pub fn env_key(spec: &ProviderSpec) -> Option<String> {
 pub fn save_provider_key(id: &str, key: &str) -> Result<(), String> {
     let entry = keyring::Entry::new("telekinesis", id)
         .map_err(|e| format!("keyring entry: {e}"))?;
-    entry.set_password(key).map_err(|e| format!("keyring set: {e}"))
+    entry.set_password(key).map_err(|e| format!("keyring set: {e}"))?;
+    invalidate_key_cache(id);
+    Ok(())
 }
 
 /// Load a provider's API key from the OS keychain.
+///
+/// Keychain reads are IPC and (for items not yet ACL-allowed) can raise a
+/// permission prompt. Menus render rows every frame, so results are cached
+/// for the process lifetime; save/delete invalidate the cache.
 pub fn load_provider_key(id: &str) -> Result<Option<String>, String> {
+    let cache = key_cache();
+    if let Some(cached) = cache.lock().unwrap().get(id) {
+        return Ok(cached.clone());
+    }
     let entry = keyring::Entry::new("telekinesis", id)
         .map_err(|e| format!("keyring entry: {e}"))?;
-    match entry.get_password() {
+    let value = match entry.get_password() {
         Ok(key) => Ok(Some(key)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(format!("keyring get: {e}")),
+    };
+    if let Ok(value) = &value {
+        cache.lock().unwrap().insert(id.to_string(), value.clone());
     }
+    value
+}
+
+fn key_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<String>>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Drop the cached keychain value for a provider (call after save/delete).
+pub fn invalidate_key_cache(id: &str) {
+    key_cache().lock().unwrap().remove(id);
 }
 
 /// Delete a provider's API key from the OS keychain.
 pub fn delete_provider_key(id: &str) -> Result<(), String> {
     let entry = keyring::Entry::new("telekinesis", id)
         .map_err(|e| format!("keyring entry: {e}"))?;
-    entry.delete_credential().map_err(|e| format!("keyring delete: {e}"))
+    let result = entry
+        .delete_credential()
+        .map_err(|e| format!("keyring delete: {e}"));
+    if result.is_ok() {
+        invalidate_key_cache(id);
+    }
+    result
 }
 
 /// Check if a provider has a key in the OS keychain.
