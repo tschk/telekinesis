@@ -7,7 +7,7 @@ use rx4::subagent::SubagentConfig;
 use tokio::sync::Mutex;
 
 use crate::app::{
-    slash_description, App, AppEvent, ChatMessage, MAX_BUDGET_DURATION_SECONDS, MAX_BUDGET_TURNS,
+    slash_description, App, AppEvent, MAX_BUDGET_DURATION_SECONDS, MAX_BUDGET_TURNS,
 };
 use crate::host::{apply_scope, parse_host_scope, scope_usage};
 #[cfg(feature = "mcp")]
@@ -174,9 +174,7 @@ pub(crate) fn handle_slash_command(
                 );
                 return;
             }
-            app.messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: format!(
+            push_system_message(app, format!(
                     "Commands\n\
                     /providers (or /provider, /auth) — browse providers\n\
                     /apikey <provider> (or /keys) — show API-key setup\n\
@@ -204,12 +202,7 @@ pub(crate) fn handle_slash_command(
                     Esc/Ctrl+C interrupt · Ctrl+L clear · Shift+Enter newline \
                     · Alt+Shift+←/→ scope · Shift+Tab effort · Ctrl+B header",
                     scope_usage().replacen("Usage: ", "", 1)
-                ),
-                is_tool: false,
-                tool_name: String::new(),
-                tool_call_id: String::new(),
-                is_streaming: false,
-            });
+                ));
         }
         "/login" => {
             if arg.is_empty() {
@@ -306,14 +299,7 @@ pub(crate) fn handle_slash_command(
                         agent.set_model(model);
                     }
                 }
-                app.messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: format!("Model set to: {arg}"),
-                    is_tool: false,
-                    tool_name: String::new(),
-                    tool_call_id: String::new(),
-                    is_streaming: false,
-                });
+                push_system_message(app, format!("Model set to: {arg}"));
             }
         }
         "/usage" => {
@@ -324,9 +310,7 @@ pub(crate) fn handle_slash_command(
         }
         "/cost" => {
             app.refresh_cost();
-            app.messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: format!(
+            push_system_message(app, format!(
                     "Input: {} tokens (cached reads: {}, cache writes: {}), Output: {} tokens, Cache hit: {:.1}%, Cost: ${:.4}",
                     app.input_tokens,
                     app.cache_read_tokens,
@@ -334,12 +318,7 @@ pub(crate) fn handle_slash_command(
                     app.output_tokens,
                     if app.input_tokens == 0 { 0.0 } else { app.cache_read_tokens as f64 * 100.0 / app.input_tokens as f64 },
                     app.cost
-                ),
-                is_tool: false,
-                tool_name: String::new(),
-                tool_call_id: String::new(),
-                is_streaming: false,
-            });
+                ));
         }
         "/sessions" => {
             #[cfg(feature = "pi-compat")]
@@ -452,25 +431,11 @@ pub(crate) fn handle_slash_command(
             }
             app.agent_mode = scope.name().to_string();
             app.persist_prefs();
-            app.messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: format!("Scope set to: {}", scope.name()),
-                is_tool: false,
-                tool_name: String::new(),
-                tool_call_id: String::new(),
-                is_streaming: false,
-            });
+            push_system_message(app, format!("Scope set to: {}", scope.name()));
         }
         "/plan" => {
             if arg.is_empty() {
-                app.messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: "Usage: /plan <task>".to_string(),
-                    is_tool: false,
-                    tool_name: String::new(),
-                    tool_call_id: String::new(),
-                    is_streaming: false,
-                });
+                push_system_message(app, "Usage: /plan <task>".to_string());
                 return;
             }
             if let Ok(mut agent) = agent.try_lock() {
@@ -541,14 +506,7 @@ pub(crate) fn handle_slash_command(
             }
         }
         "/todo" => {
-            app.messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: "/todo: host surface only. Engine may expose todo tool later — track work in chat or project TODO for now.".to_string(),
-                is_tool: false,
-                tool_name: String::new(),
-                tool_call_id: String::new(),
-                is_streaming: false,
-            });
+            push_system_message(app, "/todo: host surface only. Engine may expose todo tool later — track work in chat or project TODO for now.".to_string());
         }
         "/budget" => {
             let msg = if let Some(a) = &app.agent {
@@ -630,14 +588,7 @@ pub(crate) fn handle_slash_command(
                             .next()
                             .unwrap_or("subagent")
                             .to_string();
-                        app.messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: format!("Spawning subagent '{name}'..."),
-                            is_tool: false,
-                            tool_name: String::new(),
-                            tool_call_id: String::new(),
-                            is_streaming: false,
-                        });
+                        push_system_message(app, format!("Spawning subagent '{name}'..."));
                         let workspace =
                             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                         let result = mgr.lock().spawn_background(
@@ -649,35 +600,21 @@ pub(crate) fn handle_slash_command(
                             &prompt,
                             &workspace,
                         );
-                        app.messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: match result {
+                        push_system_message(app, match result {
                                 Ok(handle) => {
                                     format!("Subagent {name} running — id: {}", handle.id())
                                 }
                                 Err(error) => format!("Subagent error: {error}"),
-                            },
-                            is_tool: false,
-                            tool_name: String::new(),
-                            tool_call_id: String::new(),
-                            is_streaming: false,
-                        });
+                            });
                     } else {
-                        app.messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: "Subagent manager not initialized.".to_string(),
-                            is_tool: false,
-                            tool_name: String::new(),
-                            tool_call_id: String::new(),
-                            is_streaming: false,
-                        });
+                        push_system_message(app, "Subagent manager not initialized.".to_string());
                     }
                 }
                 "list" => {
-                    if let Some(mgr) = app.subagent_manager.as_ref() {
+                    let body = app.subagent_manager.as_ref().map(|mgr| {
                         let mgr = mgr.lock();
                         let handles = mgr.list();
-                        let body = if handles.is_empty() {
+                        if handles.is_empty() {
                             "No subagents.".to_string()
                         } else {
                             handles
@@ -695,63 +632,30 @@ pub(crate) fn handle_slash_command(
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n")
-                        };
-                        app.messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: body,
-                            is_tool: false,
-                            tool_name: String::new(),
-                            tool_call_id: String::new(),
-                            is_streaming: false,
-                        });
+                        }
+                    });
+                    if let Some(body) = body {
+                        push_system_message(app, body);
                     }
                 }
                 "cancel" => {
                     if rest.is_empty() {
-                        app.messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: "Usage: /subagent cancel <id>".to_string(),
-                            is_tool: false,
-                            tool_name: String::new(),
-                            tool_call_id: String::new(),
-                            is_streaming: false,
-                        });
+                        push_system_message(app, "Usage: /subagent cancel <id>".to_string());
                     } else if let Some(mgr) = app.subagent_manager.as_ref() {
                         let body = match mgr.lock().cancel(rest) {
                             Ok(()) => format!("Cancelled subagent {rest}."),
                             Err(e) => format!("Cancel failed: {e}"),
                         };
-                        app.messages.push(ChatMessage {
-                            role: "system".to_string(),
-                            content: body,
-                            is_tool: false,
-                            tool_name: String::new(),
-                            tool_call_id: String::new(),
-                            is_streaming: false,
-                        });
+                        push_system_message(app, body);
                     }
                 }
                 _ => {
-                    app.messages.push(ChatMessage {
-                        role: "system".to_string(),
-                        content: "Usage: /subagent spawn <prompt> | list | cancel <id>".to_string(),
-                        is_tool: false,
-                        tool_name: String::new(),
-                        tool_call_id: String::new(),
-                        is_streaming: false,
-                    });
+                    push_system_message(app, "Usage: /subagent spawn <prompt> | list | cancel <id>".to_string());
                 }
             }
         }
         _ => {
-            app.messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: format!("Unknown command: {command}. Type /help for available commands."),
-                is_tool: false,
-                tool_name: String::new(),
-                tool_call_id: String::new(),
-                is_streaming: false,
-            });
+            push_system_message(app, format!("Unknown command: {command}. Type /help for available commands."));
         }
     }
 }

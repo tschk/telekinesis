@@ -65,3 +65,32 @@ impl LoginMenu {
         tpl.set("login_rows", TemplateValue::List(rows));
     }
 }
+
+/// Key handling while the menu is open. `Some(msg)` after a completed login
+/// attempt — caller surfaces it as a system message.
+pub fn handle_key(app: &mut crate::app::App, code: crossterm::event::KeyCode) -> Option<String> {
+    match code {
+        crossterm::event::KeyCode::Enter => {
+            let name = app.login_menu.selected().map(|oauth| oauth.name().to_string())?;
+            app.login_menu.close();
+            let result = crate::providers::run_login_from_tui(Some(&name));
+            Some(match result {
+                Ok(()) => "Login complete. Restart tk to load the new provider.".to_string(),
+                Err(error) => format!("Login failed: {error}"),
+            })
+        }
+        crossterm::event::KeyCode::Esc => {
+            app.login_menu.close();
+            None
+        }
+        crossterm::event::KeyCode::Up => {
+            app.login_menu.move_choice(-1);
+            None
+        }
+        crossterm::event::KeyCode::Down => {
+            app.login_menu.move_choice(1);
+            None
+        }
+        _ => None,
+    }
+}

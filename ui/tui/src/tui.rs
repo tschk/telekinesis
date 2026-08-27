@@ -21,9 +21,7 @@ use crate::host::{self, apply_scope, load_prefs, parse_host_scope};
 use crate::models::initial_model_registry;
 #[cfg(feature = "pi-compat")]
 use crate::pi::{self, PiEntryType, PiSession};
-use crate::providers::{
-    choose_provider, push_system_message, run_login, run_login_from_tui, setup_providers,
-};
+use crate::providers::{choose_provider, push_system_message, run_login, setup_providers};
 use crate::slash::{clean_search_text, handle_slash_command};
 use crate::tools::discover_mcp_tools;
 
@@ -446,56 +444,14 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                             }
                             continue;
                         }
-                        (_code, _mods) if app.provider_menu_open => {
-                            match key.code {
-                                KeyCode::Enter => {
-                                    if let Some(provider) = app.selected_provider_catalog() {
-                                        app.close_provider_menu();
-                                        app.apikey.open(provider);
-                                    }
-                                }
-                                KeyCode::Esc => {
-                                    app.close_provider_menu();
-                                }
-                                KeyCode::Up => app.move_provider_catalog_choice(-1),
-                                KeyCode::Down => app.move_provider_catalog_choice(1),
-                                KeyCode::Backspace => {
-                                    app.delete_back_at_cursor();
-                                    app.reset_provider_catalog_choice();
-                                }
-                                KeyCode::Delete => {
-                                    app.delete_forward_at_cursor();
-                                    app.reset_provider_catalog_choice();
-                                }
-                                KeyCode::Char(character) => {
-                                    app.insert_at_cursor(&character.to_string());
-                                    app.reset_provider_catalog_choice();
-                                }
-                                _ => {}
-                            }
+                        (_code, _mods) if app.provider_menu.open => {
+                            crate::provider_menu::handle_key(&mut app, key.code);
                             continue;
                         }
                         (_code, _mods) if app.login_menu.open => {
-                            match key.code {
-                                KeyCode::Enter => {
-                                    if let Some(oauth) = app.login_menu.selected() {
-                                        app.login_menu.close();
-                                        let result = run_login_from_tui(Some(oauth.name()));
-                                        push_system_message(
-                                            &mut app,
-                                            match result {
-                                                Ok(()) => "Login complete. Restart tk to load the new provider.".to_string(),
-                                                Err(error) => format!("Login failed: {error}"),
-                                            },
-                                        );
-                                    }
-                                }
-                                KeyCode::Esc => {
-                                    app.login_menu.close();
-                                }
-                                KeyCode::Up => app.login_menu.move_choice(-1),
-                                KeyCode::Down => app.login_menu.move_choice(1),
-                                _ => {}
+                            if let Some(message) = crate::login_menu::handle_key(&mut app, key.code)
+                            {
+                                push_system_message(&mut app, message);
                             }
                             continue;
                         }

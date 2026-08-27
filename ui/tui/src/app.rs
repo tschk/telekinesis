@@ -501,8 +501,8 @@ pub(crate) struct App {
     pub(crate) config_open: bool,
     pub(crate) config_choice: usize,
     /// Searchable provider/API-key catalog, distinct from runtime config.
-    pub(crate) provider_menu_open: bool,
-    pub(crate) provider_catalog_choice: usize,
+    /// Searchable provider catalog menu — see provider_menu.rs.
+    pub(crate) provider_menu: crate::provider_menu::ProviderMenu,
     /// OAuth login provider selector (crepuscularity-rendered).
     pub(crate) login_menu: crate::login_menu::LoginMenu,
     /// API-key management panel (keychain save/delete) — see apikey.rs.
@@ -607,8 +607,7 @@ impl App {
             approval_mode: None,
             config_open: false,
             config_choice: 0,
-            provider_menu_open: false,
-            provider_catalog_choice: 0,
+            provider_menu: crate::provider_menu::ProviderMenu::default(),
             login_menu: crate::login_menu::LoginMenu::default(),
             apikey: crate::apikey::ApikeyPanel::default(),
             prefs_enabled: false,
@@ -986,7 +985,7 @@ impl App {
         tpl.set("input_color", effort_color(&self.effort));
         tpl.set("selecting_model", self.selecting_model);
         tpl.set("config_open", self.config_open);
-        tpl.set("provider_menu_open", self.provider_menu_open);
+        self.provider_menu.set_template(tpl, self.input.trim());
         let config_rows = if self.config_open {
             self.config_menu_rows()
                 .into_iter()
@@ -1003,26 +1002,6 @@ impl App {
             Vec::new()
         };
         tpl.set("config_rows", TemplateValue::List(config_rows));
-        let provider_rows = if self.provider_menu_open {
-            self.filtered_provider_catalog()
-                .into_iter()
-                .enumerate()
-                .skip(self.provider_catalog_choice.saturating_sub(3))
-                .take(7)
-                .map(|(index, provider)| {
-                    let mut row = TemplateContext::new();
-                    row.set("name", provider.name);
-                    row.set("id", provider.id);
-                    row.set("env", provider.env_vars.join(", "));
-                    row.set("configured", provider_catalog::env_key(provider).is_some());
-                    row.set("selected", index == self.provider_catalog_choice);
-                    row
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        tpl.set("provider_rows", TemplateValue::List(provider_rows));
         tpl.set(
             "selected_provider",
             self.providers
@@ -2176,34 +2155,15 @@ impl App {
         self.clear_input();
     }
 
-    pub(crate) fn filtered_provider_catalog(&self) -> Vec<&'static provider_catalog::ProviderSpec> {
-        fuzzy_filter(
-            provider_catalog::API_KEY_PROVIDERS,
-            self.input.trim(),
-            |provider| {
-                format!(
-                    "{} {} {} {} {}",
-                    provider.id,
-                    provider.name,
-                    provider.env_vars.join(" "),
-                    provider.aliases.join(" "),
-                    provider.models.join(" ")
-                )
-            },
-        )
-    }
-
     pub(crate) fn open_provider_menu(&mut self) {
         self.close_config();
         self.selecting_model = false;
-        self.provider_menu_open = true;
-        self.provider_catalog_choice = 0;
+        self.provider_menu.open = true;
         self.clear_input();
     }
 
     pub(crate) fn close_provider_menu(&mut self) {
-        self.provider_menu_open = false;
-        self.provider_catalog_choice = 0;
+        self.provider_menu.open = false;
         self.clear_input();
     }
 
@@ -2212,27 +2172,6 @@ impl App {
         self.selecting_model = false;
         self.login_menu.open();
         self.clear_input();
-    }
-
-    pub(crate) fn move_provider_catalog_choice(&mut self, delta: isize) {
-        let len = self.filtered_provider_catalog().len();
-        if len != 0 {
-            self.provider_catalog_choice =
-                (self.provider_catalog_choice as isize + delta).rem_euclid(len as isize) as usize;
-        }
-    }
-
-    pub(crate) fn reset_provider_catalog_choice(&mut self) {
-        let len = self.filtered_provider_catalog().len();
-        self.provider_catalog_choice = self.provider_catalog_choice.min(len.saturating_sub(1));
-    }
-
-    pub(crate) fn selected_provider_catalog(
-        &self,
-    ) -> Option<&'static provider_catalog::ProviderSpec> {
-        self.filtered_provider_catalog()
-            .get(self.provider_catalog_choice)
-            .copied()
     }
 
     pub(crate) fn close_config(&mut self) {
@@ -2524,11 +2463,12 @@ mod tests {
         let mut app = App::new();
         app.open_provider_menu();
         app.input = "opencode".to_string();
-        app.reset_provider_catalog_choice();
-        assert_eq!(app.selected_provider_catalog().unwrap().id, "opencode-go");
-        let details = crate::apikey::help_text(app.selected_provider_catalog().unwrap());
+        app.provider_menu.reset_choice(&app.input);
+        let selected = app.provider_menu.selected(&app.input).unwrap();
+        assert_eq!(selected.id, "opencode-go");
+        let details = crate::apikey::help_text(selected);
         assert!(details.contains("OPENCODE_API_KEY"));
-        assert!(details.contains("never written"));
+        assert!(details.contains("keychain"));
     }
 
     #[test]
