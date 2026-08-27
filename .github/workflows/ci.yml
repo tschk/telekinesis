@@ -61,6 +61,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: AVO adapters
         run: scripts/check-avo-adapters.sh
+      - name: AVO loop
+        run: scripts/check-avo-loop.sh
 
   gui:
     runs-on: ubuntu-latest
