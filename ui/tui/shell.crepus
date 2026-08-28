@@ -27,7 +27,7 @@ div w-full h-fit flex-col
         div h-fit flex-col
           if {is_thinking}
             span text-sm text-zinc-500
-              "· thinking{cursor}"
+              "· thinking"
           for line in {lines}
             span text-sm text-zinc-200
               "{text}"

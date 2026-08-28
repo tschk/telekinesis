@@ -2037,6 +2037,54 @@ impl App {
         }
     }
 
+    /// Select a model by id from anywhere (slash command, startup restore).
+    /// Switches the active provider when the model belongs to another one —
+    /// `/model deepseek-v4-flash` must route to Cline-pass, not Codex.
+    pub(crate) fn select_model(&mut self, model_id: &str) {
+        let choice = self
+            .model_choices
+            .iter()
+            .find(|choice| choice.id == model_id)
+            .cloned();
+        let choice = match choice {
+            Some(choice) => choice,
+            // Not in the picker (provider unconfigured or unprefixed id):
+            // keep the current provider, just set the model string.
+            None => {
+                self.set_model(model_id.to_string());
+                return;
+            }
+        };
+        let Some(provider) = self
+            .providers
+            .iter()
+            .find(|configured| configured.id == choice.provider)
+            .cloned()
+        else {
+            self.set_model(model_id.to_string());
+            return;
+        };
+        if let Some(index) = self
+            .providers
+            .iter()
+            .position(|configured| configured.id == provider.id)
+        {
+            self.provider_choice = index;
+        }
+        self.set_model(choice.id.clone());
+        if let Some(agent) = &self.agent {
+            if let Ok(mut agent) = agent.try_lock() {
+                agent.set_provider(provider.client.clone());
+                agent.set_model(choice.id.clone());
+            }
+        }
+        if let Some(manager) = &self.subagent_manager {
+            let mut manager = manager.lock();
+            manager.set_provider(provider.client);
+            manager.set_model(choice.id);
+        }
+    }
+
     pub(crate) fn set_model(&mut self, model: String) {
         self.model = model;
         self.context_window = self

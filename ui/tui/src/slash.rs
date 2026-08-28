@@ -293,12 +293,7 @@ pub(crate) fn handle_slash_command(
                     to: arg.to_string(),
                 });
                 let model = arg.to_string();
-                app.set_model(model.clone());
-                if let Some(a) = &app.agent {
-                    if let Ok(mut agent) = a.try_lock() {
-                        agent.set_model(model);
-                    }
-                }
+                app.select_model(&model);
                 push_system_message(app, format!("Model set to: {arg}"));
             }
         }
