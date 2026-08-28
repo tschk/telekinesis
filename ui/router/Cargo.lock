@@ -1099,9 +1099,9 @@ dependencies = [
 
 [[package]]
 name = "rs_ai_providers"
-version = "0.2.33"
+version = "0.2.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79b382731a6cc186bd0ce7c1dbfd562aab1d137b4bcf040c8926b61caa53d6fe"
+checksum = "256d97afb497b4623f1805e71dbddaf3f868efcab05032b58e57c31dc934d432"
 dependencies = [
  "async-trait",
  "base64",
@@ -1394,7 +1394,7 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "telekinesis-router"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dirs",
  "rs_ai_providers",
