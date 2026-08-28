@@ -1015,7 +1015,20 @@ impl App {
                 .take(5)
                 .map(|(index, model)| {
                     let mut row = TemplateContext::new();
-                    row.set("model_id", model.id.clone());
+                    // Same model id can exist at several providers — qualify
+                    // those rows so "deepseek-v4-flash" at Cline-pass reads
+                    // as clinepass/deepseek-v4-flash.
+                    let ambiguous = self.model_choices.iter().any(|other| {
+                        other.id == model.id && other.provider != model.provider
+                    });
+                    row.set(
+                        "model_id",
+                        if ambiguous {
+                            format!("{}/{}", model.provider, model.id)
+                        } else {
+                            model.id.clone()
+                        },
+                    );
                     row.set("selected", Some(index) == self.model_choice);
                     row
                 })
@@ -2038,17 +2051,49 @@ impl App {
     }
 
     /// Select a model by id from anywhere (slash command, startup restore).
-    /// Switches the active provider when the model belongs to another one —
-    /// `/model deepseek-v4-flash` must route to Cline-pass, not Codex.
+    /// Accepts bare ids (`deepseek-v4-flash`) and provider-qualified ids
+    /// (`clinepass/deepseek-v4-flash`, `cline/…` via aliases). Switches the
+    /// active provider when the model belongs to another one.
     pub(crate) fn select_model(&mut self, model_id: &str) {
-        let choice = self
-            .model_choices
-            .iter()
-            .find(|choice| choice.id == model_id)
-            .cloned();
+        let model_id = model_id.trim();
+        // Qualified form: strip a leading known provider prefix so
+        // "clinepass/x" and "cline/x" resolve to clinepass's copy of x.
+        // Ids that naturally contain slashes (openrouter/auto) are matched
+        // against the full remainder, so only a known provider prefix strips.
+        let qualified = model_id.split_once('/').and_then(|(prefix, rest)| {
+            provider_catalog::find(prefix)
+                .map(|spec| (spec.id.to_string(), rest.to_string()))
+        });
+        let choice = match qualified {
+            Some((provider_id, bare)) => self
+                .model_choices
+                .iter()
+                .find(|choice| choice.provider == provider_id && choice.id == bare)
+                .cloned(),
+            None => None,
+        }
+        .or_else(|| {
+            // Bare id: prefer a copy from the currently active provider, then
+            // the first configured provider that has it.
+            let current = self
+                .providers
+                .get(self.provider_choice)
+                .map(|configured| configured.id.clone());
+            self.model_choices
+                .iter()
+                .filter(|choice| choice.id == model_id)
+                .cloned()
+                .min_by_key(|choice| {
+                    if current.as_deref() == Some(choice.provider.as_str()) {
+                        0
+                    } else {
+                        1
+                    }
+                })
+        });
         let choice = match choice {
             Some(choice) => choice,
-            // Not in the picker (provider unconfigured or unprefixed id):
+            // Not in the picker (provider unconfigured or unknown id):
             // keep the current provider, just set the model string.
             None => {
                 self.set_model(model_id.to_string());

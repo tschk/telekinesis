@@ -19,64 +19,93 @@ pub fn env_key(spec: &ProviderSpec) -> Option<String> {
     load_provider_key(spec.id).ok().flatten()
 }
 
-/// Save a provider's API key to the OS keychain.
+/// File-backed key store: `~/.telekinesis/keys.json`, mode 0600.
+///
+/// Replaces the OS keychain: unsigned CLI binaries get re-prompted by the
+/// keychain on every rebuild, which users rightly hate. Same threat model
+/// as ~/.ssh keys — file permissions, no daemon prompts.
+///
+/// Reads are cached per process; menus render rows every frame.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
+fn key_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn store_path() -> Option<std::path::PathBuf> {
+    if let Some(explicit) = std::env::var_os("TELEKINESIS_KEYS_PATH") {
+        return Some(std::path::PathBuf::from(explicit));
+    }
+    dirs::home_dir().map(|home| home.join(".telekinesis").join("keys.json"))
+}
+
+fn load_store() -> HashMap<String, String> {
+    let Some(path) = store_path() else {
+        return HashMap::new();
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_store(keys: &HashMap<String, String>) -> Result<(), String> {
+    let Some(path) = store_path() else {
+        return Err("no home directory".into());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+    }
+    let raw = serde_json::to_string_pretty(keys).map_err(|e| format!("serialize: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, raw).map_err(|e| format!("write: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod: {e}"))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))
+}
+
+/// Save a provider's API key to the local key store.
 pub fn save_provider_key(id: &str, key: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new("telekinesis", id)
-        .map_err(|e| format!("keyring entry: {e}"))?;
-    entry.set_password(key).map_err(|e| format!("keyring set: {e}"))?;
-    invalidate_key_cache(id);
+    let mut keys = load_store();
+    keys.insert(id.to_string(), key.to_string());
+    save_store(&keys)?;
+    key_cache().lock().unwrap().insert(id.to_string(), Some(key.to_string()));
     Ok(())
 }
 
-/// Load a provider's API key from the OS keychain.
-///
-/// Keychain reads are IPC and (for items not yet ACL-allowed) can raise a
-/// permission prompt. Menus render rows every frame, so results are cached
-/// for the process lifetime; save/delete invalidate the cache.
+/// Load a provider's API key from the local key store (cached per process).
 pub fn load_provider_key(id: &str) -> Result<Option<String>, String> {
     let cache = key_cache();
     if let Some(cached) = cache.lock().unwrap().get(id) {
         return Ok(cached.clone());
     }
-    let entry = keyring::Entry::new("telekinesis", id)
-        .map_err(|e| format!("keyring entry: {e}"))?;
-    let value = match entry.get_password() {
-        Ok(key) => Ok(Some(key)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keyring get: {e}")),
-    };
-    if let Ok(value) = &value {
-        cache.lock().unwrap().insert(id.to_string(), value.clone());
-    }
-    value
+    let value = load_store().get(id).map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    cache.lock().unwrap().insert(id.to_string(), value.clone());
+    Ok(value)
 }
 
-fn key_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<String>>> {
-    static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
-    > = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
-/// Drop the cached keychain value for a provider (call after save/delete).
-pub fn invalidate_key_cache(id: &str) {
-    key_cache().lock().unwrap().remove(id);
-}
-
-/// Delete a provider's API key from the OS keychain.
+/// Delete a provider's API key from the local key store.
 pub fn delete_provider_key(id: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new("telekinesis", id)
-        .map_err(|e| format!("keyring entry: {e}"))?;
-    let result = entry
-        .delete_credential()
-        .map_err(|e| format!("keyring delete: {e}"));
-    if result.is_ok() {
-        invalidate_key_cache(id);
+    let mut keys = load_store();
+    let existed = keys.remove(id).is_some();
+    save_store(&keys)?;
+    key_cache().lock().unwrap().insert(id.to_string(), None);
+    if existed {
+        Ok(())
+    } else {
+        Err("no key stored".into())
     }
-    result
 }
 
-/// Check if a provider has a key in the OS keychain.
+/// Check if a provider has a key stored.
 pub fn has_provider_key(id: &str) -> bool {
     load_provider_key(id).ok().flatten().is_some()
 }

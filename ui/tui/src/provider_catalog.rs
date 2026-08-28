@@ -2,7 +2,7 @@
 
 pub use telekinesis_router::{
     by_id, cline_api_key_from_opencode_auth, delete_provider_key, env_key, find,
-    has_provider_key, infer_from_model, invalidate_key_cache, load_provider_key, normalize_model, opencode_auth_path,
+    has_provider_key, infer_from_model, load_provider_key, normalize_model, opencode_auth_path,
     save_provider_key, ProviderApi, ProviderSpec, API_KEY_PROVIDERS,
 };
 
