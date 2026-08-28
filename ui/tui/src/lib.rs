@@ -15,6 +15,7 @@ pub mod mcp_config;
 pub mod models;
 #[cfg(feature = "pi-compat")]
 pub mod pi;
+pub mod plan_display;
 pub mod product_policy;
 pub mod provider_catalog;
 pub mod providers;

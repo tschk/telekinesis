@@ -261,6 +261,7 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     // proposal and returns the user's decision. Plan approval is opt-in:
     // set TK_PLAN_APPROVAL=ask to gate whole-turn plans behind a y/n prompt.
     // Default (and off/bypass) runs turns without interruption.
+    let mut app_auto_plan_rx: Option<crate::plan_display::AutoPlanReceiver> = None;
     let plan_rx = match std::env::var("TK_PLAN_APPROVAL").as_deref() {
         Ok("ask") | Ok("on") => {
             let (plan_approver, plan_rx) = rx4::permissions::ChannelPlanApprover::pair();
@@ -269,7 +270,11 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
         }
         Ok("off") | Ok("disabled") => None,
         _ => {
-            agent.set_plan_approver(Arc::new(rx4::permissions::AlwaysApprovePlan));
+            // Auto-approve, but surface the agent's plan in the UI: the
+            // agent keeps its own internal goals without blocking on y/n.
+            let (auto_approver, auto_plan_rx) = crate::plan_display::AutoPlanDisplay::pair();
+            agent.set_plan_approver(Arc::new(auto_approver));
+            app_auto_plan_rx = Some(auto_plan_rx);
             None
         }
     };
@@ -293,6 +298,7 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     }
 
     let mut app = App::new();
+    app.auto_plan_rx = app_auto_plan_rx;
     if let Some(message) = import_message {
         push_system_message(&mut app, message);
     }

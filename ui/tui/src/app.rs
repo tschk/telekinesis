@@ -496,6 +496,9 @@ pub(crate) struct App {
     pub(crate) event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<AppEvent>>,
     pub(crate) approval_rx: Option<std::sync::mpsc::Receiver<PendingApproval>>,
     pub(crate) plan_rx: Option<tokio::sync::mpsc::Receiver<PendingPlanApproval>>,
+    /// Auto-approved plans (plan_display): shown while the agent works.
+    pub(crate) auto_plan_rx: Option<tokio::sync::mpsc::UnboundedReceiver<PendingPlanApproval>>,
+    pub(crate) active_plan: Vec<String>,
     pub(crate) approval_mode: Option<ApprovalMode>,
     /// Interactive `/config` menu state.
     pub(crate) config: crate::config_menu::ConfigMenu,
@@ -603,6 +606,8 @@ impl App {
             event_rx: None,
             approval_rx: None,
             plan_rx: None,
+            auto_plan_rx: None,
+            active_plan: Vec::new(),
             approval_mode: None,
             config: crate::config_menu::ConfigMenu::default(),
             provider_menu: crate::provider_menu::ProviderMenu::default(),
@@ -889,13 +894,17 @@ impl App {
     }
 
     pub(crate) fn poll_pending_plan_approvals(&mut self) {
-        let Some(rx) = self.plan_rx.as_mut() else {
-            return;
-        };
-        while let Ok((proposal, respond)) = rx.try_recv() {
-            self.plan_prompt = true;
-            self.plan_rows = bounded_plan_preview(&proposal);
-            self.plan_respond = Some(respond);
+        if let Some(rx) = self.plan_rx.as_mut() {
+            while let Ok((proposal, respond)) = rx.try_recv() {
+                self.plan_prompt = true;
+                self.plan_rows = bounded_plan_preview(&proposal);
+                self.plan_respond = Some(respond);
+            }
+        }
+        if let Some(rx) = self.auto_plan_rx.as_mut() {
+            while let Ok((proposal, _respond)) = rx.try_recv() {
+                self.active_plan = bounded_plan_preview(&proposal);
+            }
         }
     }
 
@@ -1094,6 +1103,23 @@ impl App {
         tpl.set("permission_prompt", self.permission_prompt);
         tpl.set("permission_tool", self.permission_tool.clone());
         tpl.set("plan_prompt", self.plan_prompt);
+        tpl.set("has_active_plan", self.busy && !self.active_plan.is_empty());
+        let active_plan_rows: Vec<TemplateContext> = if self.busy && !self.active_plan.is_empty() {
+            self.active_plan
+                .iter()
+                .map(|text| {
+                    let mut row = TemplateContext::new();
+                    row.set("text", text.clone());
+                    row
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        tpl.set(
+            "active_plan_rows",
+            TemplateValue::List(active_plan_rows),
+        );
         let plan_rows = self
             .plan_rows
             .iter()
@@ -1321,6 +1347,7 @@ impl App {
             }
             AppEvent::Idle => {
                 self.busy = false;
+                self.active_plan.clear();
                 #[cfg(feature = "pi-compat")]
                 self.flush_session();
             }
@@ -1683,6 +1710,7 @@ impl App {
                     is_streaming: false,
                 });
                 self.busy = false;
+                self.active_plan.clear();
             }
             Rx4Event::SelfHealing {
                 attempt,
