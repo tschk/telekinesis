@@ -2617,9 +2617,9 @@ dependencies = [
 
 [[package]]
 name = "rs_ai_providers"
-version = "0.2.33"
+version = "0.2.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79b382731a6cc186bd0ce7c1dbfd562aab1d137b4bcf040c8926b61caa53d6fe"
+checksum = "256d97afb497b4623f1805e71dbddaf3f868efcab05032b58e57c31dc934d432"
 dependencies = [
  "async-trait",
  "base64",
@@ -2714,9 +2714,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rx4"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e35b439aa18ba4382fdd6126533fb6621c4fde18e78ffb37fc2ab6c501086d95"
+checksum = "1c1d56ded903bb0e46a6a9bee5c416e1f79feb3b20579e00378ea42e8797bdbe"
 dependencies = [
  "async-trait",
  "cancellation-token",
@@ -3245,7 +3245,7 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "telekinesis"
-version = "0.6.14"
+version = "0.6.15"
 dependencies = [
  "ansi-to-tui",
  "anyhow",

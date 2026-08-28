@@ -978,7 +978,7 @@ impl App {
         let cursor_byte = self.cursor_byte();
         tpl.set("input_before", self.input[..cursor_byte].to_string());
         tpl.set("input_after", self.input[cursor_byte..].to_string());
-        tpl.set("model", self.model.clone());
+        tpl.set("model", self.model_display());
         tpl.set("effort", self.effort.clone());
         tpl.set("input_color", effort_color(&self.effort));
         tpl.set("selecting_model", self.selecting_model);
@@ -1015,19 +1015,12 @@ impl App {
                 .take(5)
                 .map(|(index, model)| {
                     let mut row = TemplateContext::new();
-                    // Same model id can exist at several providers — qualify
-                    // those rows so "deepseek-v4-flash" at Cline-pass reads
-                    // as clinepass/deepseek-v4-flash.
-                    let ambiguous = self.model_choices.iter().any(|other| {
-                        other.id == model.id && other.provider != model.provider
-                    });
+                    // Always qualify: codex/gpt-5.6-luna, clinepass/
+                    // deepseek-v4-flash — the same id can exist at several
+                    // providers, and the prefix doubles as /model syntax.
                     row.set(
                         "model_id",
-                        if ambiguous {
-                            format!("{}/{}", model.provider, model.id)
-                        } else {
-                            model.id.clone()
-                        },
+                        format!("{}/{}", model.provider, model.id),
                     );
                     row.set("selected", Some(index) == self.model_choice);
                     row
@@ -2056,13 +2049,13 @@ impl App {
     /// active provider when the model belongs to another one.
     pub(crate) fn select_model(&mut self, model_id: &str) {
         let model_id = model_id.trim();
-        // Qualified form: strip a leading known provider prefix so
-        // "clinepass/x" and "cline/x" resolve to clinepass's copy of x.
+        // Qualified form: strip a leading provider prefix so "clinepass/x",
+        // "cline/x", "codex/gpt-5.6-luna" resolve to that provider's copy.
         // Ids that naturally contain slashes (openrouter/auto) are matched
         // against the full remainder, so only a known provider prefix strips.
         let qualified = model_id.split_once('/').and_then(|(prefix, rest)| {
-            provider_catalog::find(prefix)
-                .map(|spec| (spec.id.to_string(), rest.to_string()))
+            let provider_id = self.resolve_provider_prefix(prefix)?;
+            Some((provider_id, rest.to_string()))
         });
         let choice = match qualified {
             Some((provider_id, bare)) => self
@@ -2128,6 +2121,47 @@ impl App {
             manager.set_provider(provider.client);
             manager.set_model(choice.id);
         }
+    }
+
+    /// Resolve a picker prefix ("codex", "claude", "clinepass", "router"…)
+    /// to a configured provider id. Aliases come from the catalog; OAuth
+    /// providers get their own well-known short names.
+    fn resolve_provider_prefix(&self, prefix: &str) -> Option<String> {
+        let lower = prefix.trim().to_ascii_lowercase();
+        // OAuth providers aren't in the catalog; accept their short names.
+        if matches!(lower.as_str(), "codex" | "chatgpt" | "openai-codex") {
+            return self
+                .providers
+                .iter()
+                .find(|configured| configured.id == "openai-codex")
+                .map(|configured| configured.id.clone());
+        }
+        let catalog_id = provider_catalog::find(&lower).map(|spec| spec.id.to_string());
+        self.providers
+            .iter()
+            .find(|configured| {
+                Some(configured.id.as_str()) == catalog_id.as_deref()
+                    || catalog_id.as_deref() == provider_catalog::by_id(&configured.id)
+                        .map(|spec| spec.id)
+            })
+            .map(|configured| configured.id.clone())
+            .or(catalog_id)
+    }
+
+    /// Status-bar display: qualified model id so the owning provider is
+    /// always visible (codex/gpt-5.6-luna).
+    fn model_display(&self) -> String {
+        let provider = self
+            .providers
+            .get(self.provider_choice)
+            .map(|configured| configured.id.as_str())
+            .unwrap_or_default();
+        let prefix = match provider {
+            "openai-codex" => "codex",
+            "" => return self.model.clone(),
+            other => other,
+        };
+        format!("{prefix}/{}", self.model)
     }
 
     pub(crate) fn set_model(&mut self, model: String) {
