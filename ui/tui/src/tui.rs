@@ -147,6 +147,21 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
         .enable_all()
         .build()?;
 
+    // One-time key discovery must run BEFORE provider setup, or the first
+    // session's provider rail is built without the discovered providers.
+    let import_message = if !telekinesis_router::already_imported() {
+        telekinesis_router::mark_imported();
+        match telekinesis_router::import_from_opencode() {
+            Ok(ids) if !ids.is_empty() => Some(format!(
+                "Imported API keys from OpenCode into ~/.telekinesis/keys.json: {}",
+                ids.join(", ")
+            )),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let discover = rt.spawn(discover_mcp_tools());
     let mut providers = setup_providers(&rt);
     if providers.is_empty() {
@@ -277,19 +292,8 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     }
 
     let mut app = App::new();
-    // One-time key discovery from other harnesses (OpenCode auth.json).
-    if !telekinesis_router::already_imported() {
-        telekinesis_router::mark_imported();
-        match telekinesis_router::import_from_opencode() {
-            Ok(ids) if !ids.is_empty() => push_system_message(
-                &mut app,
-                format!(
-                    "Imported API keys from OpenCode into your OS keychain: {}",
-                    ids.join(", ")
-                ),
-            ),
-            _ => {}
-        }
+    if let Some(message) = import_message {
+        push_system_message(&mut app, message);
     }
     app.set_model(model);
     app.effort = effort;
