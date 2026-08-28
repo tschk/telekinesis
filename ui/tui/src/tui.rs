@@ -258,18 +258,19 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     agent.set_approver(Arc::new(approver));
 
     // rx4 owns the plan gate and the wait; the TUI only presents the bounded
-    // proposal and returns the user's decision. Set TK_PLAN_APPROVAL=off for
-    // non-interactive compatibility, or =bypass for an explicit yolo mode.
+    // proposal and returns the user's decision. Plan approval is opt-in:
+    // set TK_PLAN_APPROVAL=ask to gate whole-turn plans behind a y/n prompt.
+    // Default (and off/bypass) runs turns without interruption.
     let plan_rx = match std::env::var("TK_PLAN_APPROVAL").as_deref() {
-        Ok("off") | Ok("disabled") => None,
-        Ok("bypass") | Ok("allow") => {
-            agent.set_plan_approver(Arc::new(rx4::permissions::AlwaysApprovePlan));
-            None
-        }
-        _ => {
+        Ok("ask") | Ok("on") => {
             let (plan_approver, plan_rx) = rx4::permissions::ChannelPlanApprover::pair();
             agent.set_plan_approver(Arc::new(plan_approver));
             Some(plan_rx)
+        }
+        Ok("off") | Ok("disabled") => None,
+        _ => {
+            agent.set_plan_approver(Arc::new(rx4::permissions::AlwaysApprovePlan));
+            None
         }
     };
 

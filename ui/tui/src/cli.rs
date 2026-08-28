@@ -163,7 +163,7 @@ pub fn print_help() {
     println!("  CLINE_API_KEY       Cline-pass API key (or reuse OpenCode auth.json)");
     println!("  TK_PROVIDER         Default exec/TUI provider id (e.g. clinepass)");
     println!("  TK_EFFORT           exec reasoning effort if --effort/--thinking omitted (default low)");
-    println!("  TK_PLAN_APPROVAL    ask (default), off, or bypass whole-turn plans");
+    println!("  TK_PLAN_APPROVAL    ask to gate whole-turn plans (default: bypass)");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
     println!("  RX4_PREWALK         1/true to enable investigate-then-apply");
     println!("  RX4_SMOL_MODEL      apply model id after the first write");
