@@ -50,8 +50,23 @@ fn marker_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".telekinesis").join(".keys-imported"))
 }
 
+/// Import is due when it never ran, or when `auth.json` changed after the
+/// last import — so keys re-saved by the harness (or a TUI test value that
+/// clobbered one) are re-discovered automatically.
 pub fn already_imported() -> bool {
-    marker_path().map(|p| p.exists()).unwrap_or(false)
+    let (Some(marker), Some(auth)) = (marker_path(), opencode_auth_path()) else {
+        return true;
+    };
+    if !marker.exists() {
+        return false;
+    }
+    let auth_mtime = std::fs::metadata(&auth).and_then(|m| m.modified()).ok();
+    let marker_mtime = std::fs::metadata(&marker).and_then(|m| m.modified()).ok();
+    match (auth_mtime, marker_mtime) {
+        (Some(a), Some(m)) => a <= m,
+        (Some(_), None) => false,
+        _ => true,
+    }
 }
 
 pub fn mark_imported() {
