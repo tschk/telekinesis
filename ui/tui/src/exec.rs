@@ -8,6 +8,7 @@ use rx4::ModelRegistry;
 
 use crate::harness::{apply_prewalk_exec_env, sync_prewalk_model};
 use crate::host::build_agent;
+use crate::host_events::{cli_line, EventExt};
 use crate::models::host_model_info;
 use crate::providers::setup_providers;
 use crate::tools::discover_mcp_tools;
@@ -183,10 +184,18 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
     }
 
-    agent.subscribe(move |event: &Rx4Event| match event {
-        Rx4Event::ToolExecutionStart(call) => eprintln!("· {}", call.name),
-        Rx4Event::Error(message) => eprintln!("· error: {message}"),
-        _ => {}
+    agent.subscribe(move |event: &Rx4Event| {
+        if let Some(surface) = event.host_surface() {
+            eprintln!("· {}", cli_line(&surface));
+            return;
+        }
+        #[allow(unreachable_patterns)]
+        match event {
+            Rx4Event::ToolExecutionStart(call) => eprintln!("· {}", call.name),
+            Rx4Event::ApprovalRequired(req) => eprintln!("· {}", req.tool_name),
+            Rx4Event::Error(message) => eprintln!("· error: {message}"),
+            _ => {}
+        }
     });
 
     eprintln!(

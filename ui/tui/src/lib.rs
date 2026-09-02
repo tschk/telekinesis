@@ -9,6 +9,7 @@ pub mod codex_provider;
 pub mod exec;
 pub mod harness;
 pub mod host;
+pub mod host_events;
 pub mod markdown;
 #[cfg(feature = "mcp")]
 pub mod mcp_config;

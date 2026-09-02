@@ -71,6 +71,17 @@ Events: `Rx4Event` lifecycle (AgentStart, TurnStart, MessageStart/Delta/End,
 ToolCall, **ApprovalRequired** (includes `arguments`), ToolExecutionStart/End,
 TurnEnd, AgentEnd, Error) delivered over a tokio channel.
 
+Forthcoming rotary Event shapes (not on crates.io rx4 0.7.1). The host adapter
+in `ui/tui/src/host_events.rs` classifies serialized Event JSON and ignores
+unknown variants so this crate keeps compiling. TUI/CLI render them like
+ToolExecution / ApprovalRequired. Hosts forward; they do not invent policy.
+
+- `RetryReason` / `retry_reason` — sandbox escalate retry
+- `ProcessId` / `process_id` — PTY exec id
+- `WriteStdin` / `write_stdin` — PTY stdin
+- `RequestPermissions` / `request_permissions` — permission prompt
+- `PatchHunk` / `patch_hunk` (also `StreamingPatch`) — streaming patch hunks
+
 Hooks: `HookRegistry` lifecycle observe (`BeforeTool`/`AfterTool`/…). Engine
 hooks are currently fire-and-forget (`HookFn`); deny/modify lands when engine
 ships gating — host should not invent a second permission system.

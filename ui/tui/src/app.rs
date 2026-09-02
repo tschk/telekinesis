@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::channel_approver::{ApprovalMode, PendingApproval};
 use crate::host::{self, load_history, save_history, save_prefs, Prefs};
+use crate::host_events::{EventExt, HostSurface};
 use crate::markdown;
 use crate::models::{
     context_window_for_model, host_model_info, oauth_model_info, openrouter_model_info,
@@ -1491,6 +1492,11 @@ impl App {
     }
 
     pub(crate) fn handle_rx4_event(&mut self, event: Rx4Event) {
+        if let Some(surface) = event.host_surface() {
+            self.render_host_surface(surface);
+            return;
+        }
+        #[allow(unreachable_patterns)]
         match event {
             Rx4Event::AgentStart => {}
             Rx4Event::ContextUsage {
@@ -1771,6 +1777,99 @@ impl App {
                     tool_call_id: String::new(),
                     is_streaming: false,
                 });
+            }
+            other => {
+                if let Some(surface) = other.host_surface() {
+                    self.render_host_surface(surface);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn render_host_surface(&mut self, surface: HostSurface) {
+        match surface {
+            HostSurface::RetryReason { reason } => {
+                self.messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content: if reason.is_empty() {
+                        "retry".to_string()
+                    } else {
+                        format!("retry: {reason}")
+                    },
+                    is_tool: false,
+                    tool_name: String::new(),
+                    tool_call_id: String::new(),
+                    is_streaming: false,
+                });
+            }
+            HostSurface::ProcessId { process_id } => {
+                self.messages.push(ChatMessage {
+                    role: "tool".to_string(),
+                    content: process_id.clone(),
+                    is_tool: true,
+                    tool_name: "pty".to_string(),
+                    tool_call_id: process_id,
+                    is_streaming: true,
+                });
+            }
+            HostSurface::WriteStdin { process_id, data } => {
+                if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
+                    message.is_tool && !process_id.is_empty() && message.tool_call_id == process_id
+                }) {
+                    if !msg.content.is_empty() && !data.is_empty() {
+                        msg.content.push('\n');
+                    }
+                    msg.content.push_str(&data);
+                    msg.is_streaming = true;
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: data,
+                        is_tool: true,
+                        tool_name: "stdin".to_string(),
+                        tool_call_id: process_id,
+                        is_streaming: true,
+                    });
+                }
+            }
+            HostSurface::RequestPermissions {
+                tool_name,
+                arguments,
+                reason,
+            } => {
+                let detail = tool_detail(&tool_name, &arguments);
+                let content = if !reason.is_empty() {
+                    format!("Approval required: {tool_name} ({reason})")
+                } else if detail.is_empty() {
+                    format!("Approval required: {tool_name}")
+                } else {
+                    format!("Approval required: {tool_name} {detail}")
+                };
+                self.messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content,
+                    is_tool: false,
+                    tool_name: String::new(),
+                    tool_call_id: String::new(),
+                    is_streaming: false,
+                });
+            }
+            HostSurface::PatchHunk { path, hunk } => {
+                if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
+                    message.is_tool && message.tool_name == "patch" && message.tool_call_id == path
+                }) {
+                    msg.content.push_str(&hunk);
+                    msg.is_streaming = true;
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: hunk,
+                        is_tool: true,
+                        tool_name: "patch".to_string(),
+                        tool_call_id: path,
+                        is_streaming: true,
+                    });
+                }
             }
         }
     }
@@ -2962,6 +3061,50 @@ mod tests {
         assert!(app.messages[0].content.ends_with("2 lines"));
         assert!(app.messages[1].is_streaming);
         assert_eq!(app.messages[1].tool_call_id, "bash-1");
+    }
+
+    #[test]
+    fn host_surfaces_render_like_tool_and_approval_events() {
+        let mut app = App::new();
+        app.render_host_surface(HostSurface::RetryReason {
+            reason: "sandbox escalate".into(),
+        });
+        app.render_host_surface(HostSurface::ProcessId {
+            process_id: "pty-9".into(),
+        });
+        app.render_host_surface(HostSurface::WriteStdin {
+            process_id: "pty-9".into(),
+            data: "ls".into(),
+        });
+        app.render_host_surface(HostSurface::RequestPermissions {
+            tool_name: "bash".into(),
+            arguments: r#"{"command":"pwd"}"#.into(),
+            reason: "ask".into(),
+        });
+        app.render_host_surface(HostSurface::PatchHunk {
+            path: "src/lib.rs".into(),
+            hunk: "@@ -1 +1 @@\n".into(),
+        });
+        app.render_host_surface(HostSurface::PatchHunk {
+            path: "src/lib.rs".into(),
+            hunk: "+fn main() {}\n".into(),
+        });
+
+        assert_eq!(app.messages[0].role, "system");
+        assert_eq!(app.messages[0].content, "retry: sandbox escalate");
+        assert_eq!(app.messages[1].tool_name, "pty");
+        assert_eq!(app.messages[1].content, "pty-9\nls");
+        assert!(app.messages[1].is_streaming);
+        assert_eq!(
+            app.messages[2].content,
+            "Approval required: bash (ask)"
+        );
+        assert_eq!(app.messages[3].tool_name, "patch");
+        assert_eq!(
+            app.messages[3].content,
+            "@@ -1 +1 @@\n+fn main() {}\n"
+        );
+        assert!(app.messages[3].is_streaming);
     }
 
     #[test]
