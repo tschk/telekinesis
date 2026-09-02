@@ -50,25 +50,21 @@ pub fn surface_from_json(value: &Value) -> Option<HostSurface> {
     let ty = event_type(value)?;
     match normalize_type(&ty).as_str() {
         "retryreason" => Some(HostSurface::RetryReason {
-            retry_reason: first_str(value, &["retry_reason", "reason", "cause"])
-                .unwrap_or_default(),
+            retry_reason: first_str(value, &["retry_reason"]).unwrap_or_default(),
             layer: first_str(value, &["layer"]).unwrap_or_default(),
         }),
-        "processstdin" | "processid" | "writestdin" => Some(HostSurface::ProcessStdin {
-            process_id: first_str(value, &["process_id", "pid", "id"]).unwrap_or_default(),
-            bytes: first_usize(value, &["bytes", "len", "n"]).unwrap_or(0),
+        "processstdin" => Some(HostSurface::ProcessStdin {
+            process_id: first_str(value, &["process_id"]).unwrap_or_default(),
+            bytes: first_usize(value, &["bytes"]).unwrap_or(0),
         }),
         "requestpermissions" => Some(HostSurface::RequestPermissions {
-            tool: first_str(value, &["tool", "tool_name", "name"]).unwrap_or_default(),
+            tool: first_str(value, &["tool"]).unwrap_or_default(),
             paths: string_list(value, "paths"),
         }),
-        "patchhunk" | "streamingpatch" | "streamingpatchhunk" | "filepatch" => {
-            Some(HostSurface::PatchHunk {
-                path: first_str(value, &["path", "file", "id"]).unwrap_or_default(),
-                hunk: first_str(value, &["hunk", "content", "diff", "patch", "delta"])
-                    .unwrap_or_default(),
-            })
-        }
+        "patchhunk" => Some(HostSurface::PatchHunk {
+            path: first_str(value, &["path"]).unwrap_or_default(),
+            hunk: first_str(value, &["hunk"]).unwrap_or_default(),
+        }),
         _ => None,
     }
 }

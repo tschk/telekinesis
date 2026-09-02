@@ -71,9 +71,10 @@ Events: `Rx4Event` lifecycle (AgentStart, TurnStart, MessageStart/Delta/End,
 ToolCall, **ApprovalRequired** (includes `arguments`), ToolExecutionStart/End,
 TurnEnd, AgentEnd, Error) delivered over a tokio channel.
 
-Rotary Event shapes (serde tag `type`) matched in `ui/tui/src/host_events.rs`.
-TUI/CLI render them like ToolExecution / ApprovalRequired. Unknown variants
-are ignored. Hosts forward; they do not invent policy.
+Rotary Event shapes (serde tag `type`) matched in `ui/tui/src/host_events.rs`
+(GUI includes the same module). TUI/CLI/GUI render them like ToolExecution /
+ApprovalRequired. Unknown variants are ignored. Hosts forward; they do not
+invent policy.
 
 - `RetryReason { retry_reason, layer }` — sandbox escalate retry
 - `ProcessStdin { process_id, bytes }` — PTY stdin write
