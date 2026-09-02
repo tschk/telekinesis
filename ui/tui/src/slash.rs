@@ -6,9 +6,7 @@ use rx4::mode::Scope;
 use rx4::subagent::SubagentConfig;
 use tokio::sync::Mutex;
 
-use crate::app::{
-    slash_description, App, AppEvent, MAX_BUDGET_DURATION_SECONDS, MAX_BUDGET_TURNS,
-};
+use crate::app::{slash_description, App, AppEvent, MAX_BUDGET_DURATION_SECONDS, MAX_BUDGET_TURNS};
 use crate::host::{apply_scope, parse_host_scope, scope_usage};
 #[cfg(feature = "mcp")]
 use crate::mcp_config;
@@ -174,7 +172,9 @@ pub(crate) fn handle_slash_command(
                 );
                 return;
             }
-            push_system_message(app, format!(
+            push_system_message(
+                app,
+                format!(
                     "Commands\n\
                     /providers (or /provider, /auth) — browse providers\n\
                     /apikey <provider> (or /keys) — show API-key setup\n\
@@ -202,7 +202,8 @@ pub(crate) fn handle_slash_command(
                     Esc/Ctrl+C interrupt · Ctrl+L clear · Shift+Enter newline \
                     · Alt+Shift+←/→ scope · Shift+Tab effort · Ctrl+B header",
                     scope_usage().replacen("Usage: ", "", 1)
-                ));
+                ),
+            );
         }
         "/login" => {
             if arg.is_empty() {
@@ -212,7 +213,9 @@ pub(crate) fn handle_slash_command(
                 push_system_message(
                     app,
                     match result {
-                        Ok(()) => "Login complete. Restart tk to load the new provider.".to_string(),
+                        Ok(()) => {
+                            "Login complete. Restart tk to load the new provider.".to_string()
+                        }
                         Err(error) => format!("Login failed: {error}"),
                     },
                 );
@@ -595,12 +598,15 @@ pub(crate) fn handle_slash_command(
                             &prompt,
                             &workspace,
                         );
-                        push_system_message(app, match result {
+                        push_system_message(
+                            app,
+                            match result {
                                 Ok(handle) => {
                                     format!("Subagent {name} running — id: {}", handle.id())
                                 }
                                 Err(error) => format!("Subagent error: {error}"),
-                            });
+                            },
+                        );
                     } else {
                         push_system_message(app, "Subagent manager not initialized.".to_string());
                     }
@@ -645,12 +651,18 @@ pub(crate) fn handle_slash_command(
                     }
                 }
                 _ => {
-                    push_system_message(app, "Usage: /subagent spawn <prompt> | list | cancel <id>".to_string());
+                    push_system_message(
+                        app,
+                        "Usage: /subagent spawn <prompt> | list | cancel <id>".to_string(),
+                    );
                 }
             }
         }
         _ => {
-            push_system_message(app, format!("Unknown command: {command}. Type /help for available commands."));
+            push_system_message(
+                app,
+                format!("Unknown command: {command}. Type /help for available commands."),
+            );
         }
     }
 }

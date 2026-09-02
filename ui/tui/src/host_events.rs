@@ -1,33 +1,14 @@
-//! Host-side Event adapter for current and forthcoming rotary shapes.
-//!
-//! crates.io rx4 0.7.1 does not emit RetryReason / ProcessId / WriteStdin /
-//! RequestPermissions / PatchHunk. Classify serialized Event JSON so a later
-//! pin compiles; ignore unknown variants. Forward only — no harness policy.
+//! Host-side Event adapter. Match rotary Event variants directly; ignore unknown.
 
 use rx4::agent::Event as Rx4Event;
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostSurface {
-    RetryReason {
-        reason: String,
-    },
-    ProcessId {
-        process_id: String,
-    },
-    WriteStdin {
-        process_id: String,
-        data: String,
-    },
-    RequestPermissions {
-        tool_name: String,
-        arguments: String,
-        reason: String,
-    },
-    PatchHunk {
-        path: String,
-        hunk: String,
-    },
+    RetryReason { retry_reason: String, layer: String },
+    ProcessStdin { process_id: String, bytes: usize },
+    RequestPermissions { tool: String, paths: Vec<String> },
+    PatchHunk { path: String, hunk: String },
 }
 
 pub trait EventExt {
@@ -41,26 +22,45 @@ impl EventExt for Rx4Event {
 }
 
 pub fn surface_from_event(event: &Rx4Event) -> Option<HostSurface> {
-    surface_from_json(&serde_json::to_value(event).ok()?)
+    match event {
+        Rx4Event::RetryReason {
+            retry_reason,
+            layer,
+        } => Some(HostSurface::RetryReason {
+            retry_reason: retry_reason.clone(),
+            layer: layer.clone(),
+        }),
+        Rx4Event::ProcessStdin { process_id, bytes } => Some(HostSurface::ProcessStdin {
+            process_id: process_id.clone(),
+            bytes: *bytes,
+        }),
+        Rx4Event::RequestPermissions { tool, paths } => Some(HostSurface::RequestPermissions {
+            tool: tool.clone(),
+            paths: paths.clone(),
+        }),
+        Rx4Event::PatchHunk { path, hunk } => Some(HostSurface::PatchHunk {
+            path: path.clone(),
+            hunk: hunk.clone(),
+        }),
+        other => surface_from_json(&serde_json::to_value(other).ok()?),
+    }
 }
 
 pub fn surface_from_json(value: &Value) -> Option<HostSurface> {
     let ty = event_type(value)?;
     match normalize_type(&ty).as_str() {
         "retryreason" => Some(HostSurface::RetryReason {
-            reason: first_str(value, &["reason", "retry_reason", "cause"]).unwrap_or_default(),
+            retry_reason: first_str(value, &["retry_reason", "reason", "cause"])
+                .unwrap_or_default(),
+            layer: first_str(value, &["layer"]).unwrap_or_default(),
         }),
-        "processid" => Some(HostSurface::ProcessId {
+        "processstdin" | "processid" | "writestdin" => Some(HostSurface::ProcessStdin {
             process_id: first_str(value, &["process_id", "pid", "id"]).unwrap_or_default(),
-        }),
-        "writestdin" => Some(HostSurface::WriteStdin {
-            process_id: first_str(value, &["process_id", "pid", "id"]).unwrap_or_default(),
-            data: first_str(value, &["data", "stdin", "content", "text"]).unwrap_or_default(),
+            bytes: first_usize(value, &["bytes", "len", "n"]).unwrap_or(0),
         }),
         "requestpermissions" => Some(HostSurface::RequestPermissions {
-            tool_name: first_str(value, &["tool_name", "name", "tool"]).unwrap_or_default(),
-            arguments: first_str(value, &["arguments", "args"]).unwrap_or_default(),
-            reason: first_str(value, &["reason"]).unwrap_or_default(),
+            tool: first_str(value, &["tool", "tool_name", "name"]).unwrap_or_default(),
+            paths: string_list(value, "paths"),
         }),
         "patchhunk" | "streamingpatch" | "streamingpatchhunk" | "filepatch" => {
             Some(HostSurface::PatchHunk {
@@ -75,33 +75,25 @@ pub fn surface_from_json(value: &Value) -> Option<HostSurface> {
 
 pub fn cli_line(surface: &HostSurface) -> String {
     match surface {
-        HostSurface::RetryReason { reason } => {
-            if reason.is_empty() {
+        HostSurface::RetryReason { retry_reason, .. } => {
+            if retry_reason.is_empty() {
                 "retry".to_string()
             } else {
-                format!("retry {reason}")
+                format!("retry {retry_reason}")
             }
         }
-        HostSurface::ProcessId { process_id } => {
+        HostSurface::ProcessStdin { process_id, .. } => {
             if process_id.is_empty() {
                 "pty".to_string()
             } else {
                 format!("pty {process_id}")
             }
         }
-        HostSurface::WriteStdin { data, .. } => {
-            let preview = truncate_cli(data);
-            if preview.is_empty() {
-                "stdin".to_string()
-            } else {
-                format!("stdin {preview}")
-            }
-        }
-        HostSurface::RequestPermissions { tool_name, .. } => {
-            if tool_name.is_empty() {
+        HostSurface::RequestPermissions { tool, .. } => {
+            if tool.is_empty() {
                 "approval".to_string()
             } else {
-                tool_name.clone()
+                tool.clone()
             }
         }
         HostSurface::PatchHunk { path, .. } => {
@@ -139,20 +131,26 @@ fn first_str(value: &Value, keys: &[&str]) -> Option<String> {
     })
 }
 
-fn truncate_cli(text: &str) -> String {
-    let line = text
-        .lines()
-        .find(|row| !row.trim().is_empty())
-        .unwrap_or("");
-    let mut out = String::new();
-    for ch in line.chars() {
-        if out.chars().count() >= 80 {
-            out.push('…');
-            break;
-        }
-        out.push(ch);
+fn first_usize(value: &Value, keys: &[&str]) -> Option<usize> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|item| {
+            item.as_u64()
+                .map(|n| n as usize)
+                .or_else(|| item.as_i64().and_then(|n| usize::try_from(n).ok()))
+                .or_else(|| item.as_str().and_then(|s| s.parse().ok()))
+        })
+    })
+}
+
+fn string_list(value: &Value, key: &str) -> Vec<String> {
+    match value.get(key) {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect(),
+        Some(Value::String(text)) if !text.is_empty() => vec![text.clone()],
+        _ => Vec::new(),
     }
-    out
 }
 
 #[cfg(test)]
@@ -196,69 +194,97 @@ mod tests {
     }
 
     #[test]
-    fn classifies_forthcoming_rotary_shapes() {
+    fn matches_rotary_event_variants() {
+        assert_eq!(
+            Rx4Event::RetryReason {
+                retry_reason: "sandbox deny".into(),
+                layer: "NestedFs".into(),
+            }
+            .host_surface(),
+            Some(HostSurface::RetryReason {
+                retry_reason: "sandbox deny".into(),
+                layer: "NestedFs".into(),
+            })
+        );
+        assert_eq!(
+            Rx4Event::ProcessStdin {
+                process_id: "pty-9".into(),
+                bytes: 3,
+            }
+            .host_surface(),
+            Some(HostSurface::ProcessStdin {
+                process_id: "pty-9".into(),
+                bytes: 3,
+            })
+        );
+        assert_eq!(
+            Rx4Event::RequestPermissions {
+                tool: "write".into(),
+                paths: vec!["src/lib.rs".into()],
+            }
+            .host_surface(),
+            Some(HostSurface::RequestPermissions {
+                tool: "write".into(),
+                paths: vec!["src/lib.rs".into()],
+            })
+        );
+        assert_eq!(
+            Rx4Event::PatchHunk {
+                path: "src/lib.rs".into(),
+                hunk: "@@ -1,1 +1,2 @@".into(),
+            }
+            .host_surface(),
+            Some(HostSurface::PatchHunk {
+                path: "src/lib.rs".into(),
+                hunk: "@@ -1,1 +1,2 @@".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn classifies_serialized_rotary_shapes() {
         assert_eq!(
             surface_from_json(&serde_json::json!({
-                "type": "retry_reason",
-                "reason": "sandbox escalate"
+                "type": "RetryReason",
+                "retry_reason": "sandbox deny",
+                "layer": "NestedFs"
             })),
             Some(HostSurface::RetryReason {
-                reason: "sandbox escalate".into()
+                retry_reason: "sandbox deny".into(),
+                layer: "NestedFs".into()
             })
         );
         assert_eq!(
             surface_from_json(&serde_json::json!({
-                "type": "ProcessId",
-                "process_id": "pty-9"
-            })),
-            Some(HostSurface::ProcessId {
-                process_id: "pty-9".into()
-            })
-        );
-        assert_eq!(
-            surface_from_json(&serde_json::json!({
-                "type": "write_stdin",
+                "type": "ProcessStdin",
                 "process_id": "pty-9",
-                "data": "ls\n"
+                "bytes": 3
             })),
-            Some(HostSurface::WriteStdin {
+            Some(HostSurface::ProcessStdin {
                 process_id: "pty-9".into(),
-                data: "ls\n".into()
+                bytes: 3
             })
         );
         assert_eq!(
             surface_from_json(&serde_json::json!({
                 "type": "RequestPermissions",
-                "tool_name": "bash",
-                "arguments": "{\"command\":\"pwd\"}",
-                "reason": "ask"
+                "tool": "write",
+                "paths": ["src/lib.rs"]
             })),
             Some(HostSurface::RequestPermissions {
-                tool_name: "bash".into(),
-                arguments: r#"{"command":"pwd"}"#.into(),
-                reason: "ask".into()
+                tool: "write".into(),
+                paths: vec!["src/lib.rs".into()]
             })
         );
         assert_eq!(
             surface_from_json(&serde_json::json!({
-                "type": "patch_hunk",
+                "type": "PatchHunk",
                 "path": "src/lib.rs",
                 "hunk": "@@ -1,1 +1,2 @@"
             })),
             Some(HostSurface::PatchHunk {
                 path: "src/lib.rs".into(),
                 hunk: "@@ -1,1 +1,2 @@".into()
-            })
-        );
-        assert_eq!(
-            surface_from_json(&serde_json::json!({
-                "type": "StreamingPatch",
-                "path": "a.rs",
-                "content": "+fn main() {}"
-            })),
-            Some(HostSurface::PatchHunk {
-                path: "a.rs".into(),
-                hunk: "+fn main() {}".into()
             })
         );
         assert_eq!(
@@ -271,30 +297,24 @@ mod tests {
     fn cli_lines_match_tool_execution_style() {
         assert_eq!(
             cli_line(&HostSurface::RetryReason {
-                reason: "sandbox escalate".into()
+                retry_reason: "sandbox deny".into(),
+                layer: "NestedFs".into()
             }),
-            "retry sandbox escalate"
+            "retry sandbox deny"
         );
         assert_eq!(
-            cli_line(&HostSurface::ProcessId {
-                process_id: "pty-9".into()
+            cli_line(&HostSurface::ProcessStdin {
+                process_id: "pty-9".into(),
+                bytes: 3
             }),
             "pty pty-9"
         );
         assert_eq!(
-            cli_line(&HostSurface::WriteStdin {
-                process_id: "pty-9".into(),
-                data: "ls\n".into()
-            }),
-            "stdin ls"
-        );
-        assert_eq!(
             cli_line(&HostSurface::RequestPermissions {
-                tool_name: "bash".into(),
-                arguments: "{}".into(),
-                reason: "ask".into()
+                tool: "write".into(),
+                paths: vec!["src/lib.rs".into()]
             }),
-            "bash"
+            "write"
         );
         assert_eq!(
             cli_line(&HostSurface::PatchHunk {

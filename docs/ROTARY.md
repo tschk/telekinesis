@@ -23,10 +23,10 @@ flowchart TD
 
 ## Wire
 
-- rx4 is consumed as a git dependency on `tschk/rotary` (`feat/rx4-agent-harness`
-  / `441ce52`) with `default-features = false`. The default `tk` surface keeps
-  `providers` + `builtin-tools` only. Hosts call rotary APIs; they do not own
-  hashline, prewalk, or AVO dialects.
+- rx4 is consumed as a git dependency on `tschk/rotary` (`feat/harness-steals`
+  / `13bc1ff9150e576505cc6becedf4507ca9f90391`) with `default-features = false`.
+  The default `tk` surface keeps `providers` + `builtin-tools` only. Hosts call
+  rotary APIs; they do not own hashline, prewalk, or AVO dialects.
 - `ui/tui/src/main.rs` currently imports rx4 directly and drives the loop
   in-process via tokio channels. A shared telekinesis host runtime is the
   target boundary for additional surfaces.
@@ -71,16 +71,14 @@ Events: `Rx4Event` lifecycle (AgentStart, TurnStart, MessageStart/Delta/End,
 ToolCall, **ApprovalRequired** (includes `arguments`), ToolExecutionStart/End,
 TurnEnd, AgentEnd, Error) delivered over a tokio channel.
 
-Forthcoming rotary Event shapes (not on crates.io rx4 0.7.1). The host adapter
-in `ui/tui/src/host_events.rs` classifies serialized Event JSON and ignores
-unknown variants so this crate keeps compiling. TUI/CLI render them like
-ToolExecution / ApprovalRequired. Hosts forward; they do not invent policy.
+Rotary Event shapes (serde tag `type`) matched in `ui/tui/src/host_events.rs`.
+TUI/CLI render them like ToolExecution / ApprovalRequired. Unknown variants
+are ignored. Hosts forward; they do not invent policy.
 
-- `RetryReason` / `retry_reason` — sandbox escalate retry
-- `ProcessId` / `process_id` — PTY exec id
-- `WriteStdin` / `write_stdin` — PTY stdin
-- `RequestPermissions` / `request_permissions` — permission prompt
-- `PatchHunk` / `patch_hunk` (also `StreamingPatch`) — streaming patch hunks
+- `RetryReason { retry_reason, layer }` — sandbox escalate retry
+- `ProcessStdin { process_id, bytes }` — PTY stdin write
+- `RequestPermissions { tool, paths }` — permission prompt
+- `PatchHunk { path, hunk }` — streaming patch hunks
 
 Hooks: `HookRegistry` lifecycle observe (`BeforeTool`/`AfterTool`/…). Engine
 hooks are currently fire-and-forget (`HookFn`); deny/modify lands when engine

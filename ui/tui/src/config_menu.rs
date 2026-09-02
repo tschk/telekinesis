@@ -34,17 +34,14 @@ impl ConfigMenu {
     }
 
     /// Rows are derived from live App state, hence the free function.
-    pub fn rows(app: &App) -> Vec<(String, &'static str)> {
+    pub(crate) fn rows(app: &App) -> Vec<(String, &'static str)> {
         vec![
             (format!("model · {}", app.model), "open model selector"),
             (
                 format!("scope · {}", app.agent_mode),
                 "cycle with the config menu or Alt+Shift+←/→",
             ),
-            (
-                format!("effort · {}", app.effort),
-                "cycle reasoning effort",
-            ),
+            (format!("effort · {}", app.effort), "cycle reasoning effort"),
             (
                 format!("providers · {}", app.provider_names()),
                 "log in with a new provider",
@@ -56,7 +53,7 @@ impl ConfigMenu {
         ]
     }
 
-    pub fn set_template(&self, tpl: &mut Template, app: &App) {
+    pub(crate) fn set_template(&self, tpl: &mut Template, app: &App) {
         tpl.set("config_open", self.open);
         let rows: Vec<TemplateContext> = if self.open {
             Self::rows(app)

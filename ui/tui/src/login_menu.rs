@@ -22,8 +22,7 @@ impl LoginMenu {
     pub fn move_choice(&mut self, delta: isize) {
         let len = rs_ai_oauth::OAuthProvider::all().len();
         if len != 0 {
-            self.choice =
-                (self.choice as isize + delta).rem_euclid(len as isize) as usize;
+            self.choice = (self.choice as isize + delta).rem_euclid(len as isize) as usize;
         }
     }
 
@@ -68,10 +67,16 @@ impl LoginMenu {
 
 /// Key handling while the menu is open. `Some(msg)` after a completed login
 /// attempt — caller surfaces it as a system message.
-pub fn handle_key(app: &mut crate::app::App, code: crossterm::event::KeyCode) -> Option<String> {
+pub(crate) fn handle_key(
+    app: &mut crate::app::App,
+    code: crossterm::event::KeyCode,
+) -> Option<String> {
     match code {
         crossterm::event::KeyCode::Enter => {
-            let name = app.login_menu.selected().map(|oauth| oauth.name().to_string())?;
+            let name = app
+                .login_menu
+                .selected()
+                .map(|oauth| oauth.name().to_string())?;
             app.login_menu.close();
             let result = crate::providers::run_login_from_tui(Some(&name));
             Some(match result {

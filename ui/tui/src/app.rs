@@ -521,6 +521,7 @@ pub(crate) struct App {
     /// submitted in this window are queued instead of erroring.
     pub(crate) providers_connecting: bool,
     /// Model preferred by prefs, applied once providers connect.
+    #[allow(dead_code)]
     pub(crate) pending_model: Option<String>,
     /// Prompts submitted before providers connected, flushed in order on ready.
     pub(crate) queued_prompts: Vec<String>,
@@ -547,6 +548,7 @@ pub(crate) enum AppEvent {
         context_windows: HashMap<String, usize>,
         models: Vec<ModelInfo>,
     },
+    #[allow(dead_code)]
     ProvidersReady(Vec<(ConfiguredProvider, String)>),
     Idle,
 }
@@ -1269,6 +1271,7 @@ impl App {
         self.queued_prompts.push(text);
     }
 
+    #[allow(dead_code)]
     fn record_user_prompt(&mut self, text: &str) {
         self.input_history.insert(0, text.to_string());
         save_history(&self.input_history);
@@ -1490,7 +1493,6 @@ impl App {
             self.render_host_surface(surface);
             return;
         }
-        #[allow(unreachable_patterns)]
         match event {
             Rx4Event::AgentStart => {}
             Rx4Event::ContextUsage {
@@ -1782,62 +1784,52 @@ impl App {
 
     pub(crate) fn render_host_surface(&mut self, surface: HostSurface) {
         match surface {
-            HostSurface::RetryReason { reason } => {
+            HostSurface::RetryReason {
+                retry_reason,
+                layer,
+            } => {
+                let content = match (retry_reason.is_empty(), layer.is_empty()) {
+                    (true, true) => "retry".to_string(),
+                    (false, true) => format!("retry: {retry_reason}"),
+                    (true, false) => format!("retry ({layer})"),
+                    (false, false) => format!("retry: {retry_reason} ({layer})"),
+                };
                 self.messages.push(ChatMessage {
                     role: "system".to_string(),
-                    content: if reason.is_empty() {
-                        "retry".to_string()
-                    } else {
-                        format!("retry: {reason}")
-                    },
+                    content,
                     is_tool: false,
                     tool_name: String::new(),
                     tool_call_id: String::new(),
                     is_streaming: false,
                 });
             }
-            HostSurface::ProcessId { process_id } => {
-                self.messages.push(ChatMessage {
-                    role: "tool".to_string(),
-                    content: process_id.clone(),
-                    is_tool: true,
-                    tool_name: "pty".to_string(),
-                    tool_call_id: process_id,
-                    is_streaming: true,
-                });
-            }
-            HostSurface::WriteStdin { process_id, data } => {
+            HostSurface::ProcessStdin { process_id, bytes } => {
+                let line = format!("{bytes} bytes");
                 if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
                     message.is_tool && !process_id.is_empty() && message.tool_call_id == process_id
                 }) {
-                    if !msg.content.is_empty() && !data.is_empty() {
+                    if !msg.content.is_empty() {
                         msg.content.push('\n');
                     }
-                    msg.content.push_str(&data);
+                    msg.content.push_str(&line);
                     msg.is_streaming = true;
                 } else {
                     self.messages.push(ChatMessage {
                         role: "tool".to_string(),
-                        content: data,
+                        content: line,
                         is_tool: true,
-                        tool_name: "stdin".to_string(),
+                        tool_name: "pty".to_string(),
                         tool_call_id: process_id,
                         is_streaming: true,
                     });
                 }
             }
-            HostSurface::RequestPermissions {
-                tool_name,
-                arguments,
-                reason,
-            } => {
-                let detail = tool_detail(&tool_name, &arguments);
-                let content = if !reason.is_empty() {
-                    format!("Approval required: {tool_name} ({reason})")
-                } else if detail.is_empty() {
-                    format!("Approval required: {tool_name}")
+            HostSurface::RequestPermissions { tool, paths } => {
+                let detail = paths.join(" ");
+                let content = if detail.is_empty() {
+                    format!("Approval required: {tool}")
                 } else {
-                    format!("Approval required: {tool_name} {detail}")
+                    format!("Approval required: {tool} ({detail})")
                 };
                 self.messages.push(ChatMessage {
                     role: "system".to_string(),
@@ -3061,19 +3053,20 @@ mod tests {
     fn host_surfaces_render_like_tool_and_approval_events() {
         let mut app = App::new();
         app.render_host_surface(HostSurface::RetryReason {
-            reason: "sandbox escalate".into(),
+            retry_reason: "sandbox deny".into(),
+            layer: "NestedFs".into(),
         });
-        app.render_host_surface(HostSurface::ProcessId {
+        app.render_host_surface(HostSurface::ProcessStdin {
             process_id: "pty-9".into(),
+            bytes: 3,
         });
-        app.render_host_surface(HostSurface::WriteStdin {
+        app.render_host_surface(HostSurface::ProcessStdin {
             process_id: "pty-9".into(),
-            data: "ls".into(),
+            bytes: 4,
         });
         app.render_host_surface(HostSurface::RequestPermissions {
-            tool_name: "bash".into(),
-            arguments: r#"{"command":"pwd"}"#.into(),
-            reason: "ask".into(),
+            tool: "write".into(),
+            paths: vec!["src/lib.rs".into()],
         });
         app.render_host_surface(HostSurface::PatchHunk {
             path: "src/lib.rs".into(),
@@ -3085,11 +3078,14 @@ mod tests {
         });
 
         assert_eq!(app.messages[0].role, "system");
-        assert_eq!(app.messages[0].content, "retry: sandbox escalate");
+        assert_eq!(app.messages[0].content, "retry: sandbox deny (NestedFs)");
         assert_eq!(app.messages[1].tool_name, "pty");
-        assert_eq!(app.messages[1].content, "pty-9\nls");
+        assert_eq!(app.messages[1].content, "3 bytes\n4 bytes");
         assert!(app.messages[1].is_streaming);
-        assert_eq!(app.messages[2].content, "Approval required: bash (ask)");
+        assert_eq!(
+            app.messages[2].content,
+            "Approval required: write (src/lib.rs)"
+        );
         assert_eq!(app.messages[3].tool_name, "patch");
         assert_eq!(app.messages[3].content, "@@ -1 +1 @@\n+fn main() {}\n");
         assert!(app.messages[3].is_streaming);

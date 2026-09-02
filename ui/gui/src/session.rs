@@ -290,6 +290,40 @@ impl AgentSession {
                 self.busy = false;
                 None
             }
+            Rx4Event::RetryReason {
+                retry_reason,
+                layer,
+            } => {
+                self.messages.push(MessageItem::new(
+                    "system",
+                    format!("retry: {retry_reason} ({layer})"),
+                ));
+                None
+            }
+            Rx4Event::ProcessStdin { process_id, bytes } => {
+                self.messages.push(MessageItem::new(
+                    "tool:pty",
+                    format!("{process_id} {bytes} bytes"),
+                ));
+                None
+            }
+            Rx4Event::RequestPermissions { tool, paths } => {
+                let detail = paths.join(" ");
+                self.messages.push(MessageItem::new(
+                    "system",
+                    if detail.is_empty() {
+                        format!("Approval required: {tool}")
+                    } else {
+                        format!("Approval required: {tool} ({detail})")
+                    },
+                ));
+                None
+            }
+            Rx4Event::PatchHunk { path, hunk } => {
+                self.messages
+                    .push(MessageItem::new(&format!("tool:patch:{path}"), hunk));
+                None
+            }
             _ => None,
         }
     }

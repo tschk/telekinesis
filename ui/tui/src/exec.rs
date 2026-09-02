@@ -190,7 +190,6 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
             eprintln!("· {}", cli_line(&surface));
             return;
         }
-        #[allow(unreachable_patterns)]
         match event {
             Rx4Event::ToolExecutionStart(call) => eprintln!("· {}", call.name),
             Rx4Event::ApprovalRequired(req) => eprintln!("· {}", req.tool_name),
