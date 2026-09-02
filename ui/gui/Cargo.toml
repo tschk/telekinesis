@@ -35,7 +35,7 @@ windows = ["crepuscularity-gpui?/windows"]
 crepuscularity-gpui = { version = "=0.5.8", default-features = false, features = ["font-kit", "symbols"], optional = true }
 crepuscularity_macros = { version = "=0.5.11", optional = true }
 gpui = { version = "=0.2.2", optional = true }
-rx4 = { git = "https://github.com/tschk/rotary", rev = "d1f94aa7db05946c6a1285da34bf26c9887a9f03", default-features = false, features = ["providers", "builtin-tools", "computer-use"] }
+rx4 = { git = "https://github.com/tschk/rotary", rev = "033f5ea3574e04b4b3229cfb4ec8bd20ecc0e8ab", default-features = false, features = ["providers", "builtin-tools", "computer-use"] }
 telekinesis-router = { path = "../router" }
 rs_ai_oauth = "0.2.31"
 serde_json = "1"
