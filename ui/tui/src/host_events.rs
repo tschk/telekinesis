@@ -9,15 +9,25 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostSurface {
-    RetryReason { reason: String },
-    ProcessId { process_id: String },
-    WriteStdin { process_id: String, data: String },
+    RetryReason {
+        reason: String,
+    },
+    ProcessId {
+        process_id: String,
+    },
+    WriteStdin {
+        process_id: String,
+        data: String,
+    },
     RequestPermissions {
         tool_name: String,
         arguments: String,
         reason: String,
     },
-    PatchHunk { path: String, hunk: String },
+    PatchHunk {
+        path: String,
+        hunk: String,
+    },
 }
 
 pub trait EventExt {
@@ -130,7 +140,10 @@ fn first_str(value: &Value, keys: &[&str]) -> Option<String> {
 }
 
 fn truncate_cli(text: &str) -> String {
-    let line = text.lines().find(|row| !row.trim().is_empty()).unwrap_or("");
+    let line = text
+        .lines()
+        .find(|row| !row.trim().is_empty())
+        .unwrap_or("");
     let mut out = String::new();
     for ch in line.chars() {
         if out.chars().count() >= 80 {

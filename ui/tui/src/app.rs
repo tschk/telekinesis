@@ -1028,10 +1028,7 @@ impl App {
                     // Always qualify: codex/gpt-5.6-luna, clinepass/
                     // deepseek-v4-flash — the same id can exist at several
                     // providers, and the prefix doubles as /model syntax.
-                    row.set(
-                        "model_id",
-                        format!("{}/{}", model.provider, model.id),
-                    );
+                    row.set("model_id", format!("{}/{}", model.provider, model.id));
                     row.set("selected", Some(index) == self.model_choice);
                     row
                 })
@@ -1117,10 +1114,7 @@ impl App {
         } else {
             Vec::new()
         };
-        tpl.set(
-            "active_plan_rows",
-            TemplateValue::List(active_plan_rows),
-        );
+        tpl.set("active_plan_rows", TemplateValue::List(active_plan_rows));
         let plan_rows = self
             .plan_rows
             .iter()
@@ -2268,8 +2262,8 @@ impl App {
             .iter()
             .find(|configured| {
                 Some(configured.id.as_str()) == catalog_id.as_deref()
-                    || catalog_id.as_deref() == provider_catalog::by_id(&configured.id)
-                        .map(|spec| spec.id)
+                    || catalog_id.as_deref()
+                        == provider_catalog::by_id(&configured.id).map(|spec| spec.id)
             })
             .map(|configured| configured.id.clone())
             .or(catalog_id)
@@ -2487,7 +2481,7 @@ impl App {
 mod tests {
     use super::{
         file_query, load_template, matching_slash_commands, search_files, App, ChatMessage,
-        ConfiguredProvider,
+        ConfiguredProvider, HostSurface,
     };
     use crate::models::{context_window_for_model, GPT_5_CONTEXT_WINDOW};
     #[cfg(feature = "pi-compat")]
@@ -3095,15 +3089,9 @@ mod tests {
         assert_eq!(app.messages[1].tool_name, "pty");
         assert_eq!(app.messages[1].content, "pty-9\nls");
         assert!(app.messages[1].is_streaming);
-        assert_eq!(
-            app.messages[2].content,
-            "Approval required: bash (ask)"
-        );
+        assert_eq!(app.messages[2].content, "Approval required: bash (ask)");
         assert_eq!(app.messages[3].tool_name, "patch");
-        assert_eq!(
-            app.messages[3].content,
-            "@@ -1 +1 @@\n+fn main() {}\n"
-        );
+        assert_eq!(app.messages[3].content, "@@ -1 +1 @@\n+fn main() {}\n");
         assert!(app.messages[3].is_streaming);
     }
 
@@ -3303,7 +3291,10 @@ mod tests {
         let mut template = load_template(None).unwrap();
         let mut app = App::new();
         app.config.open();
-        for _ in 0..1 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
+        for _ in 0..1 {
+            app.config
+                .move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len());
+        }
         app.messages.push(ChatMessage {
             role: "assistant".to_string(),
             content: String::new(),
@@ -3370,11 +3361,17 @@ mod tests {
         let agent = Arc::new(Mutex::new(agent));
         let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         // Choice 1 cycles scope in place and keeps the menu open.
-        while app.config.choice() != 1 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
+        while app.config.choice() != 1 {
+            app.config
+                .move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len());
+        }
         assert!(app.activate_config(&agent, &_tx));
         assert!(app.config.open);
         // Choice 4 shows the summary; a `false` return tells the caller to close.
-        while app.config.choice() != 4 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
+        while app.config.choice() != 4 {
+            app.config
+                .move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len());
+        }
         assert!(!app.activate_config(&agent, &_tx));
         app.close_config();
         assert!(!app.config.open);
