@@ -39,7 +39,7 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 rs_ai_oauth = "0.2.31"
-rx4 = { git = "https://github.com/tschk/rotary", rev = "13bc1ff9150e576505cc6becedf4507ca9f90391", default-features = false, features = ["providers", "builtin-tools"] }
+rx4 = { git = "https://github.com/tschk/rotary", rev = "b097343119e987af85738e057f4cd3771ac2b7ee", default-features = false, features = ["providers", "builtin-tools"] }
 telekinesis-router = { path = "../router", version = "0.3" }
 darash = { version = "0.4.0", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "charset", "http2", "json", "rustls-tls", "stream"] }

@@ -197,10 +197,10 @@ fn create_agent(
     let mut agent = Agent::new();
     agent.set_model_registry(host_model_registry(provider.as_ref(), model));
     agent.set_scope(scope);
-    let mut tools = ToolRegistry::new();
-    register_builtin_tools(&mut tools);
+    let tools = ToolRegistry::new();
+    register_builtin_tools(&tools);
     if scope == Scope::ComputerUse {
-        rx4::computer_use::register_tools(&mut tools);
+        rx4::computer_use::register_tools(&tools);
     }
     agent.set_tools(tools);
     agent.set_workspace_root(

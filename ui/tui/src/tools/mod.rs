@@ -71,10 +71,10 @@ pub(crate) fn build_tool_registry_with_profile(
     profile: ToolProfile,
 ) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
-    register_builtin_tools(&mut tools);
+    register_builtin_tools(&tools);
     if profile.computer_use() {
         #[cfg(feature = "computer-use")]
-        rx4::computer_use::register_tools(&mut tools);
+        rx4::computer_use::register_tools(&tools);
     }
     if profile.darash() {
         #[cfg(feature = "search")]
@@ -82,7 +82,7 @@ pub(crate) fn build_tool_registry_with_profile(
     }
     register_mcp_tools(&mut tools, mcp);
     if profile.spawn() {
-        register_spawn_agent_tool(&mut tools, Arc::clone(subagent_manager));
+        register_spawn_agent_tool(&tools, Arc::clone(subagent_manager));
     }
     tools
 }
