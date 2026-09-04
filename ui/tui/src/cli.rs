@@ -137,7 +137,9 @@ pub fn print_help() {
     println!("  tk -c           Continue newest session for this project");
     println!("  tk exec \"<prompt>\"   Run one turn headlessly, final text on stdout");
     println!("                       (prompt from stdin with `-`; --json, --cwd <dir>, --provider <id>, --model <name>,");
-    println!("                       --effort|--thinking <low|medium|high|xhigh>, --mcp, --no-yolo,");
+    println!(
+        "                       --effort|--thinking <low|medium|high|xhigh>, --mcp, --no-yolo,"
+    );
     println!("                       --prewalk, --smol-model <name>, --investigate-model <name>)");
     println!("  tk --no-yolo    Headless stdin run that denies Ask-class tools");
     println!(
@@ -162,7 +164,9 @@ pub fn print_help() {
     println!("  OPENROUTER_API_KEY  OpenRouter API key");
     println!("  CLINE_API_KEY       Cline-pass API key (or reuse OpenCode auth.json)");
     println!("  TK_PROVIDER         Default exec/TUI provider id (e.g. clinepass)");
-    println!("  TK_EFFORT           exec reasoning effort if --effort/--thinking omitted (default low)");
+    println!(
+        "  TK_EFFORT           exec reasoning effort if --effort/--thinking omitted (default low)"
+    );
     println!("  TK_PLAN_APPROVAL    ask to gate whole-turn plans (default: bypass)");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
     println!("  RX4_PREWALK         1/true to enable investigate-then-apply");

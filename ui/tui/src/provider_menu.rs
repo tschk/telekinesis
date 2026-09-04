@@ -71,7 +71,7 @@ impl ProviderMenu {
 
 /// Full key handling while the menu is open. Free function because it needs
 /// both menu state and the composer on `App`.
-pub fn handle_key(app: &mut crate::app::App, code: crossterm::event::KeyCode) {
+pub(crate) fn handle_key(app: &mut crate::app::App, code: crossterm::event::KeyCode) {
     match code {
         crossterm::event::KeyCode::Enter => {
             if let Some(provider) = app.provider_menu.selected(&app.input) {

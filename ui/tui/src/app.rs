@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::channel_approver::{ApprovalMode, PendingApproval};
 use crate::host::{self, load_history, save_history, save_prefs, Prefs};
+use crate::host_events::{EventExt, HostSurface};
 use crate::markdown;
 use crate::models::{
     context_window_for_model, host_model_info, oauth_model_info, openrouter_model_info,
@@ -520,6 +521,7 @@ pub(crate) struct App {
     /// submitted in this window are queued instead of erroring.
     pub(crate) providers_connecting: bool,
     /// Model preferred by prefs, applied once providers connect.
+    #[allow(dead_code)]
     pub(crate) pending_model: Option<String>,
     /// Prompts submitted before providers connected, flushed in order on ready.
     pub(crate) queued_prompts: Vec<String>,
@@ -546,6 +548,7 @@ pub(crate) enum AppEvent {
         context_windows: HashMap<String, usize>,
         models: Vec<ModelInfo>,
     },
+    #[allow(dead_code)]
     ProvidersReady(Vec<(ConfiguredProvider, String)>),
     Idle,
 }
@@ -1027,10 +1030,7 @@ impl App {
                     // Always qualify: codex/gpt-5.6-luna, clinepass/
                     // deepseek-v4-flash — the same id can exist at several
                     // providers, and the prefix doubles as /model syntax.
-                    row.set(
-                        "model_id",
-                        format!("{}/{}", model.provider, model.id),
-                    );
+                    row.set("model_id", format!("{}/{}", model.provider, model.id));
                     row.set("selected", Some(index) == self.model_choice);
                     row
                 })
@@ -1116,10 +1116,7 @@ impl App {
         } else {
             Vec::new()
         };
-        tpl.set(
-            "active_plan_rows",
-            TemplateValue::List(active_plan_rows),
-        );
+        tpl.set("active_plan_rows", TemplateValue::List(active_plan_rows));
         let plan_rows = self
             .plan_rows
             .iter()
@@ -1274,6 +1271,7 @@ impl App {
         self.queued_prompts.push(text);
     }
 
+    #[allow(dead_code)]
     fn record_user_prompt(&mut self, text: &str) {
         self.input_history.insert(0, text.to_string());
         save_history(&self.input_history);
@@ -1491,6 +1489,10 @@ impl App {
     }
 
     pub(crate) fn handle_rx4_event(&mut self, event: Rx4Event) {
+        if let Some(surface) = event.host_surface() {
+            self.render_host_surface(surface);
+            return;
+        }
         match event {
             Rx4Event::AgentStart => {}
             Rx4Event::ContextUsage {
@@ -1771,6 +1773,89 @@ impl App {
                     tool_call_id: String::new(),
                     is_streaming: false,
                 });
+            }
+            other => {
+                if let Some(surface) = other.host_surface() {
+                    self.render_host_surface(surface);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn render_host_surface(&mut self, surface: HostSurface) {
+        match surface {
+            HostSurface::RetryReason {
+                retry_reason,
+                layer,
+            } => {
+                let content = match (retry_reason.is_empty(), layer.is_empty()) {
+                    (true, true) => "retry".to_string(),
+                    (false, true) => format!("retry: {retry_reason}"),
+                    (true, false) => format!("retry ({layer})"),
+                    (false, false) => format!("retry: {retry_reason} ({layer})"),
+                };
+                self.messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content,
+                    is_tool: false,
+                    tool_name: String::new(),
+                    tool_call_id: String::new(),
+                    is_streaming: false,
+                });
+            }
+            HostSurface::ProcessStdin { process_id, bytes } => {
+                let line = format!("{bytes} bytes");
+                if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
+                    message.is_tool && !process_id.is_empty() && message.tool_call_id == process_id
+                }) {
+                    if !msg.content.is_empty() {
+                        msg.content.push('\n');
+                    }
+                    msg.content.push_str(&line);
+                    msg.is_streaming = true;
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: line,
+                        is_tool: true,
+                        tool_name: "pty".to_string(),
+                        tool_call_id: process_id,
+                        is_streaming: true,
+                    });
+                }
+            }
+            HostSurface::RequestPermissions { tool, paths } => {
+                let detail = paths.join(" ");
+                let content = if detail.is_empty() {
+                    format!("Approval required: {tool}")
+                } else {
+                    format!("Approval required: {tool} ({detail})")
+                };
+                self.messages.push(ChatMessage {
+                    role: "system".to_string(),
+                    content,
+                    is_tool: false,
+                    tool_name: String::new(),
+                    tool_call_id: String::new(),
+                    is_streaming: false,
+                });
+            }
+            HostSurface::PatchHunk { path, hunk } => {
+                if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
+                    message.is_tool && message.tool_name == "patch" && message.tool_call_id == path
+                }) {
+                    msg.content.push_str(&hunk);
+                    msg.is_streaming = true;
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: hunk,
+                        is_tool: true,
+                        tool_name: "patch".to_string(),
+                        tool_call_id: path,
+                        is_streaming: true,
+                    });
+                }
             }
         }
     }
@@ -2169,8 +2254,8 @@ impl App {
             .iter()
             .find(|configured| {
                 Some(configured.id.as_str()) == catalog_id.as_deref()
-                    || catalog_id.as_deref() == provider_catalog::by_id(&configured.id)
-                        .map(|spec| spec.id)
+                    || catalog_id.as_deref()
+                        == provider_catalog::by_id(&configured.id).map(|spec| spec.id)
             })
             .map(|configured| configured.id.clone())
             .or(catalog_id)
@@ -2388,7 +2473,7 @@ impl App {
 mod tests {
     use super::{
         file_query, load_template, matching_slash_commands, search_files, App, ChatMessage,
-        ConfiguredProvider,
+        ConfiguredProvider, HostSurface,
     };
     use crate::models::{context_window_for_model, GPT_5_CONTEXT_WINDOW};
     #[cfg(feature = "pi-compat")]
@@ -2965,6 +3050,48 @@ mod tests {
     }
 
     #[test]
+    fn host_surfaces_render_like_tool_and_approval_events() {
+        let mut app = App::new();
+        app.render_host_surface(HostSurface::RetryReason {
+            retry_reason: "sandbox deny".into(),
+            layer: "NestedFs".into(),
+        });
+        app.render_host_surface(HostSurface::ProcessStdin {
+            process_id: "pty-9".into(),
+            bytes: 3,
+        });
+        app.render_host_surface(HostSurface::ProcessStdin {
+            process_id: "pty-9".into(),
+            bytes: 4,
+        });
+        app.render_host_surface(HostSurface::RequestPermissions {
+            tool: "write".into(),
+            paths: vec!["src/lib.rs".into()],
+        });
+        app.render_host_surface(HostSurface::PatchHunk {
+            path: "src/lib.rs".into(),
+            hunk: "@@ -1 +1 @@\n".into(),
+        });
+        app.render_host_surface(HostSurface::PatchHunk {
+            path: "src/lib.rs".into(),
+            hunk: "+fn main() {}\n".into(),
+        });
+
+        assert_eq!(app.messages[0].role, "system");
+        assert_eq!(app.messages[0].content, "retry: sandbox deny (NestedFs)");
+        assert_eq!(app.messages[1].tool_name, "pty");
+        assert_eq!(app.messages[1].content, "3 bytes\n4 bytes");
+        assert!(app.messages[1].is_streaming);
+        assert_eq!(
+            app.messages[2].content,
+            "Approval required: write (src/lib.rs)"
+        );
+        assert_eq!(app.messages[3].tool_name, "patch");
+        assert_eq!(app.messages[3].content, "@@ -1 +1 @@\n+fn main() {}\n");
+        assert!(app.messages[3].is_streaming);
+    }
+
+    #[test]
     fn scrollback_wraps_unicode_without_splitting_characters() {
         let mut app = App::new();
         app.messages.push(ChatMessage {
@@ -3160,7 +3287,10 @@ mod tests {
         let mut template = load_template(None).unwrap();
         let mut app = App::new();
         app.config.open();
-        for _ in 0..1 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
+        for _ in 0..1 {
+            app.config
+                .move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len());
+        }
         app.messages.push(ChatMessage {
             role: "assistant".to_string(),
             content: String::new(),
@@ -3227,11 +3357,17 @@ mod tests {
         let agent = Arc::new(Mutex::new(agent));
         let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         // Choice 1 cycles scope in place and keeps the menu open.
-        while app.config.choice() != 1 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
+        while app.config.choice() != 1 {
+            app.config
+                .move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len());
+        }
         assert!(app.activate_config(&agent, &_tx));
         assert!(app.config.open);
         // Choice 4 shows the summary; a `false` return tells the caller to close.
-        while app.config.choice() != 4 { app.config.move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len()); }
+        while app.config.choice() != 4 {
+            app.config
+                .move_choice(1, crate::config_menu::ConfigMenu::rows(&app).len());
+        }
         assert!(!app.activate_config(&agent, &_tx));
         app.close_config();
         assert!(!app.config.open);

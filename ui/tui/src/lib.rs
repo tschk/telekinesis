@@ -1,14 +1,14 @@
 pub mod apikey;
 pub mod app;
-pub mod config_menu;
-pub mod login_menu;
-pub mod provider_menu;
 pub mod channel_approver;
 pub mod cli;
 pub mod codex_provider;
+pub mod config_menu;
 pub mod exec;
 pub mod harness;
 pub mod host;
+pub mod host_events;
+pub mod login_menu;
 pub mod markdown;
 #[cfg(feature = "mcp")]
 pub mod mcp_config;
@@ -18,6 +18,7 @@ pub mod pi;
 pub mod plan_display;
 pub mod product_policy;
 pub mod provider_catalog;
+pub mod provider_menu;
 pub mod providers;
 pub mod slash;
 pub mod tools;

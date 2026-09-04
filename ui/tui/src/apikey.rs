@@ -177,10 +177,7 @@ impl ApikeyPanel {
                 Vec::new()
             };
         tpl.set("apikey_action_rows", TemplateValue::List(action_rows));
-        tpl.set(
-            "apikey_status",
-            self.status.clone().unwrap_or_default(),
-        );
+        tpl.set("apikey_status", self.status.clone().unwrap_or_default());
         if let Some(provider) = self.provider {
             tpl.set("apikey_name", provider.name);
             tpl.set("apikey_id", provider.id);

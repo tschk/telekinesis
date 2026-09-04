@@ -8,6 +8,7 @@ use rx4::ModelRegistry;
 
 use crate::harness::{apply_prewalk_exec_env, sync_prewalk_model};
 use crate::host::build_agent;
+use crate::host_events::{cli_line, EventExt};
 use crate::models::host_model_info;
 use crate::providers::setup_providers;
 use crate::tools::discover_mcp_tools;
@@ -19,7 +20,7 @@ pub struct ExecArgs {
     pub cwd: Option<PathBuf>,
     pub help: bool,
     pub no_yolo: bool,
-pub model: Option<String>,
+    pub model: Option<String>,
     pub provider: Option<String>,
     pub effort: Option<String>,
     pub mcp: bool,
@@ -60,7 +61,7 @@ fn exec_help() {
     eprintln!("OPTIONS:");
     eprintln!("  --json          Emit {{\"ok\",\"text\",\"error\"}} on stdout instead of prose");
     eprintln!("  --cwd <dir>     Workspace to run against (default: current directory)");
-eprintln!("  --provider <id> Use a configured provider (or TK_PROVIDER / model prefix)");
+    eprintln!("  --provider <id> Use a configured provider (or TK_PROVIDER / model prefix)");
     eprintln!("  --model <name>  Override that provider's default model");
     eprintln!("  --effort <lvl>  Reasoning effort: low (default), medium, high, xhigh");
     eprintln!("  --thinking <lvl>  Alias for --effort (matches Codex/Pi flag names)");
@@ -77,8 +78,7 @@ eprintln!("  --provider <id> Use a configured provider (or TK_PROVIDER / model p
 /// Codex SSE/body decode and similar transport failures that are worth one retry.
 pub fn is_transient_provider_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
-    (lower.contains("stream")
-        && (lower.contains("decod") || lower.contains("read failed")))
+    (lower.contains("stream") && (lower.contains("decod") || lower.contains("read failed")))
         || lower.contains("error decoding response body")
         || lower.contains("connection reset")
         || lower.contains("unexpected eof")
@@ -163,10 +163,12 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
     let model = parsed
         .model
         .as_deref()
-        .map(|model| match crate::provider_catalog::by_id(&configured.id) {
-            Some(spec) => crate::provider_catalog::normalize_model(spec, model),
-            None => model.to_string(),
-        })
+        .map(
+            |model| match crate::provider_catalog::by_id(&configured.id) {
+                Some(spec) => crate::provider_catalog::normalize_model(spec, model),
+                None => model.to_string(),
+            },
+        )
         .unwrap_or(default_model);
     let effort = resolve_exec_effort(parsed.effort.as_deref());
     let (mut agent, _subagent_manager) = build_agent(
@@ -183,10 +185,17 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
     }
 
-    agent.subscribe(move |event: &Rx4Event| match event {
-        Rx4Event::ToolExecutionStart(call) => eprintln!("· {}", call.name),
-        Rx4Event::Error(message) => eprintln!("· error: {message}"),
-        _ => {}
+    agent.subscribe(move |event: &Rx4Event| {
+        if let Some(surface) = event.host_surface() {
+            eprintln!("· {}", cli_line(&surface));
+            return;
+        }
+        match event {
+            Rx4Event::ToolExecutionStart(call) => eprintln!("· {}", call.name),
+            Rx4Event::ApprovalRequired(req) => eprintln!("· {}", req.tool_name),
+            Rx4Event::Error(message) => eprintln!("· error: {message}"),
+            _ => {}
+        }
     });
 
     eprintln!(
@@ -245,8 +254,7 @@ fn requested_provider(explicit: Option<&str>) -> Option<String> {
 }
 
 fn provider_matches(id: &str, name: &str, query: &str) -> bool {
-    crate::provider_catalog::find(query)
-        .is_some_and(|spec| spec.id == id)
+    crate::provider_catalog::find(query).is_some_and(|spec| spec.id == id)
         || id.eq_ignore_ascii_case(query)
         || name.eq_ignore_ascii_case(query)
 }
@@ -257,17 +265,22 @@ pub(crate) fn pick_configured_provider(
     explicit_model: Option<&str>,
 ) -> Option<(crate::app::ConfiguredProvider, String)> {
     let requested = requested_provider(explicit_provider).or_else(|| {
-        explicit_model.and_then(crate::provider_catalog::infer_from_model).map(|spec| spec.id.to_string())
+        explicit_model
+            .and_then(crate::provider_catalog::infer_from_model)
+            .map(|spec| spec.id.to_string())
     });
     if let Some(query) = requested {
-        return providers.into_iter().find(|(provider, _)| {
-            provider_matches(&provider.id, &provider.name, &query)
-        });
+        return providers
+            .into_iter()
+            .find(|(provider, _)| provider_matches(&provider.id, &provider.name, &query));
     }
     providers.into_iter().next()
 }
 
-fn missing_provider_message(explicit_provider: Option<&str>, explicit_model: Option<&str>) -> String {
+fn missing_provider_message(
+    explicit_provider: Option<&str>,
+    explicit_model: Option<&str>,
+) -> String {
     match requested_provider(explicit_provider).or_else(|| {
         explicit_model
             .and_then(crate::provider_catalog::infer_from_model)
@@ -305,7 +318,9 @@ mod tests {
             "provider error: api error: codex stream read failed: error decoding response body"
         ));
         assert!(is_transient_provider_error("error decoding response body"));
-        assert!(!is_transient_provider_error("no provider credentials; run `tk login`"));
+        assert!(!is_transient_provider_error(
+            "no provider credentials; run `tk login`"
+        ));
         assert!(!is_transient_provider_error("empty prompt"));
     }
 

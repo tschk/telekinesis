@@ -4,6 +4,8 @@ use rx4::agent::{Agent, CancellationHandle, Event as Rx4Event, ToolSource};
 use rx4::provider::Role;
 use tokio::sync::Mutex;
 
+use crate::host_events::{EventExt, HostSurface};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageItem {
     pub role: String,
@@ -152,6 +154,10 @@ impl AgentSession {
     }
 
     pub fn handle_rx4_event(&mut self, event: Rx4Event) -> Option<PointTarget> {
+        if let Some(surface) = event.host_surface() {
+            self.render_host_surface(surface);
+            return None;
+        }
         match event {
             Rx4Event::AgentStart => None,
             Rx4Event::ContextUsage {
@@ -293,6 +299,44 @@ impl AgentSession {
             _ => None,
         }
     }
+
+    fn render_host_surface(&mut self, surface: HostSurface) {
+        match surface {
+            HostSurface::RetryReason {
+                retry_reason,
+                layer,
+            } => {
+                let content = match (retry_reason.is_empty(), layer.is_empty()) {
+                    (true, true) => "retry".to_string(),
+                    (false, true) => format!("retry: {retry_reason}"),
+                    (true, false) => format!("retry ({layer})"),
+                    (false, false) => format!("retry: {retry_reason} ({layer})"),
+                };
+                self.messages.push(MessageItem::new("system", content));
+            }
+            HostSurface::ProcessStdin { process_id, bytes } => {
+                self.messages.push(MessageItem::new(
+                    "tool:pty",
+                    format!("{process_id} {bytes} bytes"),
+                ));
+            }
+            HostSurface::RequestPermissions { tool, paths } => {
+                let detail = paths.join(" ");
+                self.messages.push(MessageItem::new(
+                    "system",
+                    if detail.is_empty() {
+                        format!("Approval required: {tool}")
+                    } else {
+                        format!("Approval required: {tool} ({detail})")
+                    },
+                ));
+            }
+            HostSurface::PatchHunk { path, hunk } => {
+                self.messages
+                    .push(MessageItem::new(&format!("tool:patch:{path}"), hunk));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +474,41 @@ mod tests {
         assert_eq!(
             session.messages.last().map(|m| m.content.as_str()),
             Some("see the menu")
+        );
+    }
+
+    #[test]
+    fn host_surfaces_render_like_tool_and_approval_events() {
+        let mut session = AgentSession::new("coding", SessionKind::Coding, None, "gpt-5.5");
+        session.handle_rx4_event(Rx4Event::RetryReason {
+            retry_reason: "sandbox deny".into(),
+            layer: "NestedFs".into(),
+        });
+        session.handle_rx4_event(Rx4Event::ProcessStdin {
+            process_id: "pty-9".into(),
+            bytes: 3,
+        });
+        session.handle_rx4_event(Rx4Event::RequestPermissions {
+            tool: "write".into(),
+            paths: vec!["src/lib.rs".into()],
+        });
+        session.handle_rx4_event(Rx4Event::PatchHunk {
+            path: "src/lib.rs".into(),
+            hunk: "@@ -1 +1 @@".into(),
+        });
+        let roles: Vec<_> = session
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                ("system", "retry: sandbox deny (NestedFs)"),
+                ("tool:pty", "pty-9 3 bytes"),
+                ("system", "Approval required: write (src/lib.rs)"),
+                ("tool:patch:src/lib.rs", "@@ -1 +1 @@"),
+            ]
         );
     }
 }

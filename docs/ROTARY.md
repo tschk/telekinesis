@@ -23,10 +23,10 @@ flowchart TD
 
 ## Wire
 
-- rx4 is consumed as a git dependency on `tschk/rotary` (`feat/rx4-agent-harness`
-  / `441ce52`) with `default-features = false`. The default `tk` surface keeps
-  `providers` + `builtin-tools` only. Hosts call rotary APIs; they do not own
-  hashline, prewalk, or AVO dialects.
+- rx4 is consumed as a git dependency on `tschk/rotary` (`feat/harness-steals`
+  / `3aab31e794a49f9d2ae399232441439ae3f35823`) with `default-features = false`.
+  The default `tk` surface keeps `providers` + `builtin-tools` only. Hosts call
+  rotary APIs; they do not own hashline, prewalk, or AVO dialects.
 - `ui/tui/src/main.rs` currently imports rx4 directly and drives the loop
   in-process via tokio channels. A shared telekinesis host runtime is the
   target boundary for additional surfaces.
@@ -70,6 +70,16 @@ Harness APIs (do not reimplement):
 Events: `Rx4Event` lifecycle (AgentStart, TurnStart, MessageStart/Delta/End,
 ToolCall, **ApprovalRequired** (includes `arguments`), ToolExecutionStart/End,
 TurnEnd, AgentEnd, Error) delivered over a tokio channel.
+
+Rotary Event shapes (serde tag `type`) matched in `ui/tui/src/host_events.rs`
+(GUI includes the same module). TUI/CLI/GUI render them like ToolExecution /
+ApprovalRequired. Unknown variants are ignored. Hosts forward; they do not
+invent policy.
+
+- `RetryReason { retry_reason, layer }` — sandbox escalate retry
+- `ProcessStdin { process_id, bytes }` — PTY stdin write
+- `RequestPermissions { tool, paths }` — permission prompt
+- `PatchHunk { path, hunk }` — streaming patch hunks
 
 Hooks: `HookRegistry` lifecycle observe (`BeforeTool`/`AfterTool`/…). Engine
 hooks are currently fire-and-forget (`HookFn`); deny/modify lands when engine
