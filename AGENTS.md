@@ -48,7 +48,9 @@ flowchart TD
 | Surface | Path | Status | Notes |
 |---|---|---|---|
 | TUI | `ui/tui` | ✅ Active | Primary surface, ratatui-based, in-process rx4 |
-| GUI | `ui/gui` | 🧪 Experimental | GPUI native window; embeds rx4 directly today |
+| GUI | `ui/gui` | 🧪 Experimental | GPUI companion (`telekinesis-companion`); native window; embeds rx4 directly today — keep separate from ADE shell |
+| ADE desktop | `apps/desktop` | 🧪 Experimental/scaffold | Tauri 2 + React ADE shell (Local↔Cloud host switcher, workspaces stub). Not a replacement for `ui/gui` |
+| Web | `apps/web` | 🧪 Experimental/scaffold | React control plane (relocating from tk-web); shared `--tk-*` tokens |
 
 ## Pi protocol layer
 

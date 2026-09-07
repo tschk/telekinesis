@@ -12,3 +12,9 @@ ui/gui/target/
 ui/router/target/
 .pi-subagents/
 .avo/
+
+# apps/desktop (Tauri + Vite)
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/

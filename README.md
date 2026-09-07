@@ -33,6 +33,15 @@ TUI, CLI, and GUI forward rotary host events (`RetryReason`, `ProcessStdin`, `Re
 Streaming TUI, slash commands, OAuth login, slim default binary. Details:
 [docs](docs/README.md). Evolutionary loop (NVIDIA AVO): [docs/AVO.md](docs/AVO.md).
 
+## UI surfaces
+
+- **TUI** (`ui/tui`) — primary
+- **GPUI companion** (`ui/gui`) — experimental native window
+- **ADE desktop** (`apps/desktop`) — experimental Tauri ADE shell (Local | Cloud); scaffold only
+- **Web** (`apps/web`) — experimental control plane (shared `--tk-*` tokens)
+
+Cloud backend remains private `tschk/tk-cloud`. Archived sibling `tschk/tk-desktop` is not the desktop home.
+
 ## License
 
 MPL-2.0
