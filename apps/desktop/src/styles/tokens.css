@@ -1,0 +1,82 @@
+/*
+  Telekinesis UI kit tokens (CSS-first contract shared with tk-web).
+  Exact names — later consume @tschk/tk-ui; do not invent alternate token names.
+  Theme: dark-first ADE; accent teal/cyan on near-black.
+*/
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --tk-bg: #0b0f12;
+  --tk-surface: #12181d;
+  --tk-surface-2: #1a2229;
+  --tk-border: #2a353e;
+  --tk-text: #e8eef2;
+  --tk-muted: #8b9aa6;
+  --tk-accent: #2dd4bf;
+  --tk-accent-fg: #04201c;
+  --tk-success: #34d399;
+  --tk-warn: #fbbf24;
+  --tk-danger: #f87171;
+
+  --tk-space-1: 4px;
+  --tk-space-2: 8px;
+  --tk-space-3: 12px;
+  --tk-space-4: 16px;
+  --tk-space-5: 24px;
+  --tk-space-6: 32px;
+
+  --tk-radius-sm: 6px;
+  --tk-radius-md: 10px;
+  --tk-radius-lg: 14px;
+
+  --tk-font-sans: "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif;
+  --tk-font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --tk-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --tk-bg: #f4f7f8;
+  --tk-surface: #ffffff;
+  --tk-surface-2: #e8eef1;
+  --tk-border: #c9d4db;
+  --tk-text: #0f171c;
+  --tk-muted: #5b6b76;
+  --tk-accent: #0d9488;
+  --tk-accent-fg: #ffffff;
+  --tk-success: #059669;
+  --tk-warn: #d97706;
+  --tk-danger: #dc2626;
+
+  --tk-shadow-sm: 0 1px 2px rgba(15, 23, 28, 0.06), 0 4px 12px rgba(15, 23, 28, 0.06);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--tk-font-sans);
+  background: var(--tk-bg);
+  color: var(--tk-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
