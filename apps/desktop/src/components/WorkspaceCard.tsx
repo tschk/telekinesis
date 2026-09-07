@@ -24,7 +24,10 @@ export function WorkspaceCard({
       </div>
       <div className="tk-workspace-card__meta">
         <code>{workspace.id}</code>
-        {workspace.region ? <span>{workspace.region}</span> : null}
+        <span className="tk-workspace-card__chip">tier:{workspace.tier}</span>
+        <span className="tk-workspace-card__chip">
+          backend:{workspace.computerBackend ?? "—"}
+        </span>
       </div>
     </button>
   );

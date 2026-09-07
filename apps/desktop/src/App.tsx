@@ -4,11 +4,19 @@ import {
   AppShell,
   Button,
   HostSwitcher,
+  LogPane,
   Panel,
+  PromptBox,
   WorkspaceCard,
 } from "./components";
-import { cloudApiBase, listWorkspaces } from "./lib/cloudApi";
-import type { HostMode, SpawnResult, Workspace } from "./lib/types";
+import {
+  cloudApiBase,
+  createWorkspace,
+  execInWorkspace,
+  getHealth,
+  listWorkspaces,
+} from "./lib/cloudApi";
+import type { HealthResponse, HostMode, SpawnResult, Workspace } from "./lib/types";
 import "./App.css";
 
 function App() {
@@ -22,6 +30,20 @@ function App() {
     "Checking for `tk` / `telekinesis` on PATH…",
   );
   const [spawnBusy, setSpawnBusy] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState("");
+  const [execBusy, setExecBusy] = useState(false);
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+
+  const refreshHealth = useCallback(async () => {
+    const result = await getHealth();
+    setHealth(result.health);
+    setHealthError(result.error ?? null);
+  }, []);
 
   const refreshCloud = useCallback(async () => {
     setLoading(true);
@@ -51,10 +73,15 @@ function App() {
   useEffect(() => {
     if (mode === "cloud") {
       void refreshCloud();
-    } else {
-      void refreshLocalStatus();
+      void refreshHealth();
+      const id = window.setInterval(() => {
+        void refreshHealth();
+      }, 15_000);
+      return () => window.clearInterval(id);
     }
-  }, [mode, refreshCloud, refreshLocalStatus]);
+    void refreshLocalStatus();
+    return undefined;
+  }, [mode, refreshCloud, refreshHealth, refreshLocalStatus]);
 
   async function onSpawn() {
     setSpawnBusy(true);
@@ -71,7 +98,82 @@ function App() {
     }
   }
 
+  async function onCreateWorkspace() {
+    const name = newName.trim() || undefined;
+    setCreateBusy(true);
+    setCreateError(null);
+    const { workspace, error } = await createWorkspace({ name });
+    setCreateBusy(false);
+    if (error || !workspace.id) {
+      setCreateError(error ?? "create failed");
+      return;
+    }
+    setNewName("");
+    setWorkspaces((prev) => {
+      if (prev.some((w) => w.id === workspace.id)) return prev;
+      return [workspace, ...prev];
+    });
+    setSelectedId(workspace.id);
+    setListSource("api");
+    void refreshCloud();
+  }
+
+  async function onExec() {
+    if (!selectedId || !prompt.trim()) return;
+    const source = prompt.trim();
+    setExecBusy(true);
+    setLogLines((prev) => [
+      ...prev,
+      `$ ${source}`,
+    ]);
+    const { result, error } = await execInWorkspace(selectedId, { source });
+    const chunks: string[] = [];
+    if (result.stdout) chunks.push(result.stdout.replace(/\n$/, ""));
+    if (result.stderr) {
+      chunks.push(
+        result.stderr
+          .split("\n")
+          .map((line) => (line ? `[stderr] ${line}` : "[stderr]"))
+          .join("\n")
+          .replace(/\n$/, ""),
+      );
+    }
+    if (result.message && !result.stdout && !result.stderr) {
+      chunks.push(result.message);
+    }
+    const footer = [
+      result.ok ? "ok" : "fail",
+      result.exitCode != null ? `exit=${result.exitCode}` : null,
+      result.backend ? `backend=${result.backend}` : null,
+      result.stub ? "stub" : null,
+      error && result.ok !== false ? `err=${error}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    setLogLines((prev) => [
+      ...prev,
+      ...(chunks.length ? chunks : ["(no output)"]),
+      `# ${footer}`,
+      "",
+    ]);
+    setExecBusy(false);
+  }
+
   const selected = workspaces.find((w) => w.id === selectedId) ?? null;
+
+  const healthChipClass =
+    health?.ok === true
+      ? "tk-health tk-health--ok"
+      : healthError
+        ? "tk-health tk-health--down"
+        : "tk-health tk-health--unknown";
+
+  const healthLabel =
+    health?.ok === true
+      ? `cloud ok · ${health.computer ?? health.service ?? "up"}`
+      : healthError
+        ? `cloud down · ${healthError}`
+        : "cloud · …";
 
   const topBar = (
     <>
@@ -81,6 +183,14 @@ function App() {
       </div>
       <HostSwitcher mode={mode} onChange={setMode} />
       <div className="tk-shell__top-spacer" />
+      <button
+        type="button"
+        className={healthChipClass}
+        title={healthError ?? JSON.stringify(health ?? {})}
+        onClick={() => void refreshHealth()}
+      >
+        {healthLabel}
+      </button>
       <span className="tk-hint" style={{ borderStyle: "solid" }}>
         API: <code>{cloudApiBase()}</code>
       </span>
@@ -106,6 +216,29 @@ function App() {
           Source: <code>{listSource ?? "—"}</code>
           {listError ? ` — ${listError}` : null}
         </p>
+        <form
+          className="tk-create-ws"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void onCreateWorkspace();
+          }}
+        >
+          <input
+            className="tk-create-ws__input"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="New workspace name"
+            disabled={createBusy}
+          />
+          <Button type="submit" disabled={createBusy}>
+            {createBusy ? "…" : "Create"}
+          </Button>
+        </form>
+        {createError ? (
+          <p className="tk-hint" style={{ color: "var(--tk-danger)" }}>
+            Create failed: {createError}
+          </p>
+        ) : null}
         <div className="tk-nav-list">
           {workspaces.map((ws) => (
             <WorkspaceCard
@@ -115,6 +248,9 @@ function App() {
               onSelect={(w) => setSelectedId(w.id)}
             />
           ))}
+          {workspaces.length === 0 && listSource === "api" ? (
+            <p className="tk-hint">No workspaces yet — create one above.</p>
+          ) : null}
         </div>
         <h2 className="tk-nav-section-title">Sessions</h2>
         <p className="tk-hint">Session list stub — wire to tk-cloud WS later.</p>
@@ -172,18 +308,28 @@ function App() {
         ) : (
           <>
             <p>
-              Host mode <strong>Cloud</strong> lists workspaces from{" "}
-              <code>VITE_TK_CLOUD_API</code> (default{" "}
-              <code>http://127.0.0.1:8787/v1/workspaces</code>) and falls back to
-              in-app mock JSON when the stub is down.
+              Host mode <strong>Cloud</strong> talks to the tk-cloud M1 API (
+              <code>GET/POST /v1/workspaces</code>,{" "}
+              <code>POST …/exec</code>). Point{" "}
+              <code>VITE_TK_CLOUD_API</code> at wrangler dev. Empty list from API
+              is valid; mock fallback only on network/HTTP failure.
             </p>
             {selected ? (
               <div className="tk-status-line">
-                {`id: ${selected.id}\nname: ${selected.name}\nstatus: ${selected.status}\nregion: ${selected.region ?? "—"}\nsource: ${listSource}`}
+                {`id: ${selected.id}\nname: ${selected.name}\ntier: ${selected.tier}\nbackend: ${selected.computerBackend ?? "—"}\nstatus: ${selected.status}\ncreatedAt: ${selected.createdAt}\nsource: ${listSource}`}
               </div>
             ) : (
               <p>No workspace selected.</p>
             )}
+            <h3 className="tk-section-label">Exec</h3>
+            <PromptBox
+              value={prompt}
+              onChange={setPrompt}
+              onSubmit={() => void onExec()}
+              disabled={execBusy || !selected}
+            />
+            <h3 className="tk-section-label">Log</h3>
+            <LogPane lines={logLines} />
           </>
         )}
 

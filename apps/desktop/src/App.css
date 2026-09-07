@@ -309,3 +309,132 @@
     grid-template-columns: 1fr;
   }
 }
+
+.tk-badge--unknown {
+  color: var(--tk-muted);
+}
+
+.tk-workspace-card__chip {
+  padding: 1px var(--tk-space-2);
+  border-radius: 999px;
+  border: 1px solid var(--tk-border);
+  background: var(--tk-bg);
+  font-family: var(--tk-font-mono);
+  font-size: 0.65rem;
+}
+
+.tk-health {
+  border: 1px solid var(--tk-border);
+  border-radius: 999px;
+  padding: 2px var(--tk-space-3);
+  background: var(--tk-surface-2);
+  color: var(--tk-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tk-health--ok {
+  color: var(--tk-success);
+  border-color: color-mix(in srgb, var(--tk-success) 40%, var(--tk-border));
+}
+
+.tk-health--down {
+  color: var(--tk-danger);
+  border-color: color-mix(in srgb, var(--tk-danger) 40%, var(--tk-border));
+}
+
+.tk-health--unknown {
+  color: var(--tk-warn);
+}
+
+.tk-create-ws {
+  display: flex;
+  gap: var(--tk-space-2);
+  align-items: center;
+}
+
+.tk-create-ws__input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--tk-space-2) var(--tk-space-3);
+  border-radius: var(--tk-radius-sm);
+  border: 1px solid var(--tk-border);
+  background: var(--tk-bg);
+  color: var(--tk-text);
+  font: inherit;
+}
+
+.tk-create-ws__input:focus {
+  outline: 1px solid var(--tk-accent);
+  border-color: var(--tk-accent);
+}
+
+.tk-section-label {
+  margin: var(--tk-space-4) 0 var(--tk-space-2);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tk-muted);
+}
+
+.tk-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tk-space-2);
+}
+
+.tk-prompt__input {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  padding: var(--tk-space-3);
+  border-radius: var(--tk-radius-md);
+  border: 1px solid var(--tk-border);
+  background: var(--tk-bg);
+  color: var(--tk-text);
+  font-family: var(--tk-font-mono);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.tk-prompt__input:focus {
+  outline: 1px solid var(--tk-accent);
+  border-color: var(--tk-accent);
+}
+
+.tk-prompt__actions {
+  display: flex;
+  gap: var(--tk-space-2);
+  align-items: center;
+}
+
+.tk-log {
+  min-height: 160px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--tk-border);
+  border-radius: var(--tk-radius-md);
+  background: var(--tk-bg);
+}
+
+.tk-log__empty {
+  padding: var(--tk-space-4);
+  color: var(--tk-muted);
+  font-size: 0.85rem;
+}
+
+.tk-log__body {
+  margin: 0;
+  padding: var(--tk-space-3);
+  font-family: var(--tk-font-mono);
+  font-size: 0.8rem;
+  color: var(--tk-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
