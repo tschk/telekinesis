@@ -1824,6 +1824,61 @@ impl App {
                     });
                 }
             }
+            HostSurface::ProcessStart {
+                process_id,
+                program,
+            } => {
+                let line = if program.is_empty() {
+                    "start".to_string()
+                } else {
+                    program
+                };
+                if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
+                    message.is_tool && !process_id.is_empty() && message.tool_call_id == process_id
+                }) {
+                    if !msg.content.is_empty() {
+                        msg.content.push('\n');
+                    }
+                    msg.content.push_str(&line);
+                    msg.is_streaming = true;
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: line,
+                        is_tool: true,
+                        tool_name: "pty".to_string(),
+                        tool_call_id: process_id,
+                        is_streaming: true,
+                    });
+                }
+            }
+            HostSurface::ProcessEnd {
+                process_id,
+                exit_code,
+            } => {
+                let line = match exit_code {
+                    Some(code) => format!("exit {code}"),
+                    None => "exit".to_string(),
+                };
+                if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
+                    message.is_tool && !process_id.is_empty() && message.tool_call_id == process_id
+                }) {
+                    if !msg.content.is_empty() {
+                        msg.content.push('\n');
+                    }
+                    msg.content.push_str(&line);
+                    msg.is_streaming = false;
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: line,
+                        is_tool: true,
+                        tool_name: "pty".to_string(),
+                        tool_call_id: process_id,
+                        is_streaming: false,
+                    });
+                }
+            }
             HostSurface::RequestPermissions { tool, paths } => {
                 let detail = paths.join(" ");
                 let content = if detail.is_empty() {
@@ -1857,25 +1912,25 @@ impl App {
                     });
                 }
             }
-            HostSurface::Recovery {
-                action,
-                layer,
-                text,
-            } => {
-                let verb = if action.is_empty() {
-                    "recovery".to_string()
+            HostSurface::Recovery { action, reason } => {
+                let verb = match action {
+                    rx4::RecoveryKind::Prefill => "prefill",
+                    rx4::RecoveryKind::Nudge => "nudge",
+                    rx4::RecoveryKind::Retry => "retry",
+                    rx4::RecoveryKind::Halt => "halt",
+                };
+                let content = if reason.is_empty() {
+                    format!("recovery {verb}")
                 } else {
-                    action.to_ascii_lowercase()
+                    format!("recovery {verb}: {reason}")
                 };
-                let content = match (text.is_empty(), layer.is_empty()) {
-                    (true, true) => format!("recovery {verb}"),
-                    (false, true) => format!("recovery {verb}: {text}"),
-                    (true, false) => format!("recovery {verb} ({layer})"),
-                    (false, false) => format!("recovery {verb}: {text} ({layer})"),
-                };
-                let halt = action.eq_ignore_ascii_case("halt");
                 self.messages.push(ChatMessage {
-                    role: if halt { "error" } else { "system" }.to_string(),
+                    role: if matches!(action, rx4::RecoveryKind::Halt) {
+                        "error"
+                    } else {
+                        "system"
+                    }
+                    .to_string(),
                     content,
                     is_tool: false,
                     tool_name: String::new(),
@@ -1883,31 +1938,28 @@ impl App {
                     is_streaming: false,
                 });
             }
-            HostSurface::Spill { reason, layer } => {
-                let content = match (reason.is_empty(), layer.is_empty()) {
-                    (true, true) => "spill".to_string(),
-                    (false, true) => format!("spill: {reason}"),
-                    (true, false) => format!("spill ({layer})"),
-                    (false, false) => format!("spill: {reason} ({layer})"),
+            HostSurface::ToolSpill {
+                status,
+                locator,
+                original_bytes,
+            } => {
+                let status = match status {
+                    rx4::SpillStatus::Inline => "inline",
+                    rx4::SpillStatus::Spilled => "spilled",
+                    rx4::SpillStatus::SpillFailed => "spill_failed",
+                };
+                let content = if locator.is_empty() {
+                    format!("spill: {status} ({original_bytes} bytes)")
+                } else {
+                    format!("spill: {status} ({original_bytes} bytes) {locator}")
                 };
                 self.messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content,
-                    is_tool: false,
-                    tool_name: String::new(),
-                    tool_call_id: String::new(),
-                    is_streaming: false,
-                });
-            }
-            HostSurface::FailureNotice { tool, reason } => {
-                let content = match (tool.is_empty(), reason.is_empty()) {
-                    (true, true) => "failure".to_string(),
-                    (false, true) => format!("failure: {tool}"),
-                    (true, false) => format!("failure: {reason}"),
-                    (false, false) => format!("failure: {tool} ({reason})"),
-                };
-                self.messages.push(ChatMessage {
-                    role: "error".to_string(),
+                    role: if matches!(status, "spill_failed") {
+                        "error"
+                    } else {
+                        "system"
+                    }
+                    .to_string(),
                     content,
                     is_tool: false,
                     tool_name: String::new(),
@@ -2838,6 +2890,7 @@ mod tests {
                 content: "one\ntwo".to_string(),
                 is_error: false,
                 error_kind: None,
+                spill: None,
             },
         ));
         assert_eq!(
@@ -2964,6 +3017,7 @@ mod tests {
                 content: "README.md\n".to_string(),
                 is_error: false,
                 error_kind: None,
+                spill: None,
             },
         ));
         app.handle_rx4_event(rx4::agent::Event::MessageDelta {
@@ -3098,6 +3152,7 @@ mod tests {
                 content: "one\ntwo".to_string(),
                 is_error: false,
                 error_kind: None,
+                spill: None,
             },
         ));
 
@@ -3134,35 +3189,37 @@ mod tests {
             path: "src/lib.rs".into(),
             hunk: "+fn main() {}\n".into(),
         });
-        app.render_host_surface(HostSurface::Recovery {
-            action: "Prefill".into(),
-            layer: "turn".into(),
-            text: "Continue from where you left off.".into(),
+        app.render_host_surface(HostSurface::ProcessStart {
+            process_id: "pty-9".into(),
+            program: "cat".into(),
+        });
+        app.render_host_surface(HostSurface::ProcessEnd {
+            process_id: "pty-9".into(),
+            exit_code: Some(0),
         });
         app.render_host_surface(HostSurface::Recovery {
-            action: "Nudge".into(),
-            layer: "tool".into(),
-            text: "The same tool call is repeating. Change arguments or stop.".into(),
+            action: rx4::RecoveryKind::Prefill,
+            reason: "Continue from where you left off.".into(),
         });
         app.render_host_surface(HostSurface::Recovery {
-            action: "Halt".into(),
-            layer: "turn".into(),
-            text: "empty turn limit reached (2/3)".into(),
+            action: rx4::RecoveryKind::Nudge,
+            reason: "The same tool call is repeating. Change arguments or stop.".into(),
         });
-        app.render_host_surface(HostSurface::Spill {
-            reason: "tool output truncated".into(),
-            layer: "tool".into(),
+        app.render_host_surface(HostSurface::Recovery {
+            action: rx4::RecoveryKind::Halt,
+            reason: "empty turn limit reached (2/3)".into(),
         });
-        app.render_host_surface(HostSurface::FailureNotice {
-            tool: "bash".into(),
-            reason: "exit 1".into(),
+        app.render_host_surface(HostSurface::ToolSpill {
+            status: rx4::SpillStatus::SpillFailed,
+            locator: String::new(),
+            original_bytes: 20,
         });
 
         assert_eq!(app.messages[0].role, "system");
         assert_eq!(app.messages[0].content, "retry: sandbox deny (NestedFs)");
         assert_eq!(app.messages[1].tool_name, "pty");
-        assert_eq!(app.messages[1].content, "3 bytes\n4 bytes");
-        assert!(app.messages[1].is_streaming);
+        assert_eq!(app.messages[1].content, "3 bytes\n4 bytes\ncat\nexit 0");
+        assert!(!app.messages[1].is_streaming);
         assert_eq!(
             app.messages[2].content,
             "Approval required: write (src/lib.rs)"
@@ -3173,24 +3230,20 @@ mod tests {
         assert_eq!(app.messages[4].role, "system");
         assert_eq!(
             app.messages[4].content,
-            "recovery prefill: Continue from where you left off. (turn)"
+            "recovery prefill: Continue from where you left off."
         );
         assert_eq!(app.messages[5].role, "system");
         assert_eq!(
             app.messages[5].content,
-            "recovery nudge: The same tool call is repeating. Change arguments or stop. (tool)"
+            "recovery nudge: The same tool call is repeating. Change arguments or stop."
         );
         assert_eq!(app.messages[6].role, "error");
         assert_eq!(
             app.messages[6].content,
-            "recovery halt: empty turn limit reached (2/3) (turn)"
+            "recovery halt: empty turn limit reached (2/3)"
         );
-        assert_eq!(
-            app.messages[7].content,
-            "spill: tool output truncated (tool)"
-        );
-        assert_eq!(app.messages[8].role, "error");
-        assert_eq!(app.messages[8].content, "failure: bash (exit 1)");
+        assert_eq!(app.messages[7].role, "error");
+        assert_eq!(app.messages[7].content, "spill: spill_failed (20 bytes)");
     }
 
     #[test]

@@ -320,6 +320,28 @@ impl AgentSession {
                     format!("{process_id} {bytes} bytes"),
                 ));
             }
+            HostSurface::ProcessStart {
+                process_id,
+                program,
+            } => {
+                let detail = if program.is_empty() {
+                    process_id
+                } else {
+                    format!("{process_id} {program}")
+                };
+                self.messages
+                    .push(MessageItem::new("tool:pty", format!("start {detail}")));
+            }
+            HostSurface::ProcessEnd {
+                process_id,
+                exit_code,
+            } => {
+                let detail = match exit_code {
+                    Some(code) => format!("{process_id} exit {code}"),
+                    None => format!("{process_id} exit"),
+                };
+                self.messages.push(MessageItem::new("tool:pty", detail));
+            }
             HostSurface::RequestPermissions { tool, paths } => {
                 let detail = paths.join(" ");
                 self.messages.push(MessageItem::new(
@@ -335,46 +357,46 @@ impl AgentSession {
                 self.messages
                     .push(MessageItem::new(&format!("tool:patch:{path}"), hunk));
             }
-            HostSurface::Recovery {
-                action,
-                layer,
-                text,
-            } => {
-                let verb = if action.is_empty() {
-                    "recovery".to_string()
+            HostSurface::Recovery { action, reason } => {
+                let verb = match action {
+                    rx4::RecoveryKind::Prefill => "prefill",
+                    rx4::RecoveryKind::Nudge => "nudge",
+                    rx4::RecoveryKind::Retry => "retry",
+                    rx4::RecoveryKind::Halt => "halt",
+                };
+                let content = if reason.is_empty() {
+                    format!("recovery {verb}")
                 } else {
-                    action.to_ascii_lowercase()
+                    format!("recovery {verb}: {reason}")
                 };
-                let content = match (text.is_empty(), layer.is_empty()) {
-                    (true, true) => format!("recovery {verb}"),
-                    (false, true) => format!("recovery {verb}: {text}"),
-                    (true, false) => format!("recovery {verb} ({layer})"),
-                    (false, false) => format!("recovery {verb}: {text} ({layer})"),
-                };
-                let role = if action.eq_ignore_ascii_case("halt") {
+                let role = if matches!(action, rx4::RecoveryKind::Halt) {
                     "error"
                 } else {
                     "system"
                 };
                 self.messages.push(MessageItem::new(role, content));
             }
-            HostSurface::Spill { reason, layer } => {
-                let content = match (reason.is_empty(), layer.is_empty()) {
-                    (true, true) => "spill".to_string(),
-                    (false, true) => format!("spill: {reason}"),
-                    (true, false) => format!("spill ({layer})"),
-                    (false, false) => format!("spill: {reason} ({layer})"),
+            HostSurface::ToolSpill {
+                status,
+                locator,
+                original_bytes,
+            } => {
+                let status = match status {
+                    rx4::SpillStatus::Inline => "inline",
+                    rx4::SpillStatus::Spilled => "spilled",
+                    rx4::SpillStatus::SpillFailed => "spill_failed",
                 };
-                self.messages.push(MessageItem::new("system", content));
-            }
-            HostSurface::FailureNotice { tool, reason } => {
-                let content = match (tool.is_empty(), reason.is_empty()) {
-                    (true, true) => "failure".to_string(),
-                    (false, true) => format!("failure: {tool}"),
-                    (true, false) => format!("failure: {reason}"),
-                    (false, false) => format!("failure: {tool} ({reason})"),
+                let content = if locator.is_empty() {
+                    format!("spill: {status} ({original_bytes} bytes)")
+                } else {
+                    format!("spill: {status} ({original_bytes} bytes) {locator}")
                 };
-                self.messages.push(MessageItem::new("error", content));
+                let role = if status == "spill_failed" {
+                    "error"
+                } else {
+                    "system"
+                };
+                self.messages.push(MessageItem::new(role, content));
             }
         }
     }
@@ -483,6 +505,7 @@ mod tests {
             content: "README.md".into(),
             is_error: false,
             error_kind: None,
+            spill: None,
         }));
         session.handle_rx4_event(Rx4Event::MessageDelta {
             delta: "after tools".into(),
@@ -537,23 +560,26 @@ mod tests {
             path: "src/lib.rs".into(),
             hunk: "@@ -1 +1 @@".into(),
         });
-        session.render_host_surface(HostSurface::Recovery {
-            action: "Prefill".into(),
-            layer: "turn".into(),
-            text: "Continue from where you left off.".into(),
+        session.handle_rx4_event(Rx4Event::ProcessStart {
+            process_id: "pty-9".into(),
+            program: "cat".into(),
         });
-        session.render_host_surface(HostSurface::Recovery {
-            action: "Halt".into(),
-            layer: "tool".into(),
-            text: "stuck tool repeated 2 times (halt after 3)".into(),
+        session.handle_rx4_event(Rx4Event::ProcessEnd {
+            process_id: "pty-9".into(),
+            exit_code: Some(0),
         });
-        session.render_host_surface(HostSurface::Spill {
-            reason: "tool output truncated".into(),
-            layer: "tool".into(),
+        session.handle_rx4_event(Rx4Event::Recovery {
+            action: rx4::RecoveryKind::Prefill,
+            reason: "Continue from where you left off.".into(),
         });
-        session.render_host_surface(HostSurface::FailureNotice {
-            tool: "bash".into(),
-            reason: "exit 1".into(),
+        session.handle_rx4_event(Rx4Event::Recovery {
+            action: rx4::RecoveryKind::Halt,
+            reason: "stuck tool repeated 2 times (halt after 3)".into(),
+        });
+        session.handle_rx4_event(Rx4Event::ToolSpill {
+            status: rx4::SpillStatus::SpillFailed,
+            locator: String::new(),
+            original_bytes: 20,
         });
         let roles: Vec<_> = session
             .messages
@@ -567,16 +593,17 @@ mod tests {
                 ("tool:pty", "pty-9 3 bytes"),
                 ("system", "Approval required: write (src/lib.rs)"),
                 ("tool:patch:src/lib.rs", "@@ -1 +1 @@"),
+                ("tool:pty", "start pty-9 cat"),
+                ("tool:pty", "pty-9 exit 0"),
                 (
                     "system",
-                    "recovery prefill: Continue from where you left off. (turn)",
+                    "recovery prefill: Continue from where you left off.",
                 ),
                 (
                     "error",
-                    "recovery halt: stuck tool repeated 2 times (halt after 3) (tool)",
+                    "recovery halt: stuck tool repeated 2 times (halt after 3)",
                 ),
-                ("system", "spill: tool output truncated (tool)"),
-                ("error", "failure: bash (exit 1)"),
+                ("error", "spill: spill_failed (20 bytes)"),
             ]
         );
     }
