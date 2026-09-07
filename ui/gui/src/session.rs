@@ -335,6 +335,47 @@ impl AgentSession {
                 self.messages
                     .push(MessageItem::new(&format!("tool:patch:{path}"), hunk));
             }
+            HostSurface::Recovery {
+                action,
+                layer,
+                text,
+            } => {
+                let verb = if action.is_empty() {
+                    "recovery".to_string()
+                } else {
+                    action.to_ascii_lowercase()
+                };
+                let content = match (text.is_empty(), layer.is_empty()) {
+                    (true, true) => format!("recovery {verb}"),
+                    (false, true) => format!("recovery {verb}: {text}"),
+                    (true, false) => format!("recovery {verb} ({layer})"),
+                    (false, false) => format!("recovery {verb}: {text} ({layer})"),
+                };
+                let role = if action.eq_ignore_ascii_case("halt") {
+                    "error"
+                } else {
+                    "system"
+                };
+                self.messages.push(MessageItem::new(role, content));
+            }
+            HostSurface::Spill { reason, layer } => {
+                let content = match (reason.is_empty(), layer.is_empty()) {
+                    (true, true) => "spill".to_string(),
+                    (false, true) => format!("spill: {reason}"),
+                    (true, false) => format!("spill ({layer})"),
+                    (false, false) => format!("spill: {reason} ({layer})"),
+                };
+                self.messages.push(MessageItem::new("system", content));
+            }
+            HostSurface::FailureNotice { tool, reason } => {
+                let content = match (tool.is_empty(), reason.is_empty()) {
+                    (true, true) => "failure".to_string(),
+                    (false, true) => format!("failure: {tool}"),
+                    (true, false) => format!("failure: {reason}"),
+                    (false, false) => format!("failure: {tool} ({reason})"),
+                };
+                self.messages.push(MessageItem::new("error", content));
+            }
         }
     }
 }
@@ -496,6 +537,24 @@ mod tests {
             path: "src/lib.rs".into(),
             hunk: "@@ -1 +1 @@".into(),
         });
+        session.render_host_surface(HostSurface::Recovery {
+            action: "Prefill".into(),
+            layer: "turn".into(),
+            text: "Continue from where you left off.".into(),
+        });
+        session.render_host_surface(HostSurface::Recovery {
+            action: "Halt".into(),
+            layer: "tool".into(),
+            text: "stuck tool repeated 2 times (halt after 3)".into(),
+        });
+        session.render_host_surface(HostSurface::Spill {
+            reason: "tool output truncated".into(),
+            layer: "tool".into(),
+        });
+        session.render_host_surface(HostSurface::FailureNotice {
+            tool: "bash".into(),
+            reason: "exit 1".into(),
+        });
         let roles: Vec<_> = session
             .messages
             .iter()
@@ -508,6 +567,16 @@ mod tests {
                 ("tool:pty", "pty-9 3 bytes"),
                 ("system", "Approval required: write (src/lib.rs)"),
                 ("tool:patch:src/lib.rs", "@@ -1 +1 @@"),
+                (
+                    "system",
+                    "recovery prefill: Continue from where you left off. (turn)",
+                ),
+                (
+                    "error",
+                    "recovery halt: stuck tool repeated 2 times (halt after 3) (tool)",
+                ),
+                ("system", "spill: tool output truncated (tool)"),
+                ("error", "failure: bash (exit 1)"),
             ]
         );
     }

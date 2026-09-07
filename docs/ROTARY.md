@@ -80,6 +80,8 @@ invent policy.
 - `ProcessStdin { process_id, bytes }` — PTY stdin write
 - `RequestPermissions { tool, paths }` — permission prompt
 - `PatchHunk { path, hunk }` — streaming patch hunks
+- `Recovery { action, layer, text }` — empty-turn Prefill/Nudge and stuck-tool recovery (`RecoveryAction`). JSON stub until rotary emits `Event::Recovery`.
+- `Spill { reason, layer }` / `FailureNotice { tool, reason }` — typed spill or failure notices, JSON stub until rotary exposes Event variants
 
 Hooks: `HookRegistry` lifecycle observe (`BeforeTool`/`AfterTool`/…). Engine
 hooks are currently fire-and-forget (`HookFn`); deny/modify lands when engine

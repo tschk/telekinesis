@@ -5,10 +5,35 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostSurface {
-    RetryReason { retry_reason: String, layer: String },
-    ProcessStdin { process_id: String, bytes: usize },
-    RequestPermissions { tool: String, paths: Vec<String> },
-    PatchHunk { path: String, hunk: String },
+    RetryReason {
+        retry_reason: String,
+        layer: String,
+    },
+    ProcessStdin {
+        process_id: String,
+        bytes: usize,
+    },
+    RequestPermissions {
+        tool: String,
+        paths: Vec<String>,
+    },
+    PatchHunk {
+        path: String,
+        hunk: String,
+    },
+    Recovery {
+        action: String,
+        layer: String,
+        text: String,
+    },
+    Spill {
+        reason: String,
+        layer: String,
+    },
+    FailureNotice {
+        tool: String,
+        reason: String,
+    },
 }
 
 pub trait EventExt {
@@ -65,6 +90,22 @@ pub fn surface_from_json(value: &Value) -> Option<HostSurface> {
             path: first_str(value, &["path"]).unwrap_or_default(),
             hunk: first_str(value, &["hunk"]).unwrap_or_default(),
         }),
+        "recovery" => {
+            let (action, text) = recovery_fields(value);
+            Some(HostSurface::Recovery {
+                action,
+                layer: first_str(value, &["layer", "source"]).unwrap_or_default(),
+                text,
+            })
+        }
+        "spill" | "spillnotice" | "contextspill" => Some(HostSurface::Spill {
+            reason: first_str(value, &["reason", "text", "message"]).unwrap_or_default(),
+            layer: first_str(value, &["layer", "source", "kind"]).unwrap_or_default(),
+        }),
+        "failurenotice" | "toolfailure" | "failure" => Some(HostSurface::FailureNotice {
+            tool: first_str(value, &["tool", "name"]).unwrap_or_default(),
+            reason: first_str(value, &["reason", "text", "message"]).unwrap_or_default(),
+        }),
         _ => None,
     }
 }
@@ -97,6 +138,29 @@ pub fn cli_line(surface: &HostSurface) -> String {
                 "patch".to_string()
             } else {
                 format!("patch {path}")
+            }
+        }
+        HostSurface::Recovery { action, .. } => {
+            if action.is_empty() {
+                "recovery".to_string()
+            } else {
+                format!("recovery {}", action.to_ascii_lowercase())
+            }
+        }
+        HostSurface::Spill { reason, .. } => {
+            if reason.is_empty() {
+                "spill".to_string()
+            } else {
+                format!("spill {reason}")
+            }
+        }
+        HostSurface::FailureNotice { tool, reason } => {
+            if !tool.is_empty() {
+                tool.clone()
+            } else if reason.is_empty() {
+                "failure".to_string()
+            } else {
+                format!("failure {reason}")
             }
         }
     }
@@ -136,6 +200,53 @@ fn first_usize(value: &Value, keys: &[&str]) -> Option<usize> {
                 .or_else(|| item.as_str().and_then(|s| s.parse().ok()))
         })
     })
+}
+
+fn recovery_fields(value: &Value) -> (String, String) {
+    match value.get("action").or_else(|| value.get("recovery_action")) {
+        Some(Value::String(action)) => (
+            canonical_recovery_action(action),
+            first_str(value, &["text", "message", "reason"]).unwrap_or_default(),
+        ),
+        Some(Value::Object(map)) => {
+            if let Some((key, payload)) = map.iter().next() {
+                let text = payload
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| first_str(payload, &["text", "message", "reason"]))
+                    .unwrap_or_default();
+                (canonical_recovery_action(key), text)
+            } else {
+                (
+                    String::new(),
+                    first_str(value, &["text", "message", "reason"]).unwrap_or_default(),
+                )
+            }
+        }
+        _ => {
+            for action in ["Prefill", "Nudge", "Retry", "Halt"] {
+                if let Some(text) = first_str(value, &[action, &action.to_ascii_lowercase()]) {
+                    return (action.to_string(), text);
+                }
+            }
+            (
+                first_str(value, &["kind"])
+                    .map(|kind| canonical_recovery_action(&kind))
+                    .unwrap_or_default(),
+                first_str(value, &["text", "message", "reason"]).unwrap_or_default(),
+            )
+        }
+    }
+}
+
+fn canonical_recovery_action(action: &str) -> String {
+    match normalize_type(action).as_str() {
+        "prefill" => "Prefill".to_string(),
+        "nudge" => "Nudge".to_string(),
+        "retry" => "Retry".to_string(),
+        "halt" => "Halt".to_string(),
+        _ => action.to_string(),
+    }
 }
 
 fn string_list(value: &Value, key: &str) -> Vec<String> {
@@ -287,6 +398,66 @@ mod tests {
             surface_from_json(&serde_json::json!({ "type": "ToolExecutionStart", "name": "bash" })),
             None
         );
+        assert_eq!(
+            surface_from_json(&serde_json::json!({
+                "type": "Recovery",
+                "action": "Prefill",
+                "layer": "turn",
+                "text": "Continue from where you left off."
+            })),
+            Some(HostSurface::Recovery {
+                action: "Prefill".into(),
+                layer: "turn".into(),
+                text: "Continue from where you left off.".into()
+            })
+        );
+        assert_eq!(
+            surface_from_json(&serde_json::json!({
+                "type": "Recovery",
+                "action": {"Nudge": "Your last turn was empty. Answer with progress, a question, or a tool call."},
+                "layer": "turn"
+            })),
+            Some(HostSurface::Recovery {
+                action: "Nudge".into(),
+                layer: "turn".into(),
+                text: "Your last turn was empty. Answer with progress, a question, or a tool call."
+                    .into()
+            })
+        );
+        assert_eq!(
+            surface_from_json(&serde_json::json!({
+                "type": "Recovery",
+                "action": "Retry",
+                "layer": "tool"
+            })),
+            Some(HostSurface::Recovery {
+                action: "Retry".into(),
+                layer: "tool".into(),
+                text: String::new()
+            })
+        );
+        assert_eq!(
+            surface_from_json(&serde_json::json!({
+                "type": "Spill",
+                "reason": "tool output truncated",
+                "layer": "tool"
+            })),
+            Some(HostSurface::Spill {
+                reason: "tool output truncated".into(),
+                layer: "tool".into()
+            })
+        );
+        assert_eq!(
+            surface_from_json(&serde_json::json!({
+                "type": "FailureNotice",
+                "tool": "bash",
+                "reason": "exit 1"
+            })),
+            Some(HostSurface::FailureNotice {
+                tool: "bash".into(),
+                reason: "exit 1".into()
+            })
+        );
     }
 
     #[test]
@@ -318,6 +489,36 @@ mod tests {
                 hunk: "@@".into()
             }),
             "patch src/lib.rs"
+        );
+        assert_eq!(
+            cli_line(&HostSurface::Recovery {
+                action: "Prefill".into(),
+                layer: "turn".into(),
+                text: "Continue from where you left off.".into()
+            }),
+            "recovery prefill"
+        );
+        assert_eq!(
+            cli_line(&HostSurface::Recovery {
+                action: "Nudge".into(),
+                layer: "tool".into(),
+                text: String::new()
+            }),
+            "recovery nudge"
+        );
+        assert_eq!(
+            cli_line(&HostSurface::Spill {
+                reason: "tool output truncated".into(),
+                layer: "tool".into()
+            }),
+            "spill tool output truncated"
+        );
+        assert_eq!(
+            cli_line(&HostSurface::FailureNotice {
+                tool: "bash".into(),
+                reason: "exit 1".into()
+            }),
+            "bash"
         );
     }
 }
