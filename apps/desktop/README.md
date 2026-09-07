@@ -19,9 +19,9 @@ Competitors / inspiration for the ADE shell: Orca, Emdash, Superset.
 ## MVP
 
 - **Host switcher:** Local | Cloud (top bar)
-- **Cloud:** list workspaces via `VITE_TK_CLOUD_API` (`GET /v1/workspaces`); graceful fallback to in-app mock JSON
+- **Cloud:** list / create workspaces + exec via `VITE_TK_CLOUD_API` (tk-cloud M1); graceful mock fallback **only** on network/HTTP failure (empty API list is valid)
 - **Local:** “Spawn telekinesis” invokes `tk` or `telekinesis` on `PATH` via a Tauri command; missing binary is reported clearly (not required to build)
-- **Layout stubs:** AppShell (top bar + left nav + main), WorkspaceCard, StatusBadge, Panel stubs for terminal / diff / in-app browser
+- **Layout stubs:** AppShell (top bar + left nav + main), WorkspaceCard, StatusBadge, Panel stubs for terminal / diff / in-app browser; Cloud PromptBox + LogPane for `/exec`
 - **Tokens:** `src/styles/tokens.css` — exact `--tk-*` names shared with the web contract (dark-first, teal/cyan on near-black)
 
 ## Architecture
@@ -38,6 +38,7 @@ Local = free ADE on your machine. Cloud = always-on host when the laptop sleeps.
 - Node 20+
 - Rust (stable) + [Tauri prerequisites](https://tauri.app/start/prerequisites/)
 - Optional: `tk` / `telekinesis` on `PATH` (`cargo install telekinesis` or repo `install.sh`)
+- Optional (Cloud): local tk-cloud wrangler dev from [tk-cloud PR #1](https://github.com/tschk/tk-cloud/pull/1) (`m1-computer-isolate-shell`)
 
 ## Run
 
@@ -57,13 +58,22 @@ npm run dev
 Cloud API base URL (optional):
 
 ```bash
-# .env / .env.local
+# .env / .env.local — point at wrangler dev for tk-cloud PR #1
+# https://github.com/tschk/tk-cloud/pull/1  (branch m1-computer-isolate-shell)
 VITE_TK_CLOUD_API=http://127.0.0.1:8787
 ```
 
-Default is `http://127.0.0.1:8787`. Expected list shape:
+Default is `http://127.0.0.1:8787`. M1 routes used by this shell:
 
-`{ "workspaces": [ { "id", "name", "status", "region?", "updatedAt?" } ] }` or a bare array.
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/health` | `{ ok, service, env, computer }` — health chip |
+| `GET` | `/v1/workspaces` | bare `WorkspaceMeta[]` (empty array is valid) |
+| `POST` | `/v1/workspaces` | `{ name?, tier? }` → 201 `WorkspaceMeta` |
+| `GET` | `/v1/workspaces/:id` | `WorkspaceMeta` |
+| `POST` | `/v1/workspaces/:id/exec` | `{ source, backend?, cwd? }` → `ExecResult` |
+
+`WorkspaceMeta`: `{ id, name, tier, createdAt, computerBackend, status }`.
 
 ## License
 

@@ -1,16 +1,11 @@
-import type { WorkspaceStatus } from "../lib/types";
+const KNOWN = new Set(["ready", "starting", "stopped", "error"]);
 
-const LABEL: Record<WorkspaceStatus, string> = {
-  ready: "ready",
-  starting: "starting",
-  stopped: "stopped",
-  error: "error",
-};
-
-export function StatusBadge({ status }: { status: WorkspaceStatus }) {
+export function StatusBadge({ status }: { status: string }) {
+  const key = status.toLowerCase();
+  const variant = KNOWN.has(key) ? key : "unknown";
   return (
-    <span className={`tk-badge tk-badge--${status}`} title={status}>
-      {LABEL[status]}
+    <span className={`tk-badge tk-badge--${variant}`} title={status}>
+      {status}
     </span>
   );
 }
