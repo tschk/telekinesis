@@ -50,8 +50,8 @@ flowchart TD
 |---|---|---|---|
 | TUI | `ui/tui` | ✅ Active | Primary surface, ratatui-based, in-process rx4 |
 | GUI | `ui/gui` | 🧪 Experimental | GPUI companion (`telekinesis-companion`); native window; embeds rx4 directly today — keep separate from ADE shell |
-| ADE desktop | `apps/desktop` | 🧪 Experimental/scaffold | Tauri 2 + React ADE shell (Local↔Cloud host switcher, workspaces stub). Not a replacement for `ui/gui` |
-| Web | `apps/web` | 🧪 Experimental/scaffold | React control plane (relocating from tk-web); shared `--tk-*` tokens |
+| ADE desktop | `apps/desktop` | 🧪 MVP | Tauri 2 + React ADE shell (Local↔Cloud); portal zinc/Chivo `--tk-*` tokens. Not a replacement for `ui/gui` |
+| Web | `apps/web` | 🧪 MVP | React/Vite control plane companion → tk-cloud API; shared `--tk-*` with `apps/desktop`. Not `cloud.tk.tsc.hk` (tk-cloud portal) |
 
 ## Pi protocol layer
 
