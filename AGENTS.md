@@ -49,6 +49,8 @@ flowchart TD
 |---|---|---|---|
 | TUI | `ui/tui` | ✅ Active | Primary surface, ratatui-based, in-process rx4 |
 | GUI | `ui/gui` | 🧪 Experimental | GPUI native window; embeds rx4 directly today |
+| Web | `apps/web` | 🧪 MVP | CF Pages control plane → tk-cloud; `--tk-*` tokens shared with `apps/desktop` |
+| Desktop ADE | `apps/desktop` | 🧪 MVP | Tauri + React; local daemon ↔ cloud Workspace DOs |
 
 ## Pi protocol layer
 
