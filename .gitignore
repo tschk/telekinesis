@@ -12,3 +12,11 @@ ui/gui/target/
 ui/router/target/
 .pi-subagents/
 .avo/
+
+# Expo / mobile companion (apps/mobile)
+apps/mobile/.expo/
+apps/mobile/dist/
+apps/mobile/web-build/
+apps/mobile/expo-env.d.ts
+apps/mobile/ios/
+apps/mobile/android/

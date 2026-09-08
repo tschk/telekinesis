@@ -33,6 +33,8 @@ TUI, CLI, and GUI forward rotary host events (`RetryReason`, `ProcessStdin`, `Re
 Streaming TUI, slash commands, OAuth login, slim default binary. Details:
 [docs](docs/README.md). Evolutionary loop (NVIDIA AVO): [docs/AVO.md](docs/AVO.md).
 
+Mobile companion (Expo M0 scaffold): [`apps/mobile`](apps/mobile).
+
 ## License
 
 MPL-2.0

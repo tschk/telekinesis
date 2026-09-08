@@ -49,6 +49,7 @@ flowchart TD
 |---|---|---|---|
 | TUI | `ui/tui` | ✅ Active | Primary surface, ratatui-based, in-process rx4 |
 | GUI | `ui/gui` | 🧪 Experimental | GPUI native window; embeds rx4 directly today |
+| Mobile | `apps/mobile` | 🚧 scaffold | Expo companion → tk-cloud; Status/Steer/Diffs/Approvals later |
 
 ## Pi protocol layer
 
