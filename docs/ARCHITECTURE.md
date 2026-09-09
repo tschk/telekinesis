@@ -26,6 +26,7 @@ flowchart TD
     Runtime["shared host runtime"]
     Slash["slash commands → host commands"]
     Pi["pi protocol compat<br/>JSONL v3 · RPC · extensions · QuickJS"]
+    Acp["ACP JSON-RPC stdio<br/>initialize · session/*"]
     OAuth["OAuth login (rs_ai_oauth)"]
     Store["session storage + checkpoints"]
   end
@@ -110,6 +111,9 @@ flowchart TD
   them through a surface-neutral host runtime before adding IPC.
 - **pi compat owned here**: rotary is a pure harness engine; protocol
   compat is a host concern.
+- **ACP owned here**: `tk acp` is a thin JSON-RPC stdio adapter over the
+  in-process rx4 agent. Rotary still exports `rx4::acp` behind `ipc`; that
+  copy is follow-up deprecation, not the product surface.
 - **crepuscularity-tui**: ratatui-based with a hot-reloadable `shell.crepus`
   template — same template can target other surfaces later.
 - **New agent features land in rx4 first**, then surface via slash commands

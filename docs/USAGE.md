@@ -25,6 +25,7 @@ Default `tk` is the lightest useful coding CLI (`pi-compat` + rx4
 | feature | default | what it adds |
 |---|---|---|
 | `pi-compat` | yes | JSONL v3 sessions + embed SDK |
+| `acp` | yes | `tk acp` JSON-RPC stdio host (no extra deps) |
 | `mcp` | no | `rx4/mcp` + `~/.telekinesis/mcp.json` discover/register |
 | `search` | no | darash `web_search` tool |
 | `computer-use` | no | `cu_*` tools (Praefectus) |
@@ -44,6 +45,7 @@ tk exec --json --cwd /workspace "list the rust crates"
 tk exec --model grok-4.5 "summarize this repo"
 printf '%s\n' "review the diff" | tk exec -
 printf '%s\n' "review the diff" | tk --no-yolo
+tk acp
 
 XAI_API_KEY=... tk
 ```
@@ -51,6 +53,13 @@ XAI_API_KEY=... tk
 Default non-TTY / `tk exec` is yolo (`AlwaysAllow`); `--no-yolo` denies
 Ask-class tools. `--model` overrides the first configured provider's default
 model (used by the AVO loop in [AVO.md](AVO.md)).
+
+`tk acp` is the Agent Client Protocol host: JSON-RPC 2.0, one request per
+stdin line, one response per stdout line. Methods: `initialize`,
+`session/new`, `session/list`, `session/prompt`, `session/cancel`. Same
+`--cwd` / `--provider` / `--model` / `--mcp` / `--no-yolo` flags as exec
+(except `--json` / effort / prewalk). In-flight `session/prompt` is not
+aborted by `session/cancel` until rx4 exposes turn cancellation.
 
 Builtin `read` accepts `"hashline": true`; `hashline_edit` applies the
 engine script. Set `RX4_PREWALK=1` and `RX4_SMOL_MODEL` to investigate on the

@@ -10,6 +10,7 @@
 - **Owns pi protocol compat** (moved from rotary): JSONL v3 sessions, RPC
   over stdin/stdout, pi tool name mapping, extension protocol via QuickJS,
   capability policy, SDK surface
+- **Owns ACP** (`tk acp` JSON-RPC stdio host over the in-process rx4 agent)
 
 ## Architecture
 
@@ -17,7 +18,7 @@
 flowchart TD
   subgraph TK["telekinesis"]
     TUI["TUI (crepuscularity-tui)<br/>sidebar · themes · slash palette"]
-    CLI["CLI<br/>login · exec (headless one-shot)"]
+    CLI["CLI<br/>login · exec · acp (JSON-RPC stdio)"]
     Pi["pi protocol compat<br/>JSONL v3 · RPC · extensions · QuickJS"]
     Slash["slash commands<br/>/model /scope /mcp /todo /clear /cost /usage"]
   end
@@ -99,7 +100,8 @@ cd ui/tui && cargo clippy
 - Prefer small slash commands that map to rx4 methods.
 - telekinesis owns pi protocol compat — rotary no longer carries it.
 - Product layer surfaces: MCP config (`ui/tui/src/mcp_config.rs` + `/mcp`,
-  `--features mcp`), approval args, OS sandbox policy — do not reimplement
+  `--features mcp`), ACP (`ui/tui/src/acp.rs` + `tk acp`, `--features acp`
+  default-on), approval args, OS sandbox policy — do not reimplement
   harness loop.
 - Optional AVO loop is scripts-only (`scripts/avo/`, `scripts/adapters/`,
   `docs/AVO.md`); NVIDIA AVO (arXiv:2603.24517), not Sample-then-Generate.

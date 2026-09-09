@@ -11,6 +11,7 @@ flowchart TD
   subgraph TK["telekinesis"]
     TUI["TUI (crepuscularity-tui)"]
     Pi["pi protocol compat<br/>JSONL v3 · RPC · extensions · QuickJS"]
+    Acp["ACP JSON-RPC stdio"]
   end
   TK -->|"tokio channels — in-process"| RX4
   subgraph RX4["rx4 harness engine"]
@@ -132,6 +133,11 @@ See the canonical decision record:
 
 > pi protocol compat is **no longer in rx4** — telekinesis owns it
 > (JSONL v3 sessions, RPC, extension runtime via QuickJS).
+>
+> ACP is a **telekinesis host** surface (`tk acp`). Rotary still compiles
+> `rx4::acp::{AcpHost, AcpSession}` behind the `ipc` feature; do not enable
+> `rx4/ipc` from `tk` just to reuse that adapter. Follow-up: deprecate the
+> rotary copy after this host lands.
 
 When registered, the host may also surface engine extras: `web_fetch`,
 `todo`, `spawn_agent`, plan-scope tools, and LSP tools. Project instruction
