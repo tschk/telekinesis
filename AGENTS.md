@@ -7,9 +7,9 @@
 - UX: minimal/fast (pi-first, codex second)
 - TUI built with crepuscularity-tui (ratatui-based)
 - No harness reimplementation — rx4 owns the loop
-- **Owns pi protocol compat** (moved from rotary): JSONL v3 sessions, RPC
-  over stdin/stdout, pi tool name mapping, extension protocol via QuickJS,
-  capability policy, SDK surface
+- **Owns pi protocol compat** (moved from rotary): JSONL v3 sessions, pi tool
+  name mapping, capability policy, embed SDK surface. Dead RPC/QuickJS
+  extension surfaces removed.
 - **Owns ACP** (`tk acp` JSON-RPC stdio host over the in-process rx4 agent)
 
 ## Architecture
@@ -19,8 +19,8 @@ flowchart TD
   subgraph TK["telekinesis"]
     TUI["TUI (crepuscularity-tui)<br/>sidebar · themes · slash palette"]
     CLI["CLI<br/>login · exec · acp (JSON-RPC stdio)"]
-    Pi["pi protocol compat<br/>JSONL v3 · RPC · extensions · QuickJS"]
-    Slash["slash commands<br/>/model /scope /mcp /todo /clear /cost /usage"]
+    Pi["pi protocol compat<br/>JSONL v3 · tool mapping · embed SDK"]
+    Slash["slash commands<br/>/model /scope /plan /review /mcp /todo /sessions /clear /cost /usage"]
   end
   TK -->|"tokio channels — in-process"| RX4
   subgraph RX4["rx4 harness engine"]
@@ -37,7 +37,7 @@ flowchart TD
 - **Rust** — the entire product is Rust
 - crepuscularity-tui (`ui/tui`) — ratatui-based TUI with hot-reloadable
   `shell.crepus` template — **primary surface**
-- **rx4** crate — git `tschk/rotary` @ `441ce52` for harness APIs. Default `tk` features:
+- **rx4** crate — git `tschk/rotary` @ `74698cf` (rotary#184) for harness APIs. Default `tk` features:
   providers + builtin-tools. Opt-in: `mcp`, `search` (darash), computer-use,
   skills, graph-memory. `--features full` enables all of those.
 - tokio — async runtime, channels between TUI and agent loop
@@ -89,6 +89,9 @@ cd ui/tui && cargo run
 cd ui/tui && cargo test
 cd ui/tui && cargo clippy
 ```
+
+CLI flows and runnable snippets live in `examples/README.md`; user-facing
+overview in `README.md`, detailed reference in `docs/`.
 
 ## Rules
 
