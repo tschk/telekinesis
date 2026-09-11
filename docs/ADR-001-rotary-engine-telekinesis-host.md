@@ -64,7 +64,7 @@ flowchart LR
     TUI[TUI]
     GUI[GUI]
     WEB[Web]
-    CLI[CLI / pi RPC]
+    CLI[CLI / pi RPC / ACP]
   end
   Surfaces --> Host["HostRuntime + SessionRuntime"]
   Host --> Store["repositories + checkpoints"]

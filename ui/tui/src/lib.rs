@@ -1,3 +1,5 @@
+#[cfg(feature = "acp")]
+pub mod acp;
 pub mod apikey;
 pub mod app;
 pub mod channel_approver;

@@ -14,8 +14,9 @@ name = "tk"
 path = "src/main.rs"
 
 [features]
-default = ["pi-compat"]
+default = ["pi-compat", "acp"]
 pi-compat = []
+acp = []
 mcp = ["rx4/mcp"]
 search = ["dep:darash"]
 computer-use = ["rx4/computer-use"]

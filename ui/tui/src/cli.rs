@@ -1,17 +1,25 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+#[cfg(feature = "acp")]
+use crate::acp::{parse_acp_args, run_acp, AcpArgs};
 use crate::exec::{parse_effort_level, run_exec, ExecArgs};
 use crate::providers::run_login;
 use crate::tui::run_tui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Login { provider: Option<String> },
+    Login {
+        provider: Option<String>,
+    },
     Help,
     Version,
     Exec(ExecArgs),
-    Tui { continue_session: bool },
+    #[cfg(feature = "acp")]
+    Acp(AcpArgs),
+    Tui {
+        continue_session: bool,
+    },
     Headless(ExecArgs),
 }
 
@@ -120,6 +128,16 @@ pub fn parse_command(args: &[String], interactive: bool) -> Result<Command, Stri
             provider: rest.get(1).cloned(),
         }),
         Some("exec") => Ok(Command::Exec(parse_exec_args(&rest[1..])?)),
+        Some("acp") => {
+            #[cfg(feature = "acp")]
+            {
+                Ok(Command::Acp(parse_acp_args(&rest[1..])?))
+            }
+            #[cfg(not(feature = "acp"))]
+            {
+                Err("ACP requires a rebuild with --features acp (on by default)".to_string())
+            }
+        }
         Some("--help") | Some("-h") => Ok(Command::Help),
         Some("--version") => Ok(Command::Version),
         _ if interactive => Ok(Command::Tui {
@@ -141,6 +159,10 @@ pub fn print_help() {
         "                       --effort|--thinking <low|medium|high|xhigh>, --mcp, --no-yolo,"
     );
     println!("                       --prewalk, --smol-model <name>, --investigate-model <name>)");
+    println!("  tk acp           Agent Client Protocol JSON-RPC server on stdin/stdout");
+    println!(
+        "                       (--cwd <dir>, --provider <id>, --model <name>, --mcp, --no-yolo)"
+    );
     println!("  tk --no-yolo    Headless stdin run that denies Ask-class tools");
     println!(
         "  tk login <provider>  OAuth login (openai, claude, grok, gemini, copilot, kimi, antigravity)"
@@ -210,6 +232,8 @@ pub fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Ok(Command::Exec(exec)) => run_exec(exec),
+        #[cfg(feature = "acp")]
+        Ok(Command::Acp(acp)) => run_acp(acp),
         Ok(Command::Tui { continue_session }) => run_tui(continue_session),
         Ok(Command::Headless(exec)) => run_exec(exec),
         Err(message) => {
@@ -375,6 +399,11 @@ mod tests {
         assert!(matches!(
             parse_command(&args(&["exec", "--no-yolo", "go"]), false).unwrap(),
             Command::Exec(exec) if exec.no_yolo && exec.prompt.as_deref() == Some("go")
+        ));
+        #[cfg(feature = "acp")]
+        assert!(matches!(
+            parse_command(&args(&["acp", "--no-yolo", "--cwd", "/tmp"]), true).unwrap(),
+            Command::Acp(acp) if acp.no_yolo && acp.cwd == Some(PathBuf::from("/tmp"))
         ));
     }
 

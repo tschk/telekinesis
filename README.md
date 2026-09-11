@@ -24,6 +24,7 @@ tk login grok
 tk
 tk exec "summarize this repo"
 printf '%s\n' "review the diff" | tk --no-yolo
+tk acp
 ```
 
 Default non-TTY / `tk exec` is yolo (`AlwaysAllow`); `--no-yolo` denies Ask-class tools.
