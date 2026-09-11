@@ -29,7 +29,7 @@ tk acp
 
 Default non-TTY / `tk exec` is yolo (`AlwaysAllow`); `--no-yolo` denies Ask-class tools.
 
-TUI, CLI, and GUI forward rotary host events (`RetryReason`, `ProcessStdin`, `RequestPermissions`, `PatchHunk`) the same way as tool execution and approvals.
+TUI, CLI, and GUI forward rotary host events (`RetryReason`, `ProcessStdin`, `ProcessStart`, `ProcessEnd`, `RequestPermissions`, `PatchHunk`, `Recovery`, `ToolSpill`) the same way as tool execution and approvals.
 
 Streaming TUI, slash commands, OAuth login, slim default binary. Details:
 [docs](docs/README.md). Evolutionary loop (NVIDIA AVO): [docs/AVO.md](docs/AVO.md).

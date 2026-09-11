@@ -1824,6 +1824,61 @@ impl App {
                     });
                 }
             }
+            HostSurface::ProcessStart {
+                process_id,
+                program,
+            } => {
+                let line = if program.is_empty() {
+                    "start".to_string()
+                } else {
+                    program
+                };
+                if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
+                    message.is_tool && !process_id.is_empty() && message.tool_call_id == process_id
+                }) {
+                    if !msg.content.is_empty() {
+                        msg.content.push('\n');
+                    }
+                    msg.content.push_str(&line);
+                    msg.is_streaming = true;
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: line,
+                        is_tool: true,
+                        tool_name: "pty".to_string(),
+                        tool_call_id: process_id,
+                        is_streaming: true,
+                    });
+                }
+            }
+            HostSurface::ProcessEnd {
+                process_id,
+                exit_code,
+            } => {
+                let line = match exit_code {
+                    Some(code) => format!("exit {code}"),
+                    None => "exit".to_string(),
+                };
+                if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
+                    message.is_tool && !process_id.is_empty() && message.tool_call_id == process_id
+                }) {
+                    if !msg.content.is_empty() {
+                        msg.content.push('\n');
+                    }
+                    msg.content.push_str(&line);
+                    msg.is_streaming = false;
+                } else {
+                    self.messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: line,
+                        is_tool: true,
+                        tool_name: "pty".to_string(),
+                        tool_call_id: process_id,
+                        is_streaming: false,
+                    });
+                }
+            }
             HostSurface::RequestPermissions { tool, paths } => {
                 let detail = paths.join(" ");
                 let content = if detail.is_empty() {
@@ -1856,6 +1911,61 @@ impl App {
                         is_streaming: true,
                     });
                 }
+            }
+            HostSurface::Recovery { action, reason } => {
+                let verb = match action {
+                    rx4::RecoveryKind::Prefill => "prefill",
+                    rx4::RecoveryKind::Nudge => "nudge",
+                    rx4::RecoveryKind::Retry => "retry",
+                    rx4::RecoveryKind::Halt => "halt",
+                };
+                let content = if reason.is_empty() {
+                    format!("recovery {verb}")
+                } else {
+                    format!("recovery {verb}: {reason}")
+                };
+                self.messages.push(ChatMessage {
+                    role: if matches!(action, rx4::RecoveryKind::Halt) {
+                        "error"
+                    } else {
+                        "system"
+                    }
+                    .to_string(),
+                    content,
+                    is_tool: false,
+                    tool_name: String::new(),
+                    tool_call_id: String::new(),
+                    is_streaming: false,
+                });
+            }
+            HostSurface::ToolSpill {
+                status,
+                locator,
+                original_bytes,
+            } => {
+                let status = match status {
+                    rx4::SpillStatus::Inline => "inline",
+                    rx4::SpillStatus::Spilled => "spilled",
+                    rx4::SpillStatus::SpillFailed => "spill_failed",
+                };
+                let content = if locator.is_empty() {
+                    format!("spill: {status} ({original_bytes} bytes)")
+                } else {
+                    format!("spill: {status} ({original_bytes} bytes) {locator}")
+                };
+                self.messages.push(ChatMessage {
+                    role: if matches!(status, "spill_failed") {
+                        "error"
+                    } else {
+                        "system"
+                    }
+                    .to_string(),
+                    content,
+                    is_tool: false,
+                    tool_name: String::new(),
+                    tool_call_id: String::new(),
+                    is_streaming: false,
+                });
             }
         }
     }
@@ -2780,6 +2890,7 @@ mod tests {
                 content: "one\ntwo".to_string(),
                 is_error: false,
                 error_kind: None,
+                spill: None,
             },
         ));
         assert_eq!(
@@ -2906,6 +3017,7 @@ mod tests {
                 content: "README.md\n".to_string(),
                 is_error: false,
                 error_kind: None,
+                spill: None,
             },
         ));
         app.handle_rx4_event(rx4::agent::Event::MessageDelta {
@@ -3040,6 +3152,7 @@ mod tests {
                 content: "one\ntwo".to_string(),
                 is_error: false,
                 error_kind: None,
+                spill: None,
             },
         ));
 
@@ -3076,12 +3189,37 @@ mod tests {
             path: "src/lib.rs".into(),
             hunk: "+fn main() {}\n".into(),
         });
+        app.render_host_surface(HostSurface::ProcessStart {
+            process_id: "pty-9".into(),
+            program: "cat".into(),
+        });
+        app.render_host_surface(HostSurface::ProcessEnd {
+            process_id: "pty-9".into(),
+            exit_code: Some(0),
+        });
+        app.render_host_surface(HostSurface::Recovery {
+            action: rx4::RecoveryKind::Prefill,
+            reason: "Continue from where you left off.".into(),
+        });
+        app.render_host_surface(HostSurface::Recovery {
+            action: rx4::RecoveryKind::Nudge,
+            reason: "The same tool call is repeating. Change arguments or stop.".into(),
+        });
+        app.render_host_surface(HostSurface::Recovery {
+            action: rx4::RecoveryKind::Halt,
+            reason: "empty turn limit reached (2/3)".into(),
+        });
+        app.render_host_surface(HostSurface::ToolSpill {
+            status: rx4::SpillStatus::SpillFailed,
+            locator: String::new(),
+            original_bytes: 20,
+        });
 
         assert_eq!(app.messages[0].role, "system");
         assert_eq!(app.messages[0].content, "retry: sandbox deny (NestedFs)");
         assert_eq!(app.messages[1].tool_name, "pty");
-        assert_eq!(app.messages[1].content, "3 bytes\n4 bytes");
-        assert!(app.messages[1].is_streaming);
+        assert_eq!(app.messages[1].content, "3 bytes\n4 bytes\ncat\nexit 0");
+        assert!(!app.messages[1].is_streaming);
         assert_eq!(
             app.messages[2].content,
             "Approval required: write (src/lib.rs)"
@@ -3089,6 +3227,23 @@ mod tests {
         assert_eq!(app.messages[3].tool_name, "patch");
         assert_eq!(app.messages[3].content, "@@ -1 +1 @@\n+fn main() {}\n");
         assert!(app.messages[3].is_streaming);
+        assert_eq!(app.messages[4].role, "system");
+        assert_eq!(
+            app.messages[4].content,
+            "recovery prefill: Continue from where you left off."
+        );
+        assert_eq!(app.messages[5].role, "system");
+        assert_eq!(
+            app.messages[5].content,
+            "recovery nudge: The same tool call is repeating. Change arguments or stop."
+        );
+        assert_eq!(app.messages[6].role, "error");
+        assert_eq!(
+            app.messages[6].content,
+            "recovery halt: empty turn limit reached (2/3)"
+        );
+        assert_eq!(app.messages[7].role, "error");
+        assert_eq!(app.messages[7].content, "spill: spill_failed (20 bytes)");
     }
 
     #[test]

@@ -24,8 +24,8 @@ flowchart TD
 
 ## Wire
 
-- rx4 is consumed as a git dependency on `tschk/rotary` (`feat/harness-steals`
-  / `3aab31e794a49f9d2ae399232441439ae3f35823`) with `default-features = false`.
+- rx4 is consumed as a git dependency on `tschk/rotary`
+  (`74698cfb8dc4654336f4710fe9d1a9a14a340699`, rotary#184) with `default-features = false`.
   The default `tk` surface keeps `providers` + `builtin-tools` only. Hosts call
   rotary APIs; they do not own hashline, prewalk, or AVO dialects.
 - `ui/tui/src/main.rs` currently imports rx4 directly and drives the loop
@@ -79,8 +79,11 @@ invent policy.
 
 - `RetryReason { retry_reason, layer }` — sandbox escalate retry
 - `ProcessStdin { process_id, bytes }` — PTY stdin write
+- `ProcessStart { process_id, program }` / `ProcessEnd { process_id, exit_code }` — unified exec lifecycle
 - `RequestPermissions { tool, paths }` — permission prompt
 - `PatchHunk { path, hunk }` — streaming patch hunks
+- `Recovery { action, reason }` — empty-turn Prefill/Nudge and stuck-tool recovery (`RecoveryKind`: prefill / nudge / retry / halt)
+- `ToolSpill { status, locator, original_bytes }` — typed tool-output spill (`SpillStatus`)
 
 Hooks: `HookRegistry` lifecycle observe (`BeforeTool`/`AfterTool`/…). Engine
 hooks are currently fire-and-forget (`HookFn`); deny/modify lands when engine
