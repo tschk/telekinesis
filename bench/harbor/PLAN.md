@@ -5,6 +5,18 @@ Status: design draft (2026-09-13)
 Constraint: **do not block** tk-cloud CF Computer/orbs (M1/M2).  
 Orbs live in **tk-cloud only** — this bench is **local CLI harness** (`tk` / `rx4`), not Cloudflare Computer.
 
+
+## Auth policy (Max 2026-09-13)
+
+- **NO OpenAI API spend.** Do not set/use `OPENAI_API_KEY` for billing.
+- **Codex** = ChatGPT/Codex **subscription OAuth** on cp.local (`~/.codex/auth.json`).
+  - Prefer Harbor `--agent codex` if it honors CLI OAuth.
+  - If Harbor Codex still demands an API key: custom installed agent wrapping `codex exec` (OAuth), same pattern as `TkHarborAgent`.
+- **omp/OpenCode** = existing GLM keys (`glm.env` / `opencode.env`), not OpenAI.
+- **Amp** = **in v1** (not deferred): custom installed agent wrapping `amp -x` / CLI; Amp login on cp.local.
+- **grok-build** Harbor smoke = **interim only**, label separately — not the Codex baseline.
+
+
 ## Goal
 
 Primary metric: **Terminal-Bench 2.1 pass@1 %** via [Harbor](https://www.harborframework.com/).
@@ -13,10 +25,10 @@ Compare agents **with model held fixed**:
 
 | Agent | Harbor role | Notes |
 |-------|-------------|--------|
-| Codex CLI | builtin | Prefer `OPENAI_API_KEY` (ChatGPT sub ≠ always API) |
+| Codex CLI | builtin | ChatGPT/Codex **OAuth only** — no API key billing |
 | OpenCode / omp | custom or builtin if present | Same model id as Codex run |
 | **Custom `tk` / rx4** | **custom installed agent** | Headless `tk exec` over rotary host |
-| Amp | **Phase E** | Not in Harbor builtins today |
+| Amp | **custom installed (v1)** | Wrap `amp -x`; Amp login on cp.local |
 
 Dataset: `terminal-bench/terminal-bench-2-1`  
 Smoke: `-k 1` on 3–5 task ids before full sweep.
@@ -29,7 +41,7 @@ Smoke: `-k 1` on 3–5 task ids before full sweep.
 | **B** | OpenCode/omp Harbor agent (or `--agent` builtin if listed) same model | Codex baseline % recorded |
 | **C** | **Custom `TkHarborAgent`** (installed) wrapping `tk exec` | Adapter green on `hello-world`-class task |
 | **D** | Full TB2.1 pass@1 table (Codex vs omp vs tk) fixed model | Cost/time budget from Max |
-| **E** | Amp adapter (if/when Harbor support or external agent) | After D |
+| **E** | Amp adapter smoke on same 3–5 tasks | After Codex OAuth path green |
 
 **Current box (2026-09-13):** no `docker` / no docker.sock → Phase A blocked until Docker or move smoke to cp.local.
 
@@ -92,7 +104,7 @@ Alternate if we want harness-only: `tschk/rotary/bench/harbor/` — **prefer tel
 
 ```bash
 pip install harbor
-export OPENAI_API_KEY=...   # Codex + any OpenAI-backed model
+# NO OPENAI_API_KEY — Codex via ~/.codex OAuth
 
 # Phase A — Codex smoke
 harbor run -d terminal-bench/terminal-bench-2-1 \
