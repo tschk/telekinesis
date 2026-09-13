@@ -1,4 +1,12 @@
-const KNOWN = new Set(["ready", "starting", "stopped", "error"]);
+const KNOWN = new Set([
+  "ready",
+  "starting",
+  "stopped",
+  "error",
+  "ok",
+  "down",
+  "unknown",
+]);
 
 export function StatusBadge({ status }: { status: string }) {
   const key = status.toLowerCase();

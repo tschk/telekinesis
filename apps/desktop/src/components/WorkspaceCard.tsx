@@ -12,6 +12,7 @@ export function WorkspaceCard({
   selected = false,
   onSelect,
 }: WorkspaceCardProps) {
+  const backend = workspace.computerBackend ?? "—";
   return (
     <button
       type="button"
@@ -23,11 +24,14 @@ export function WorkspaceCard({
         <StatusBadge status={workspace.status} />
       </div>
       <div className="tk-workspace-card__meta">
-        <code>{workspace.id}</code>
-        <span className="tk-workspace-card__chip">tier:{workspace.tier}</span>
-        <span className="tk-workspace-card__chip">
-          backend:{workspace.computerBackend ?? "—"}
+        <span>
+          {workspace.tier}
+          <span className="tk-workspace-card__sep"> · </span>
+          {backend}
         </span>
+      </div>
+      <div className="tk-workspace-card__meta">
+        <code title={workspace.id}>{workspace.id}</code>
       </div>
     </button>
   );

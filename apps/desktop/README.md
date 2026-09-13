@@ -21,8 +21,8 @@ Competitors / inspiration for the ADE shell: Orca, Emdash, Superset.
 - **Host switcher:** Local | Cloud (top bar)
 - **Cloud:** list / create workspaces + exec via `VITE_TK_CLOUD_API` (tk-cloud M1); graceful mock fallback **only** on network/HTTP failure (empty API list is valid)
 - **Local:** “Spawn telekinesis” invokes `tk` or `telekinesis` on `PATH` via a Tauri command; missing binary is reported clearly (not required to build)
-- **Layout stubs:** AppShell (top bar + left nav + main), WorkspaceCard, StatusBadge, Panel stubs for terminal / diff / in-app browser; Cloud PromptBox + LogPane for `/exec`
-- **Tokens:** `src/styles/tokens.css` — exact `--tk-*` names shared with the web contract (dark-first, teal/cyan on near-black)
+- **Polished ADE shell:** AppShell (mark/wordmark, health StatusBadge, host switcher, billing stub), dense WorkspaceCard (status + `tier · backend` + mono id), Panel elevation, PromptBox + LogPane, empty/selected/hover/focus states
+- **Tokens:** `src/styles/tokens.css` — exact `--tk-*` names shared with `apps/web`; portal-aligned zinc-950 + Chivo Mono (cloud.tk.tsc.hk), dark-first — not the old teal Inter look
 
 ## Architecture
 

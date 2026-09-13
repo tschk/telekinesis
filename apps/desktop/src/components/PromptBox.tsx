@@ -41,9 +41,9 @@ export function PromptBox({
         spellCheck={false}
       />
       <div className="tk-prompt__actions">
-        <span className="tk-hint" style={{ borderStyle: "solid", flex: 1 }}>
-          Ctrl/⌘+Enter to send · POST /v1/workspaces/:id/exec
-        </span>
+        <p className="tk-prompt__hint">
+          Ctrl/⌘+Enter · POST /v1/workspaces/:id/exec
+        </p>
         <Button type="submit" disabled={disabled || !value.trim()}>
           Exec
         </Button>

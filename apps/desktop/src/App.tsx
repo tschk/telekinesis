@@ -7,6 +7,7 @@ import {
   LogPane,
   Panel,
   PromptBox,
+  StatusBadge,
   WorkspaceCard,
 } from "./components";
 import {
@@ -18,6 +19,15 @@ import {
 } from "./lib/cloudApi";
 import type { HealthResponse, HostMode, SpawnResult, Workspace } from "./lib/types";
 import "./App.css";
+
+function healthBadgeStatus(
+  health: HealthResponse | null,
+  healthError: string | null,
+): string {
+  if (health?.ok === true) return "ok";
+  if (healthError) return "down";
+  return "starting";
+}
 
 function App() {
   const [mode, setMode] = useState<HostMode>("local");
@@ -63,7 +73,6 @@ function App() {
       const result = await invoke<SpawnResult>("telekinesis_status");
       setLocalStatus(result.message);
     } catch {
-      // Browser/vite-only: Tauri IPC unavailable
       setLocalStatus(
         "Tauri IPC unavailable in browser preview. Use `npm run tauri dev` for local spawn.",
       );
@@ -122,10 +131,7 @@ function App() {
     if (!selectedId || !prompt.trim()) return;
     const source = prompt.trim();
     setExecBusy(true);
-    setLogLines((prev) => [
-      ...prev,
-      `$ ${source}`,
-    ]);
+    setLogLines((prev) => [...prev, `$ ${source}`]);
     const { result, error } = await execInWorkspace(selectedId, { source });
     const chunks: string[] = [];
     if (result.stdout) chunks.push(result.stdout.replace(/\n$/, ""));
@@ -161,13 +167,6 @@ function App() {
 
   const selected = workspaces.find((w) => w.id === selectedId) ?? null;
 
-  const healthChipClass =
-    health?.ok === true
-      ? "tk-health tk-health--ok"
-      : healthError
-        ? "tk-health tk-health--down"
-        : "tk-health tk-health--unknown";
-
   const healthLabel =
     health?.ok === true
       ? `cloud ok · ${health.computer ?? health.service ?? "up"}`
@@ -178,35 +177,41 @@ function App() {
   const topBar = (
     <>
       <div className="tk-shell__brand">
-        Telekinesis
-        <span>desktop ADE</span>
+        <span className="tk-shell__mark" aria-hidden>
+          tk
+        </span>
+        <div className="tk-shell__brand-text">
+          <span className="tk-shell__title">Telekinesis</span>
+          <span className="tk-shell__subtitle">desktop ADE</span>
+        </div>
       </div>
       <HostSwitcher mode={mode} onChange={setMode} />
       <div className="tk-shell__top-spacer" />
-      <button
-        type="button"
-        className={healthChipClass}
-        title={healthError ?? JSON.stringify(health ?? {})}
-        onClick={() => void refreshHealth()}
-      >
-        {healthLabel}
-      </button>
-      <span className="tk-hint" style={{ borderStyle: "solid" }}>
-        API: <code>{cloudApiBase()}</code>
-      </span>
+      <div className="tk-shell__top-meta">
+        <button
+          type="button"
+          className="tk-health"
+          title={healthError ?? JSON.stringify(health ?? {})}
+          onClick={() => void refreshHealth()}
+          aria-label={healthLabel}
+        >
+          <StatusBadge status={healthBadgeStatus(health, healthError)} />
+          <span className="tk-health__label">{healthLabel}</span>
+        </button>
+        <span className="tk-shell__billing" title="Billing stub">
+          billing · —
+        </span>
+        <span className="tk-hint tk-shell__api">
+          API <code>{cloudApiBase()}</code>
+        </span>
+      </div>
     </>
   );
 
   const sidebar =
     mode === "cloud" ? (
       <>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
+        <div className="tk-nav-header">
           <h2 className="tk-nav-section-title">Workspaces</h2>
           <Button variant="ghost" onClick={() => void refreshCloud()} disabled={loading}>
             {loading ? "…" : "Refresh"}
@@ -235,9 +240,7 @@ function App() {
           </Button>
         </form>
         {createError ? (
-          <p className="tk-hint" style={{ color: "var(--tk-danger)" }}>
-            Create failed: {createError}
-          </p>
+          <p className="tk-hint tk-hint--danger">Create failed: {createError}</p>
         ) : null}
         <div className="tk-nav-list">
           {workspaces.map((ws) => (
@@ -249,11 +252,18 @@ function App() {
             />
           ))}
           {workspaces.length === 0 && listSource === "api" ? (
-            <p className="tk-hint">No workspaces yet — create one above.</p>
+            <p className="tk-hint tk-hint--empty">
+              No workspaces yet — create one above.
+            </p>
+          ) : null}
+          {workspaces.length === 0 && !listSource && !loading ? (
+            <p className="tk-hint tk-hint--empty">Waiting for cloud…</p>
           ) : null}
         </div>
         <h2 className="tk-nav-section-title">Sessions</h2>
-        <p className="tk-hint">Session list stub — wire to tk-cloud WS later.</p>
+        <p className="tk-hint tk-hint--empty">
+          Session list stub — wire to tk-cloud WS later.
+        </p>
       </>
     ) : (
       <>
@@ -269,7 +279,9 @@ function App() {
           Recheck PATH
         </Button>
         <h2 className="tk-nav-section-title">Sessions</h2>
-        <p className="tk-hint">Local session stubs — parallel worktrees later.</p>
+        <p className="tk-hint tk-hint--empty">
+          Local session stubs — parallel worktrees later.
+        </p>
       </>
     );
 
@@ -319,7 +331,7 @@ function App() {
                 {`id: ${selected.id}\nname: ${selected.name}\ntier: ${selected.tier}\nbackend: ${selected.computerBackend ?? "—"}\nstatus: ${selected.status}\ncreatedAt: ${selected.createdAt}\nsource: ${listSource}`}
               </div>
             ) : (
-              <p>No workspace selected.</p>
+              <p className="tk-hint tk-hint--empty">No workspace selected.</p>
             )}
             <h3 className="tk-section-label">Exec</h3>
             <PromptBox
