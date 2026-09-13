@@ -1,0 +1,85 @@
+/*
+  Telekinesis UI kit tokens — CSS-first contract shared with apps/desktop.
+  Exact --tk-* names; later consume @tschk/tk-ui. Do not invent alternates.
+  Portal-aligned (cloud.tk.tsc.hk vibe): zinc-950 surfaces + Chivo Mono. Dark-first.
+  Visual parity with tk-cloud portal; this app does NOT own cloud.tk.tsc.hk.
+*/
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --tk-bg: #09090b;
+  --tk-surface: #18181b;
+  --tk-surface-2: #27272a;
+  --tk-border: #3f3f46;
+  --tk-text: #d4d4d8;
+  --tk-muted: #71717a;
+  --tk-accent: #fafafa;
+  --tk-accent-fg: #09090b;
+  --tk-success: #34d399;
+  --tk-warn: #fbbf24;
+  --tk-danger: #f87171;
+
+  --tk-space-1: 4px;
+  --tk-space-2: 8px;
+  --tk-space-3: 12px;
+  --tk-space-4: 16px;
+  --tk-space-5: 24px;
+  --tk-space-6: 32px;
+
+  --tk-radius-sm: 6px;
+  --tk-radius-md: 10px;
+  --tk-radius-lg: 14px;
+
+  --tk-font-sans: "Chivo Mono", ui-monospace, monospace;
+  --tk-font-mono: "Chivo Mono", ui-monospace, monospace;
+
+  --tk-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --tk-bg: #fafafa;
+  --tk-surface: #ffffff;
+  --tk-surface-2: #f4f4f5;
+  --tk-border: #d4d4d8;
+  --tk-text: #18181b;
+  --tk-muted: #71717a;
+  --tk-accent: #18181b;
+  --tk-accent-fg: #fafafa;
+  --tk-success: #059669;
+  --tk-warn: #d97706;
+  --tk-danger: #dc2626;
+
+  --tk-shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.06), 0 4px 12px rgba(24, 24, 27, 0.06);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--tk-font-sans);
+  background: var(--tk-bg);
+  color: var(--tk-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
