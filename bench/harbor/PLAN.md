@@ -17,6 +17,14 @@ Orbs live in **tk-cloud only** — this bench is **local CLI harness** (`tk` / `
 - **grok-build** Harbor smoke = **interim only**, label separately — not the Codex baseline.
 
 
+## Codex auth (canonical)
+
+**Source of truth:** ChatGPT / Codex subscription OAuth on cp.local (`~/.codex/auth.json`).
+
+1. Prefer Harbor `--agent codex` **only if** it uses the logged-in Codex CLI session (OAuth).
+2. If Harbor’s Codex agent still asks for `OPENAI_API_KEY`, **do not buy a key** — use custom installed agent `CodexOauthHarborAgent` wrapping `codex exec` (see `agents/codex_oauth_harbor_agent.py`).
+3. Missing `OPENAI_API_KEY` is **expected and correct** for this bench. It is not a blocker.
+
 ## Goal
 
 Primary metric: **Terminal-Bench 2.1 pass@1 %** via [Harbor](https://www.harborframework.com/).
@@ -25,10 +33,10 @@ Compare agents **with model held fixed**:
 
 | Agent | Harbor role | Notes |
 |-------|-------------|--------|
-| Codex CLI | builtin | ChatGPT/Codex **OAuth only** — no API key billing |
+| Codex CLI | builtin **or** custom `codex-oauth` | **ChatGPT/Codex OAuth only** (`~/.codex/auth.json`). Never `OPENAI_API_KEY`. If Harbor builtin demands API key → wrap `codex exec` |
 | OpenCode / omp | custom or builtin if present | Same model id as Codex run |
 | **Custom `tk` / rx4** | **custom installed agent** | Headless `tk exec` over rotary host |
-| Amp | **custom installed (v1)** | Wrap `amp -x`; Amp login on cp.local |
+| Amp | **out of v1** | Max: skip if hard — do not block |
 
 Dataset: `terminal-bench/terminal-bench-2-1`  
 Smoke: `-k 1` on 3–5 task ids before full sweep.
@@ -104,7 +112,7 @@ Alternate if we want harness-only: `tschk/rotary/bench/harbor/` — **prefer tel
 
 ```bash
 pip install harbor
-# NO OPENAI_API_KEY — Codex via ~/.codex OAuth
+# Codex via ChatGPT OAuth (~/.codex/auth.json). Never OPENAI_API_KEY.
 
 # Phase A — Codex smoke
 harbor run -d terminal-bench/terminal-bench-2-1 \
