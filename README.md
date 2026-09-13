@@ -114,6 +114,8 @@ cd ui/tui && cargo build --release
 
 Cloud backend remains private `tschk/tk-cloud`. Archived sibling `tschk/tk-desktop` is not the desktop home.
 
+Mobile companion (Expo M0 scaffold): [`apps/mobile`](apps/mobile).
+
 ## License
 
 MPL-2.0
