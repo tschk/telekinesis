@@ -14,20 +14,26 @@ export function AppShell({ healthOk, billingUrl, children }: Props) {
 
   return (
     <div className="tk-shell">
-      <header className="tk-shell__header">
-        <div className="tk-shell__brand">
-          <span className="tk-shell__mark" aria-hidden />
-          <h1 className="tk-shell__title">Telekinesis</h1>
-          <span className="tk-shell__subtitle">web control plane</span>
-        </div>
-        <div className="tk-shell__meta">
-          <StatusBadge tone={tone} label={label} />
-          <a className="tk-link" href={billingUrl}>
-            Billing (stub)
-          </a>
-        </div>
-      </header>
-      <main className="tk-shell__main">{children}</main>
+      <div className="tk-shell__inner">
+        <header className="tk-shell__header">
+          <div className="tk-shell__brand">
+            <h1 className="tk-shell__title">telekinesis</h1>
+            <p className="tk-shell__subtitle">
+              web control plane · ADE companion
+            </p>
+          </div>
+          <nav className="tk-shell__meta" aria-label="Meta">
+            <StatusBadge tone={tone} label={label} />
+            <a className="tk-link" href={billingUrl}>
+              Billing
+            </a>
+          </nav>
+        </header>
+        <main className="tk-shell__main">{children}</main>
+        <footer className="tk-shell__footer">
+          telekinesis ADE companion · API /v1 · not cloud.tk.tsc.hk
+        </footer>
+      </div>
     </div>
   );
 }

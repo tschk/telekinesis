@@ -1,6 +1,18 @@
 # Telekinesis Web (`apps/web`)
 
-Cloud control-plane UI for Telekinesis workspaces. React + Vite on Cloudflare Pages; talks to private [`tschk/tk-cloud`](https://github.com/tschk/tk-cloud).
+Monorepo ADE / web control GUI companion for Telekinesis workspaces (React + Vite).
+
+**Not `cloud.tk.tsc.hk`.** That hostname is the tk-cloud portal
+([`tschk/tk-cloud`](https://github.com/tschk/tk-cloud) `apps/web`, moonshine + crepus).
+This app lives in the telekinesis monorepo for local/dev and Pages deploy elsewhere — it does not own or deploy to `cloud.tk.tsc.hk`.
+
+## Visual alignment
+
+Matches the portal vibe (not the host):
+
+- Font: Chivo Mono (Google Fonts)
+- Palette: zinc-950 surfaces (`#09090b` …), sparse mono layout
+- Shared CSS tokens with `apps/desktop`: `src/styles/tokens.css` (`--tk-*` names, portal-aligned values)
 
 ## Dev
 
@@ -21,14 +33,6 @@ Env:
 |---|---|---|
 | `VITE_API_BASE_URL` | `http://127.0.0.1:8787` | tk-cloud Worker |
 | `VITE_BILLING_PORTAL_URL` | `#` stub | Stripe portal (M2) |
-
-## UI kit tokens
-
-Shared CSS contract with `apps/desktop` (canonical values mirrored 1:1):
-
-`src/styles/tokens.css` — `--tk-*` colors, space, radius, fonts.
-
-Dark samples: `--tk-bg #0b0f12`, `--tk-surface #12181d`, `--tk-accent #2dd4bf`.
 
 ## MVP surfaces
 
