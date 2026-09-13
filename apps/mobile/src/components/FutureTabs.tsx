@@ -1,5 +1,5 @@
 import { StyleSheet, Text, View } from 'react-native';
-import { colors } from '../theme';
+import { colors, fontSans } from '../theme';
 
 const FUTURE_TABS = ['Status', 'Steer', 'Diffs', 'Approvals'] as const;
 
@@ -34,25 +34,27 @@ const styles = StyleSheet.create({
   tabs: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: colors.tkSpace2,
   },
   tabChip: {
-    backgroundColor: colors.chipBg,
-    borderColor: colors.chipBorder,
+    backgroundColor: colors.tkSurface2,
+    borderColor: colors.tkBorder,
     borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    opacity: 0.7,
+    paddingHorizontal: colors.tkSpace3,
+    paddingVertical: colors.tkSpace1 + 2,
+    opacity: 0.75,
   },
   tabText: {
-    color: colors.chipText,
+    ...fontSans,
+    color: colors.tkMuted,
     fontSize: 12,
     fontWeight: '600',
   },
   hint: {
-    color: colors.hint,
+    ...fontSans,
+    color: colors.tkMuted,
     fontSize: 12,
-    marginTop: 8,
+    marginTop: colors.tkSpace2,
   },
 });

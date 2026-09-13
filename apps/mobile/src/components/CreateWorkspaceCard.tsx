@@ -1,5 +1,6 @@
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { colors } from '../theme';
+import { Pressable, StyleSheet, Text, TextInput } from 'react-native';
+import { Panel } from './Panel';
+import { colors, fontSans } from '../theme';
 
 type Props = {
   name: string;
@@ -15,14 +16,11 @@ export function CreateWorkspaceCard({
   onCreate,
 }: Props) {
   return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle} accessibilityRole="header">
-        Create workspace
-      </Text>
+    <Panel title="Create workspace">
       <TextInput
         style={styles.input}
         placeholder="Name (optional)"
-        placeholderTextColor={colors.hint}
+        placeholderTextColor={colors.tkMuted}
         value={name}
         onChangeText={onChangeName}
         editable={!creating}
@@ -40,50 +38,40 @@ export function CreateWorkspaceCard({
         accessibilityRole="button"
         accessibilityLabel={creating ? 'Creating workspace' : 'Create workspace'}
         accessibilityState={{ disabled: creating, busy: creating }}
-        android_ripple={{ color: '#134e4a' }}
+        android_ripple={{ color: colors.tkBorder }}
       >
         <Text style={styles.primaryBtnText}>
           {creating ? 'Creating…' : 'Create workspace'}
         </Text>
       </Pressable>
-    </View>
+    </Panel>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderColor: colors.cardBorder,
-    borderWidth: 1,
-    padding: 14,
-    gap: 8,
-  },
-  cardTitle: {
-    color: colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '600',
-  },
   input: {
-    backgroundColor: colors.bg,
-    borderColor: colors.inputBorder,
+    ...fontSans,
+    backgroundColor: colors.tkBg,
+    borderColor: colors.tkBorder,
     borderWidth: 1,
-    borderRadius: 8,
-    color: colors.text,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
+    borderRadius: colors.tkRadiusMd,
+    color: colors.tkText,
+    paddingHorizontal: colors.tkSpace3,
+    paddingVertical: colors.tkSpace2,
+    fontSize: 14,
   },
   primaryBtn: {
-    backgroundColor: colors.primary,
-    borderRadius: 8,
-    paddingVertical: 12,
+    backgroundColor: colors.tkAccent,
+    borderRadius: colors.tkRadiusMd,
+    paddingVertical: colors.tkSpace3,
     alignItems: 'center',
+    marginTop: colors.tkSpace1,
   },
-  btnDisabled: { opacity: 0.6 },
+  btnDisabled: { opacity: 0.5 },
   primaryBtnText: {
-    color: colors.primaryText,
+    ...fontSans,
+    color: colors.tkAccentFg,
     fontWeight: '700',
-    fontSize: 15,
+    fontSize: 14,
   },
 });

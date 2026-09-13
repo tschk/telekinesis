@@ -1,5 +1,7 @@
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors } from '../theme';
+import { Panel } from './Panel';
+import { StatusBadge, type BadgeTone } from './StatusBadge';
+import { colors, fontMono, fontSans } from '../theme';
 
 type Props = {
   healthOk: boolean | null;
@@ -9,17 +11,15 @@ type Props = {
 };
 
 export function HealthCard({ healthOk, cloudUrl, refreshing, onRefresh }: Props) {
+  const tone: BadgeTone =
+    healthOk === null ? 'muted' : healthOk ? 'ok' : 'danger';
   const healthLabel =
     healthOk === null ? 'checking…' : healthOk ? 'ok' : 'down';
-  const statusStyle =
-    healthOk === true ? styles.ok : healthOk === false ? styles.bad : styles.muted;
 
   return (
-    <View style={styles.card}>
-      <View style={styles.cardRow}>
-        <Text style={styles.cardTitle} accessibilityRole="header">
-          Cloud health
-        </Text>
+    <Panel
+      title="Cloud health"
+      actions={
         <Pressable
           style={styles.ghostBtn}
           onPress={onRefresh}
@@ -31,14 +31,12 @@ export function HealthCard({ healthOk, cloudUrl, refreshing, onRefresh }: Props)
         >
           <Text style={styles.ghostBtnText}>{refreshing ? '…' : 'Refresh'}</Text>
         </Pressable>
+      }
+    >
+      <View style={styles.row}>
+        <Text style={styles.mono}>status</Text>
+        <StatusBadge tone={tone} label={healthLabel} />
       </View>
-      <Text
-        style={styles.mono}
-        accessibilityLabel={`Cloud health ${healthLabel}`}
-        accessibilityLiveRegion="polite"
-      >
-        status: <Text style={statusStyle}>{healthLabel}</Text>
-      </Text>
       <Text
         style={styles.monoMuted}
         accessibilityLabel={`tk-cloud base URL ${cloudUrl}`}
@@ -47,55 +45,44 @@ export function HealthCard({ healthOk, cloudUrl, refreshing, onRefresh }: Props)
       </Text>
       {healthOk === null ? (
         <ActivityIndicator
-          color={colors.accent}
+          color={colors.tkAccent}
           style={styles.spinner}
           accessibilityLabel="Checking cloud health"
         />
       ) : null}
-    </View>
+    </Panel>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderColor: colors.cardBorder,
-    borderWidth: 1,
-    padding: 14,
-    gap: 8,
-  },
-  cardRow: {
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  cardTitle: {
-    color: colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '600',
+    gap: colors.tkSpace2,
   },
   mono: {
-    color: '#d1d5db',
-    fontFamily: 'monospace',
-    fontSize: 13,
-  },
-  monoMuted: {
-    color: colors.textMuted,
-    fontFamily: 'monospace',
+    ...fontMono,
+    color: colors.tkText,
     fontSize: 12,
   },
-  ok: { color: colors.accent },
-  bad: { color: colors.bad },
-  muted: { color: colors.textMuted },
+  monoMuted: {
+    ...fontMono,
+    color: colors.tkMuted,
+    fontSize: 11,
+  },
   ghostBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: colors.tkSpace2,
+    paddingVertical: colors.tkSpace1,
+    borderRadius: colors.tkRadiusMd,
+    borderWidth: 1,
+    borderColor: colors.tkBorder,
   },
   ghostBtnText: {
-    color: colors.accent,
+    ...fontSans,
+    color: colors.tkText,
     fontWeight: '600',
-    fontSize: 13,
+    fontSize: 12,
   },
-  spinner: { marginTop: 8 },
+  spinner: { marginTop: colors.tkSpace2 },
 });

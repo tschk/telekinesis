@@ -1,6 +1,20 @@
+import {
+  ChivoMono_400Regular,
+  ChivoMono_600SemiBold,
+  ChivoMono_700Bold,
+} from '@expo-google-fonts/chivo-mono';
+import { useFonts } from 'expo-font';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState } from 'react';
-import { RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import {
   baseUrl,
   createWorkspace,
@@ -14,10 +28,18 @@ import { CreateWorkspaceCard } from './src/components/CreateWorkspaceCard';
 import { ErrorBanner } from './src/components/ErrorBanner';
 import { FutureTabs } from './src/components/FutureTabs';
 import { HealthCard } from './src/components/HealthCard';
+import { StatusBadge, type BadgeTone } from './src/components/StatusBadge';
 import { WorkspaceList } from './src/components/WorkspaceList';
-import { colors } from './src/theme';
+import { colors, fontSans, tkShadowSm } from './src/theme';
 
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    ChivoMono: ChivoMono_400Regular,
+    ChivoMono_400Regular,
+    ChivoMono_600SemiBold,
+    ChivoMono_700Bold,
+  });
+
   const [healthOk, setHealthOk] = useState<boolean | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceMeta[]>([]);
   const [listNote, setListNote] = useState<string | null>(null);
@@ -94,6 +116,20 @@ export default function App() {
     }
   }
 
+  const apiTone: BadgeTone =
+    healthOk === null ? 'muted' : healthOk ? 'ok' : 'danger';
+  const apiLabel =
+    healthOk === null ? 'API …' : healthOk ? 'API healthy' : 'API down';
+
+  if (!fontsLoaded) {
+    return (
+      <SafeAreaView style={[styles.safe, styles.boot]}>
+        <StatusBar style="light" />
+        <ActivityIndicator color={colors.tkAccent} />
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar style="light" />
@@ -105,17 +141,23 @@ export default function App() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => void refresh({ pull: true })}
-            tintColor={colors.accent}
-            colors={[colors.accent]}
-            progressBackgroundColor={colors.card}
+            tintColor={colors.tkAccent}
+            colors={[colors.tkAccent]}
+            progressBackgroundColor={colors.tkSurface}
           />
         }
       >
         <View style={styles.header}>
-          <Text style={styles.title} accessibilityRole="header">
-            Telekinesis
-          </Text>
-          <Text style={styles.subtitle}>mobile companion M0</Text>
+          <View style={styles.brand}>
+            <View style={styles.mark} accessibilityElementsHidden />
+            <View style={styles.brandText}>
+              <Text style={styles.title} accessibilityRole="header">
+                Telekinesis
+              </Text>
+              <Text style={styles.subtitle}>mobile companion</Text>
+            </View>
+          </View>
+          <StatusBadge tone={apiTone} label={apiLabel} />
         </View>
 
         <FutureTabs />
@@ -152,24 +194,62 @@ export default function App() {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: colors.bg,
+    backgroundColor: colors.tkBg,
+  },
+  boot: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scroll: {
-    padding: 16,
-    paddingBottom: 48,
-    gap: 12,
+    padding: colors.tkSpace4,
+    paddingBottom: colors.tkSpace6,
+    gap: colors.tkSpace3,
   },
   header: {
-    marginBottom: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: colors.tkSpace3,
+    backgroundColor: colors.tkSurface,
+    borderColor: colors.tkBorder,
+    borderWidth: 1,
+    borderRadius: colors.tkRadiusLg,
+    paddingHorizontal: colors.tkSpace4,
+    paddingVertical: colors.tkSpace3,
+    ...tkShadowSm,
+  },
+  brand: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: colors.tkSpace2,
+    flexShrink: 1,
+  },
+  mark: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: colors.tkAccent,
+    shadowColor: colors.tkAccent,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+  },
+  brandText: {
+    flexShrink: 1,
   },
   title: {
-    color: colors.text,
-    fontSize: 28,
-    fontWeight: '700',
+    ...fontSans,
+    color: colors.tkText,
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
   subtitle: {
-    color: colors.textMuted,
-    fontSize: 14,
-    marginTop: 2,
+    ...fontSans,
+    color: colors.tkMuted,
+    fontSize: 11,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginTop: 1,
   },
 });

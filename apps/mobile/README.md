@@ -2,6 +2,10 @@
 
 Expo TypeScript companion for **telekinesis**. Long-term this is full-parity remote control: status, steer, diffs, approvals, and push when an agent is blocked or done. M0 talks HTTP to private [`tschk/tk-cloud`](https://github.com/tschk/tk-cloud). A later milestone adds an E2EE path to a local telekinesis daemon.
 
+## UI tokens
+
+Visual design uses the **shared Telekinesis UI kit** — the same `--tk-*` contract as `apps/web` and `apps/desktop` (`tokens.css`, zinc portal + Chivo Mono; web `bf7a87e` / desktop `e5c31bb`). Mobile maps those values in `src/theme.ts` for React Native; later this should consume `@tschk/tk-ui`. Dark-first ADE; optional light tokens are exported but not switched yet.
+
 ## Run
 
 ```bash
@@ -16,7 +20,7 @@ Then Expo Go (device/simulator) or `w` for web. Metro must be restarted after ch
 
 | Variable | Default | Notes |
 |---|---|---|
-| `EXPO_PUBLIC_TK_CLOUD_URL` | `http://127.0.0.1:8787` | tk-cloud base URL. Whitespace and trailing slashes are stripped. On a **physical device**, `127.0.0.1` is the phone — use the machine LAN IP, e.g. `http://192.168.1.10:8787`. |
+| `EXPO_PUBLIC_TK_CLOUD_URL` | `http://127.0.0.1:8787` | tk-cloud base URL (local wrangler). Whitespace and trailing slashes are stripped. On a **physical device**, `127.0.0.1` is the phone — use the machine LAN IP, e.g. `http://192.168.1.10:8787`. |
 
 ```bash
 EXPO_PUBLIC_TK_CLOUD_URL=http://192.168.1.10:8787 npx expo start

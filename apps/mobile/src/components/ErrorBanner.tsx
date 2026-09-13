@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors } from '../theme';
+import { colors, fontSans } from '../theme';
 
 type Props = {
   message: string;
@@ -32,23 +32,29 @@ export function ErrorBanner({ message, onRetry }: Props) {
 
 const styles = StyleSheet.create({
   banner: {
-    backgroundColor: colors.errorBg,
-    borderColor: colors.errorBorder,
+    backgroundColor: 'rgba(248, 113, 113, 0.12)',
+    borderColor: 'rgba(248, 113, 113, 0.4)',
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-    gap: 8,
+    borderRadius: colors.tkRadiusMd,
+    padding: colors.tkSpace3,
+    gap: colors.tkSpace2,
   },
   text: {
-    color: colors.errorText,
+    ...fontSans,
+    color: colors.tkDanger,
     fontSize: 13,
   },
   retry: {
     alignSelf: 'flex-start',
-    paddingVertical: 4,
+    paddingVertical: colors.tkSpace1,
+    paddingHorizontal: colors.tkSpace2,
+    borderRadius: colors.tkRadiusMd,
+    borderWidth: 1,
+    borderColor: colors.tkBorder,
   },
   retryText: {
-    color: colors.accent,
+    ...fontSans,
+    color: colors.tkAccent,
     fontWeight: '600',
     fontSize: 13,
   },

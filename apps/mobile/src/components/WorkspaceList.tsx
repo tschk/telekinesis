@@ -1,6 +1,8 @@
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import type { WorkspaceMeta } from '../api/tkCloud';
-import { colors } from '../theme';
+import { Panel } from './Panel';
+import { StatusBadge, type BadgeTone } from './StatusBadge';
+import { colors, fontMono, fontSans } from '../theme';
 
 type Props = {
   workspaces: WorkspaceMeta[];
@@ -9,15 +11,17 @@ type Props = {
   error: string | null;
 };
 
+function statusTone(status: string): BadgeTone {
+  const s = status.toLowerCase();
+  if (s.includes('ready') || s.includes('active') || s === 'ok') return 'ok';
+  if (s.includes('pending') || s.includes('starting')) return 'warn';
+  if (s.includes('error') || s.includes('fail')) return 'danger';
+  return 'muted';
+}
+
 export function WorkspaceList({ workspaces, loading, note, error }: Props) {
   return (
-    <View
-      style={styles.card}
-      accessibilityLabel="Workspaces"
-    >
-      <Text style={styles.cardTitle} accessibilityRole="header">
-        Workspaces
-      </Text>
+    <Panel title="Workspaces" accessibilityLabel="Workspaces">
       {note ? (
         <Text
           style={styles.note}
@@ -33,7 +37,7 @@ export function WorkspaceList({ workspaces, loading, note, error }: Props) {
         note={note}
         error={error}
       />
-    </View>
+    </Panel>
   );
 }
 
@@ -41,7 +45,7 @@ function WorkspaceBody({ workspaces, loading, note, error }: Props) {
   if (loading && workspaces.length === 0) {
     return (
       <View style={styles.empty} accessibilityLabel="Loading workspaces">
-        <ActivityIndicator color={colors.accent} />
+        <ActivityIndicator color={colors.tkAccent} />
         <Text style={styles.hint}>Loading workspaces…</Text>
       </View>
     );
@@ -64,7 +68,7 @@ function WorkspaceBody({ workspaces, loading, note, error }: Props) {
   }
 
   return (
-    <View accessibilityRole="list">
+    <View style={styles.list} accessibilityRole="list">
       {workspaces.map((w) => (
         <View
           key={w.id}
@@ -72,14 +76,18 @@ function WorkspaceBody({ workspaces, loading, note, error }: Props) {
           accessibilityRole="summary"
           accessibilityLabel={`Workspace ${w.name || w.id}, tier ${w.tier}, status ${w.status}`}
         >
-          <Text style={styles.wsName}>{w.name || w.id}</Text>
-          <Text style={styles.monoMuted}>id: {w.id}</Text>
-          <Text style={styles.monoMuted}>
-            tier: {w.tier} · status: {w.status}
-          </Text>
-          {w.computerBackend ? (
-            <Text style={styles.monoMuted}>backend: {w.computerBackend}</Text>
-          ) : null}
+          <View style={styles.wsRow}>
+            <Text style={styles.wsName}>{w.name || w.id}</Text>
+            <StatusBadge tone={statusTone(w.status)} label={w.status} />
+          </View>
+          <View style={styles.wsMeta}>
+            <Text style={styles.metaText}>{w.tier}</Text>
+            <Text style={styles.sep}>·</Text>
+            <Text style={styles.metaText}>
+              {w.computerBackend ?? 'no backend'}
+            </Text>
+          </View>
+          <Text style={styles.wsId}>{w.id}</Text>
         </View>
       ))}
     </View>
@@ -87,50 +95,67 @@ function WorkspaceBody({ workspaces, loading, note, error }: Props) {
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderColor: colors.cardBorder,
-    borderWidth: 1,
-    padding: 14,
-    gap: 8,
-  },
-  cardTitle: {
-    color: colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '600',
-  },
   note: {
-    color: colors.warning,
+    ...fontSans,
+    color: colors.tkWarn,
     fontSize: 12,
-    marginBottom: 4,
+    marginBottom: colors.tkSpace1,
   },
   hint: {
-    color: colors.hint,
+    ...fontSans,
+    color: colors.tkMuted,
     fontSize: 12,
   },
   empty: {
-    paddingVertical: 12,
+    paddingVertical: colors.tkSpace3,
     alignItems: 'flex-start',
-    gap: 8,
+    gap: colors.tkSpace2,
+  },
+  list: {
+    gap: colors.tkSpace2,
   },
   wsCard: {
-    backgroundColor: colors.wsBg,
-    borderRadius: 8,
-    borderColor: colors.wsBorder,
+    backgroundColor: colors.tkBg,
+    borderRadius: colors.tkRadiusMd,
+    borderColor: colors.tkBorder,
     borderWidth: 1,
-    padding: 10,
-    gap: 2,
-    marginTop: 4,
+    padding: colors.tkSpace3,
+    gap: colors.tkSpace1,
+  },
+  wsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: colors.tkSpace2,
   },
   wsName: {
-    color: '#f9fafb',
-    fontSize: 15,
+    ...fontSans,
+    color: colors.tkText,
+    fontSize: 14,
     fontWeight: '600',
+    flexShrink: 1,
   },
-  monoMuted: {
-    color: colors.textMuted,
-    fontFamily: 'monospace',
+  wsMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: colors.tkSpace2,
+    marginTop: 2,
+  },
+  metaText: {
+    ...fontSans,
+    color: colors.tkMuted,
     fontSize: 12,
+  },
+  sep: {
+    ...fontSans,
+    color: colors.tkMuted,
+    opacity: 0.6,
+    fontSize: 12,
+  },
+  wsId: {
+    ...fontMono,
+    color: colors.tkMuted,
+    fontSize: 11,
+    marginTop: colors.tkSpace1,
   },
 });
