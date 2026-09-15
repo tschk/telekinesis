@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Install toolchains and lockfile dependencies for telekinesis orbs.
+# Idempotent: safe to rerun on a warm snapshot.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+step() {
+  local label=$1
+  shift
+  printf '\n==> %s\n' "$label"
+  local start
+  start=$(date +%s)
+  "$@"
+  printf '==> %s: %ss\n' "$label" "$(($(date +%s) - start))"
+}
+
+ensure_apt() {
+  local pkg
+  local missing=()
+  for pkg in "$@"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+      missing+=("$pkg")
+    fi
+  done
+  if ((${#missing[@]} == 0)); then
+    printf 'apt packages already installed\n'
+    return 0
+  fi
+  sudo apt-get update
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+}
+
+ensure_rustup_profile() {
+  local marker="# telekinesis rustup"
+  local cargo_env="$HOME/.cargo/env"
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >>"$HOME/.bash_profile" <<EOF
+
+$marker
+if [ -f "$cargo_env" ]; then
+  # shellcheck disable=SC1091
+  . "$cargo_env"
+fi
+EOF
+  fi
+}
+
+ensure_env_file() {
+  local example=$1
+  local dest=$2
+  if [ -f "$example" ] && [ ! -f "$dest" ]; then
+    cp -- "$example" "$dest"
+    printf 'created %s from %s\n' "$dest" "$example"
+  fi
+}
+
+step "apt build deps" ensure_apt \
+  build-essential \
+  pkg-config \
+  libssl-dev \
+  ca-certificates \
+  curl
+
+if [ ! -x "$HOME/.cargo/bin/rustup" ] && ! command -v rustup >/dev/null 2>&1; then
+  step "install rustup (stable + rustfmt + clippy)" \
+    bash -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile default --component rustfmt,clippy'
+else
+  printf '==> rustup already installed\n'
+fi
+
+# The installer cannot update this running script's environment.
+# shellcheck disable=SC1091
+if [ -f "$HOME/.cargo/env" ]; then
+  . "$HOME/.cargo/env"
+fi
+
+ensure_rustup_profile
+rustup set auto-self-update disable >/dev/null
+
+if rustup component list --installed --toolchain stable 2>/dev/null | grep -qx 'rustfmt-.*' \
+  && rustup component list --installed --toolchain stable 2>/dev/null | grep -qx 'clippy-.*'; then
+  printf '==> rustup stable + rustfmt + clippy already installed\n'
+else
+  step "rustup stable + components" rustup toolchain install stable --component rustfmt,clippy
+fi
+step "rustup default stable" rustup default stable
+
+fetch_crate() {
+  local dir=$1
+  (cd "$dir" && cargo fetch --locked)
+}
+
+step "cargo fetch ui/tui" fetch_crate ui/tui
+step "cargo fetch ui/gui" fetch_crate ui/gui
+step "cargo fetch ui/router" fetch_crate ui/router
+
+npm_ci() {
+  local dir=$1
+  local lock="$dir/package-lock.json"
+  local stamp="$dir/node_modules/.amp-setup-lockhash"
+  local hash
+  hash=$(sha256sum "$lock" | awk '{print $1}')
+  if [ -d "$dir/node_modules" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$hash" ]; then
+    printf '%s: node_modules matches lockfile\n' "$dir"
+    return 0
+  fi
+  (cd "$dir" && npm ci --no-fund --no-audit)
+  mkdir -p "$dir/node_modules"
+  printf '%s\n' "$hash" >"$stamp"
+}
+
+step "npm ci apps/web" npm_ci apps/web
+step "npm ci apps/desktop" npm_ci apps/desktop
+step "npm ci apps/mobile" npm_ci apps/mobile
+
+if [ -f plugins/bun.lock ]; then
+  step "bun install plugins" bash -c 'cd plugins && bun install --frozen-lockfile'
+fi
+
+ensure_env_file apps/web/.env.example apps/web/.env.local
+ensure_env_file apps/desktop/.env.example apps/desktop/.env.local
+
+printf '\nrustc %s\ncargo %s\n' "$(rustc --version)" "$(cargo --version)"
+printf 'orb setup complete\n'

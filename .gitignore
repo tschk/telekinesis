@@ -26,3 +26,6 @@ apps/mobile/web-build/
 apps/mobile/expo-env.d.ts
 apps/mobile/ios/
 apps/mobile/android/
+
+# Amp orb portals
+.amp/portals/*
