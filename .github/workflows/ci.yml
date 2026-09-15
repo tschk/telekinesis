@@ -55,6 +55,23 @@ jobs:
             exit 1
           fi
 
+  router:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/router
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ui/router
+      - run: cargo fmt --check
+      - run: cargo clippy --locked -- -D warnings
+      - run: cargo test --locked
+
   adapters:
     runs-on: ubuntu-latest
     steps:
