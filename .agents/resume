@@ -11,3 +11,12 @@ if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; the
   printf 'resume: rustc/cargo missing; run .agents/setup\n' >&2
   exit 1
 fi
+
+if command -v docker >/dev/null 2>&1; then
+  if ! docker info >/dev/null 2>&1; then
+    sudo systemctl start docker >/dev/null 2>&1 || true
+    if [ -S /var/run/docker.sock ]; then
+      sudo chmod 666 /var/run/docker.sock >/dev/null 2>&1 || true
+    fi
+  fi
+fi
