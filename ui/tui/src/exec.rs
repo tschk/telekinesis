@@ -184,6 +184,11 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
     } else {
         agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
     }
+    if let Ok(turns) = std::env::var("TK_MAX_TURNS") {
+        if let Ok(n) = turns.parse::<usize>() {
+            agent.max_tool_iterations = rx4::guardrails::clamp_max_tool_iterations(n);
+        }
+    }
 
     agent.subscribe(move |event: &Rx4Event| {
         if let Some(surface) = event.host_surface() {

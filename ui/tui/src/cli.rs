@@ -194,6 +194,7 @@ pub fn print_help() {
     );
     println!("  TK_PLAN_APPROVAL    ask to gate whole-turn plans (default: bypass)");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
+    println!("  TK_MAX_TURNS        cap tool-loop iterations (default 50, max 1000)");
     println!("  RX4_PREWALK         1/true to enable investigate-then-apply");
     println!("  RX4_SMOL_MODEL      apply model id after the first write");
     println!("  RX4_INVESTIGATE_MODEL  optional plan/investigate model id");
