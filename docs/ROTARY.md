@@ -25,7 +25,7 @@ flowchart TD
 ## Wire
 
 - rx4 is consumed as a git dependency on `tschk/rotary`
-  (`2d46d96bb0c3f689ab9afd4d33b321cf3edb5f05`) with `default-features = false`.
+  (`f2ef583ae150fac518a3b43d339fdb3404281385`) with `default-features = false`.
   The default `tk` surface keeps `providers` + `builtin-tools` only. Hosts call
   rotary APIs; they do not own hashline, prewalk, or AVO dialects.
 - `ui/tui/src/main.rs` currently imports rx4 directly and drives the loop

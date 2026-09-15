@@ -123,7 +123,7 @@ impl Provider for OpenAiChatProvider {
                 let chunk = match chunk {
                     Ok(chunk) => chunk,
                     Err(error) => {
-                        failed = Some(ProviderError::Api(format!(
+                        failed = Some(ProviderError::Stream(format!(
                             "chat stream read failed: {error}"
                         )));
                         break;
