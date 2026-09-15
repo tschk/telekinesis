@@ -5,39 +5,77 @@ use async_trait::async_trait;
 use futures::stream;
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
-use rs_ai_oauth::codex::{codex_request_body, ChatGptCodexClient};
 use rx4::agent::ToolCall;
-use rx4::provider::{Message, Provider, ProviderError, Role, StreamEvent, StreamResult};
+use rx4::cost::TokenUsage;
+use rx4::provider::{Message, Provider, ProviderError, StreamEvent, StreamResult};
 use serde_json::{json, Value};
 
-const CODEX_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+use crate::codex_provider::{messages_to_responses_input, tools_to_responses_tools};
+use crate::openai_chat::{session_id, OpenAiChatProvider};
 
-pub struct CodexProvider {
-    client: ChatGptCodexClient,
-    token: String,
+/// Base URL for OpenCode Go chat/completions models such as DeepSeek.
+pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
+/// Full chat/completions endpoint for DeepSeek V4.1 Flash.
+pub const OPENCODE_GO_CHAT_URL: &str = "https://opencode.ai/zen/go/v1/chat/completions";
+/// Full Responses endpoint for Muse Spark Contributor models.
+pub const OPENCODE_GO_RESPONSES_URL: &str = "https://opencode.ai/zen/go/v1/responses";
+/// Provider id used with `tk exec --provider`.
+pub const OPENCODE_GO_ID: &str = "opencode-go";
+/// Only these Go models are wired; nothing else (no Qwen, no GLM-via-Go).
+pub const OPENCODE_GO_MODELS: [&str; 2] = ["muse-spark-1.3-contributor", "deepseek-v4.1-flash"];
+/// Default model: the chat/completions path rx4 speaks natively.
+pub const OPENCODE_GO_DEFAULT_MODEL: &str = "deepseek-v4.1-flash";
+
+/// Muse Spark models only serve the OpenAI Responses API; everything else
+/// on Go (DeepSeek V4.1 Flash) uses chat/completions. Accepts an optional
+/// `opencode-go/` config-slug prefix.
+pub fn is_responses_model(model: &str) -> bool {
+    let bare = model.split('/').next_back().unwrap_or(model);
+    bare.starts_with("muse-spark")
 }
 
-impl CodexProvider {
-    pub fn new(access_token: impl Into<String>) -> Self {
-        let token = access_token.into();
+pub struct OpencodeGoProvider {
+    key: String,
+    chat: OpenAiChatProvider,
+}
+
+impl OpencodeGoProvider {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        let key: String = api_key.into();
         Self {
-            client: ChatGptCodexClient::new(token.clone()).with_originator("telekinesis"),
-            token,
+            chat: OpenAiChatProvider::new(
+                key.clone(),
+                OPENCODE_GO_ID,
+                "OpenCode Go",
+                OPENCODE_GO_CHAT_URL,
+            )
+            .with_session(),
+            key,
         }
     }
-}
 
-#[async_trait]
-impl Provider for CodexProvider {
-    fn id(&self) -> &str {
-        "openai-codex"
+    fn headers(&self) -> Result<HeaderMap, ProviderError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.key))
+                .map_err(|error| ProviderError::Api(error.to_string()))?,
+        );
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(concat!("telekinesis/", env!("CARGO_PKG_VERSION"))),
+        );
+        headers.insert(
+            "x-opencode-session",
+            HeaderValue::from_str(session_id())
+                .map_err(|error| ProviderError::Api(error.to_string()))?,
+        );
+        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        Ok(headers)
     }
 
-    fn name(&self) -> &str {
-        "ChatGPT Codex"
-    }
-
-    async fn stream(
+    async fn stream_responses(
         &self,
         messages: &[Message],
         system: &Option<String>,
@@ -45,59 +83,26 @@ impl Provider for CodexProvider {
         tools: &[Value],
         reasoning_effort: Option<&str>,
     ) -> Result<StreamResult, ProviderError> {
-        let input = messages_to_responses_input(messages);
-        let tools = tools_to_responses_tools(tools);
-        let body = codex_request_body(
-            model,
-            system.as_deref().unwrap_or("You are a helpful assistant."),
-            input,
-            tools,
-            reasoning_effort,
-        );
-
-        let client = reqwest::Client::new();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.token))
-                .map_err(|error| ProviderError::Api(error.to_string()))?,
-        );
-        headers.insert("originator", HeaderValue::from_static("telekinesis"));
-        headers.insert(USER_AGENT, HeaderValue::from_static("telekinesis-codex"));
-        headers.insert(
-            "openai-beta",
-            HeaderValue::from_static("responses=experimental"),
-        );
-        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if let Some(account_id) = self.client.account_id() {
-            headers.insert(
-                "chatgpt-account-id",
-                HeaderValue::from_str(account_id)
-                    .map_err(|error| ProviderError::Api(error.to_string()))?,
-            );
-        }
-
-        let response = client
-            .post(CODEX_ENDPOINT)
-            .headers(headers)
+        let bare = model.split('/').next_back().unwrap_or(model);
+        let body = responses_request_body(bare, system, messages, tools, reasoning_effort);
+        let response = reqwest::Client::new()
+            .post(OPENCODE_GO_RESPONSES_URL)
+            .headers(self.headers()?)
             .json(&body)
             .send()
             .await
-            .map_err(|error| {
-                ProviderError::Api(format!("ChatGPT Codex request failed: {error}"))
-            })?;
+            .map_err(|error| ProviderError::Api(format!("OpenCode Go request failed: {error}")))?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
             return Err(ProviderError::Api(format!(
-                "ChatGPT Codex request failed (HTTP {status}): {}",
+                "OpenCode Go request failed (HTTP {status}): {}",
                 text.chars().take(300).collect::<String>()
             )));
         }
 
-        // Stream the SSE body and fan deltas out as they arrive, so the UI
-        // shows the response incrementally instead of one blob at the end.
+        // Same SSE fan-out shape as the Codex Responses path: deltas stream
+        // to the UI, tool calls accumulate and emit at the end of the body.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<StreamEvent, ProviderError>>();
         let mut byte_stream = response.bytes_stream();
         tokio::spawn(async move {
@@ -109,7 +114,7 @@ impl Provider for CodexProvider {
                     Ok(chunk) => chunk,
                     Err(error) => {
                         failed = Some(ProviderError::Api(format!(
-                            "codex stream read failed: {error}"
+                            "opencode-go stream read failed: {error}"
                         )));
                         break;
                     }
@@ -147,10 +152,58 @@ impl Provider for CodexProvider {
     }
 }
 
-/// Parse one SSE block (a `data:`-prefixed JSON event) from the codex stream.
-/// Mirrors `rs_ai_oauth::codex::parse_sse` but forwards text deltas as they
-/// arrive — including the visible reasoning summary, so the UI shows a
-/// thinking trail before the final answer.
+pub(crate) fn responses_request_body(
+    model: &str,
+    system: &Option<String>,
+    messages: &[Message],
+    tools: &[Value],
+    reasoning_effort: Option<&str>,
+) -> Value {
+    let mut body = json!({
+        "model": model,
+        "stream": true,
+        "instructions": system.as_deref().unwrap_or("You are a helpful assistant."),
+        "input": messages_to_responses_input(messages),
+    });
+    let converted = tools_to_responses_tools(tools);
+    if !converted.is_empty() {
+        body["tools"] = Value::Array(converted);
+    }
+    if let Some(effort) = reasoning_effort {
+        body["reasoning"] = json!({"effort": effort});
+    }
+    body
+}
+
+#[async_trait]
+impl Provider for OpencodeGoProvider {
+    fn id(&self) -> &str {
+        OPENCODE_GO_ID
+    }
+
+    fn name(&self) -> &str {
+        "OpenCode Go"
+    }
+
+    async fn stream(
+        &self,
+        messages: &[Message],
+        system: &Option<String>,
+        model: &str,
+        tools: &[Value],
+        reasoning_effort: Option<&str>,
+    ) -> Result<StreamResult, ProviderError> {
+        if is_responses_model(model) {
+            return self
+                .stream_responses(messages, system, model, tools, reasoning_effort)
+                .await;
+        }
+        self.chat
+            .stream(messages, system, model, tools, reasoning_effort)
+            .await
+    }
+}
+
 fn handle_sse_block(
     block: &str,
     tx: &tokio::sync::mpsc::UnboundedSender<Result<StreamEvent, ProviderError>>,
@@ -166,7 +219,7 @@ fn handle_sse_block(
         return Ok(());
     }
     let event: Value = serde_json::from_str(&data)
-        .map_err(|error| ProviderError::Api(format!("invalid ChatGPT Codex SSE event: {error}")))?;
+        .map_err(|error| ProviderError::Api(format!("invalid OpenCode Go SSE event: {error}")))?;
     let event_type = event
         .get("type")
         .and_then(Value::as_str)
@@ -216,11 +269,7 @@ fn handle_sse_block(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                name: event
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                name: String::new(),
                 arguments: String::new(),
             });
             call.arguments.push_str(
@@ -241,11 +290,7 @@ fn handle_sse_block(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                name: event
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                name: String::new(),
                 arguments: String::new(),
             });
             call.arguments = event
@@ -254,9 +299,18 @@ fn handle_sse_block(
                 .unwrap_or_default()
                 .to_string();
         }
+        "response.completed" | "response.incomplete" => {
+            if let Some(usage) = event
+                .get("response")
+                .and_then(|response| response.get("usage"))
+                .and_then(responses_usage)
+            {
+                let _ = tx.send(Ok(StreamEvent::Usage(usage)));
+            }
+        }
         "error" | "response.failed" => {
             return Err(ProviderError::Api(format!(
-                "ChatGPT Codex error: {}",
+                "OpenCode Go error: {}",
                 event.to_string().chars().take(300).collect::<String>()
             )));
         }
@@ -265,61 +319,26 @@ fn handle_sse_block(
     Ok(())
 }
 
-pub(crate) fn messages_to_responses_input(messages: &[Message]) -> Vec<Value> {
-    let mut input = Vec::new();
-    for message in messages {
-        match message.role {
-            Role::System => {}
-            Role::User => input.push(json!({
-                "role": "user",
-                "content": [{"type": "input_text", "text": message.content}],
-            })),
-            Role::Assistant => {
-                if !message.content.is_empty() {
-                    input.push(json!({
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": message.content, "annotations": []}],
-                        "status": "completed",
-                    }));
-                }
-                for call in &message.tool_calls {
-                    input.push(json!({
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": call.name,
-                        "arguments": call.arguments,
-                    }));
-                }
-            }
-            Role::Tool => input.push(json!({
-                "type": "function_call_output",
-                "call_id": message.tool_call_id.clone().unwrap_or_default(),
-                "output": message.content,
-            })),
-        }
-    }
-    input
+pub fn provider_arc(api_key: impl Into<String>) -> Arc<dyn Provider> {
+    Arc::new(OpencodeGoProvider::new(api_key))
 }
 
-pub(crate) fn tools_to_responses_tools(tools: &[Value]) -> Vec<Value> {
-    tools
-        .iter()
-        .map(|tool| {
-            let function = tool.get("function").unwrap_or(tool);
-            json!({
-                "type": "function",
-                "name": function.get("name").cloned().unwrap_or(Value::Null),
-                "description": function.get("description").cloned().unwrap_or(Value::Null),
-                "parameters": function.get("parameters").cloned().unwrap_or_else(|| json!({})),
-                "strict": null,
-            })
-        })
-        .collect()
-}
-
-pub fn provider_arc(access_token: impl Into<String>) -> Arc<dyn Provider> {
-    Arc::new(CodexProvider::new(access_token))
+fn responses_usage(value: &Value) -> Option<TokenUsage> {
+    let number = |key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0) as usize;
+    let usage = TokenUsage {
+        input_tokens: number("input_tokens"),
+        output_tokens: number("output_tokens"),
+        cache_read_tokens: value
+            .get("input_tokens_details")
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        cache_write_tokens: 0,
+    };
+    (usage.input_tokens > 0
+        || usage.output_tokens > 0
+        || usage.cache_read_tokens > 0)
+        .then_some(usage)
 }
 
 #[cfg(test)]
@@ -327,38 +346,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_tool_messages_to_responses_items() {
-        let messages = vec![
-            Message::user("hello"),
-            Message::assistant_with_tools(
-                "",
-                vec![ToolCall {
-                    id: "call_1".into(),
-                    name: "shell".into(),
-                    arguments: "{}".into(),
-                }],
-            ),
-            Message::tool("call_1", "ok"),
-        ];
-        let input = messages_to_responses_input(&messages);
-        assert_eq!(input[0]["role"], "user");
-        assert_eq!(input[1]["type"], "function_call");
-        assert_eq!(input[2]["type"], "function_call_output");
+    fn routes_muse_to_responses_and_deepseek_to_chat() {
+        assert!(is_responses_model("muse-spark-1.3-contributor"));
+        assert!(is_responses_model(
+            "opencode-go/muse-spark-1.3-contributor"
+        ));
+        assert!(!is_responses_model("deepseek-v4.1-flash"));
+        assert!(!is_responses_model(
+            "opencode-go/deepseek-v4.1-flash"
+        ));
     }
 
     #[test]
-    fn converts_openai_tools_to_responses_tools() {
-        let tools = vec![json!({
-            "type": "function",
-            "function": {
-                "name": "shell",
-                "description": "run a command",
-                "parameters": {"type": "object"}
-            }
-        })];
-        let converted = tools_to_responses_tools(&tools);
-        assert_eq!(converted[0]["type"], "function");
-        assert_eq!(converted[0]["name"], "shell");
+    fn allowlist_holds_only_the_two_go_models() {
+        assert_eq!(
+            OPENCODE_GO_MODELS,
+            ["muse-spark-1.3-contributor", "deepseek-v4.1-flash"]
+        );
+        assert_eq!(OPENCODE_GO_DEFAULT_MODEL, "deepseek-v4.1-flash");
+    }
+
+    #[test]
+    fn chat_url_is_the_go_chat_completions_endpoint() {
+        assert_eq!(
+            OPENCODE_GO_CHAT_URL,
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn responses_body_targets_bare_model_with_streaming() {
+        let body = responses_request_body(
+            "muse-spark-1.3-contributor",
+            &Some("sys".to_string()),
+            &[Message::user("hi")],
+            &[],
+            Some("low"),
+        );
+        assert_eq!(body["model"], "muse-spark-1.3-contributor");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["instructions"], "sys");
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert!(body["input"].is_array());
     }
 
     #[test]
@@ -367,8 +396,7 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel::<Result<StreamEvent, ProviderError>>();
         let mut calls = BTreeMap::new();
         let blocks = [
-            r#"data: {"type":"response.output_text.delta","delta":"Hello "}"#,
-            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"thinking..."}"#,
+            r#"data: {"type":"response.output_text.delta","delta":"pong"}"#,
             r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"read","arguments":""}}"#,
             r#"data: {"type":"response.function_call_arguments.delta","output_index":0,"call_id":"c1","delta":"{\"path\":\""}"#,
             r#"data: {"type":"response.function_call_arguments.done","output_index":0,"call_id":"c1","arguments":"{\"path\":\"a.txt\"}"}"#,
@@ -378,20 +406,13 @@ mod tests {
             handle_sse_block(block, &tx, &mut calls).unwrap();
         }
         drop(tx);
-
         let mut deltas = Vec::new();
         while let Ok(item) = rx.try_recv() {
             if let StreamEvent::Delta(delta) = item.unwrap() {
                 deltas.push(delta);
             }
         }
-        assert_eq!(
-            deltas,
-            vec!["Hello ".to_string(), "thinking...".to_string()]
-        );
-        // Tool calls are collected here and emitted by the stream loop after
-        // the SSE body ends; assert on the collected call.
-        assert_eq!(calls.len(), 1);
+        assert_eq!(deltas, vec!["pong".to_string()]);
         let call = calls.get(&0).expect("collected call");
         assert_eq!(call.id, "c1");
         assert_eq!(call.name, "read");
@@ -409,5 +430,29 @@ mod tests {
             &mut calls,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn completed_event_reports_usage_for_cost_tracking() {
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<StreamEvent, ProviderError>>();
+        let mut calls = BTreeMap::new();
+        handle_sse_block(
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":4}}}}"#,
+            &tx,
+            &mut calls,
+        )
+        .unwrap();
+        drop(tx);
+        let mut usages = Vec::new();
+        while let Ok(item) = rx.try_recv() {
+            if let StreamEvent::Usage(usage) = item.unwrap() {
+                usages.push(usage);
+            }
+        }
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].input_tokens, 12);
+        assert_eq!(usages[0].output_tokens, 3);
+        assert_eq!(usages[0].cache_read_tokens, 4);
     }
 }

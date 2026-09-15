@@ -15,6 +15,8 @@ pub mod markdown;
 #[cfg(feature = "mcp")]
 pub mod mcp_config;
 pub mod models;
+pub mod openai_chat;
+pub mod opencode_go;
 #[cfg(feature = "pi-compat")]
 pub mod pi;
 pub mod plan_display;

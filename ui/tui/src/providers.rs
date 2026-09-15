@@ -7,7 +7,14 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 use crate::app::{App, ChatMessage, ConfiguredProvider};
 use crate::codex_provider;
+use crate::opencode_go;
 use crate::provider_catalog;
+
+/// Z.ai GLM Coding Plan endpoint (OpenAI Chat Completions). This is the
+/// coding-plan quota endpoint — not `https://api.z.ai/api/paas/v4`.
+pub(crate) const ZAI_CHAT_URL: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+pub(crate) const ZAI_DEFAULT_MODEL: &str = "glm-5.3";
+pub(crate) const ZAI_MODELS: [&str; 2] = ["glm-5.3", "glm-5.3-flash"];
 
 pub(crate) fn oauth_provider(name: &str) -> Option<rs_ai_oauth::OAuthProvider> {
     rs_ai_oauth::OAuthProvider::parse(name)
@@ -87,6 +94,9 @@ pub(crate) fn push_system_message(app: &mut App, content: impl Into<String>) {
 pub(crate) fn providers_summary(app: &App) -> String {
     let api_keys = provider_catalog::API_KEY_PROVIDERS
         .iter()
+        // `zai` and `opencode-go` are wired explicitly with their own rows
+        // below; the catalog copies carry stale env vars and URLs.
+        .filter(|provider| provider.id != "zai" && provider.id != "opencode-go")
         .map(|provider| {
             let status = if provider_catalog::env_key(provider).is_some() {
                 "configured"
@@ -97,6 +107,29 @@ pub(crate) fn providers_summary(app: &App) -> String {
                 "  {name:<25} {status:<14} {}",
                 provider.env_vars.join(", "),
                 name = provider.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let first_class: [(&str, &str, &[&str]); 2] = [
+        ("Z.AI Coding Plan", "zai", &["ZAI_API_KEY"]),
+        (
+            "OpenCode Go",
+            "opencode-go",
+            &["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"],
+        ),
+    ];
+    let first_class = first_class
+        .iter()
+        .map(|(name, id, env_vars)| {
+            let status = if api_key(env_vars, id).is_some() {
+                "configured"
+            } else {
+                "not configured"
+            };
+            format!(
+                "  {name:<25} {status:<14} {}",
+                env_vars.join(", "),
             )
         })
         .collect::<Vec<_>>()
@@ -130,7 +163,7 @@ pub(crate) fn providers_summary(app: &App) -> String {
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     format!(
-        "Providers\n  workspace: {workspace}\n  active model: {}\n  credentials: {credentials}\n\nOAuth plans\n{oauth}\n\nAPI-key providers\n{api_keys}\n\nCommands\n  /providers               searchable provider menu\n  /apikey <provider>       exact API-key setup\n  /login [provider]        OAuth browser login\n  /model [name]            pick a model after setup",
+        "Providers\n  workspace: {workspace}\n  active model: {}\n  credentials: {credentials}\n\nOAuth plans\n{oauth}\n\nAPI-key providers\n{api_keys}\n{first_class}\n\nCommands\n  /providers               searchable provider menu\n  /apikey <provider>       exact API-key setup\n  /login [provider]        OAuth browser login\n  /model [name]            pick a model after setup",
         app.model
     )
 }
@@ -185,6 +218,28 @@ pub(crate) fn saved_token(provider: &str, rt: &tokio::runtime::Runtime) -> Optio
     (!tokens.access_token.is_empty()).then_some(tokens.access_token)
 }
 
+/// Env vars first, then the `~/.telekinesis/keys.json` store (same order as
+/// the catalog helper, for providers the catalog does not describe).
+fn api_key(env_vars: &[&str], id: &str) -> Option<String> {
+    for var in env_vars {
+        if let Ok(value) = std::env::var(var) {
+            if !value.trim().is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    provider_catalog::load_provider_key(id).ok().flatten()
+}
+
+/// Base URL for the OpenAI provider; `OPENAI_BASE_URL` overrides the default.
+pub(crate) fn openai_base_url() -> String {
+    std::env::var("OPENAI_BASE_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string())
+}
+
 pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredProvider, String)> {
     let mut configured = Vec::new();
 
@@ -206,13 +261,48 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
                 id: "openai".to_string(),
                 name: "OpenAI".to_string(),
                 client: Arc::new(OpenAIProvider::with_base_url(
-                    "https://api.openai.com/v1",
+                    openai_base_url(),
                     key,
                     "openai",
                     "OpenAI",
                 )),
             },
             "gpt-5.4".to_string(),
+        ));
+    }
+
+    // Z.ai GLM Coding Plan — first-class OpenAI-compatible provider on the
+    // coding quota endpoint. The shared catalog still points `zai` at the
+    // non-coding paas/v4 URL, so this explicit entry owns the id. Chat
+    // streaming is tk-native: Z.ai bundles `usage` with the
+    // `finish_reason: tool_calls` chunk, which rx4's parser drops.
+    if let Some(key) = api_key(&["ZAI_API_KEY"], "zai") {
+        configured.push((
+            ConfiguredProvider {
+                id: "zai".to_string(),
+                name: "Z.AI Coding Plan".to_string(),
+                client: Arc::new(crate::openai_chat::OpenAiChatProvider::new(
+                    key,
+                    "zai",
+                    "Z.AI Coding Plan",
+                    ZAI_CHAT_URL,
+                )),
+            },
+            ZAI_DEFAULT_MODEL.to_string(),
+        ));
+    }
+
+    // OpenCode Go — DeepSeek V4.1 Flash over chat/completions, Muse Spark
+    // 1.3 Contributor over the Responses API (routed by model inside the
+    // provider). Only these two Go models are wired.
+    if let Some(key) = api_key(&["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"], "opencode-go") {
+        configured.push((
+            ConfiguredProvider {
+                id: opencode_go::OPENCODE_GO_ID.to_string(),
+                name: "OpenCode Go".to_string(),
+                client: opencode_go::provider_arc(key),
+            },
+            opencode_go::OPENCODE_GO_DEFAULT_MODEL.to_string(),
         ));
     }
 
@@ -283,7 +373,10 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
     configured.extend(
         provider_catalog::API_KEY_PROVIDERS
             .iter()
-            .filter(|spec| !matches!(spec.id, "openai" | "xai" | "google"))
+            // `zai` and `opencode-go` are wired explicitly above (coding-plan
+            // endpoint, Go key names, curated models); the catalog copies
+            // still point at stale URLs and model lists.
+            .filter(|spec| !matches!(spec.id, "openai" | "xai" | "google" | "zai" | "opencode-go"))
             .filter_map(|spec| {
                 let key = provider_catalog::env_key(spec)?;
                 let client: Arc<dyn Provider> = match spec.api {
@@ -326,4 +419,84 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
     configured.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
     configured.dedup_by(|(left, _), (right, _)| left.id == right.id);
     configured
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+    }
+
+    fn with_env(var: &str, value: Option<&str>) -> Option<String> {
+        let previous = std::env::var(var).ok();
+        match value {
+            Some(value) => std::env::set_var(var, value),
+            None => std::env::remove_var(var),
+        }
+        previous
+    }
+
+    fn restore_env(var: &str, previous: Option<String>) {
+        match previous {
+            Some(value) => std::env::set_var(var, value),
+            None => std::env::remove_var(var),
+        }
+    }
+
+    #[test]
+    fn zai_base_url_is_the_coding_endpoint() {
+        assert_eq!(
+            ZAI_CHAT_URL,
+            "https://api.z.ai/api/coding/paas/v4/chat/completions"
+        );
+        assert!(ZAI_CHAT_URL.starts_with("https://api.z.ai/api/coding/paas/v4"));
+        assert!(!ZAI_CHAT_URL.starts_with("https://api.z.ai/api/paas/v4/"));
+        assert!(!ZAI_CHAT_URL.contains("openai.com"));
+        assert_eq!(ZAI_DEFAULT_MODEL, "glm-5.3");
+        assert_eq!(ZAI_MODELS, ["glm-5.3", "glm-5.3-flash"]);
+    }
+
+    #[test]
+    fn openai_base_url_defaults_and_honors_override() {
+        let previous = with_env("OPENAI_BASE_URL", None);
+        assert_eq!(openai_base_url(), "https://api.openai.com/v1");
+        with_env("OPENAI_BASE_URL", Some("https://proxy.local/v1"));
+        assert_eq!(openai_base_url(), "https://proxy.local/v1");
+        with_env("OPENAI_BASE_URL", Some("   "));
+        assert_eq!(openai_base_url(), "https://api.openai.com/v1");
+        restore_env("OPENAI_BASE_URL", previous);
+    }
+
+    #[test]
+    fn setup_providers_wires_zai_coding_plan() {
+        let previous = with_env("ZAI_API_KEY", Some("test-key-not-real"));
+        let rt = test_runtime();
+        let configured = setup_providers(&rt);
+        restore_env("ZAI_API_KEY", previous);
+        let entry = configured
+            .iter()
+            .find(|(provider, _)| provider.id == "zai")
+            .expect("zai provider configured");
+        assert_eq!(entry.0.name, "Z.AI Coding Plan");
+        assert_eq!(entry.1, "glm-5.3");
+    }
+
+    #[test]
+    fn setup_providers_wires_opencode_go_with_deepseek_default() {
+        let previous = with_env("OPENCODE_GO_API_KEY", Some("test-key-not-real"));
+        let rt = test_runtime();
+        let configured = setup_providers(&rt);
+        restore_env("OPENCODE_GO_API_KEY", previous);
+        let entry = configured
+            .iter()
+            .find(|(provider, _)| provider.id == "opencode-go")
+            .expect("opencode-go provider configured");
+        assert_eq!(entry.0.name, "OpenCode Go");
+        assert_eq!(entry.1, "deepseek-v4.1-flash");
+    }
 }

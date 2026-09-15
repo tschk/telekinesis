@@ -78,6 +78,19 @@ write. AVO helpers are `rx4::avo` — see [AVO.md](AVO.md).
 | kimi (moonshot) | `tk login kimi` |
 | antigravity | `tk login antigravity` |
 
+## API-key providers (first-class)
+
+| provider id | env | default model | notes |
+|---|---|---|---|
+| `zai` | `ZAI_API_KEY` | `glm-5.3` | Z.ai GLM Coding Plan, OpenAI Chat Completions at `https://api.z.ai/api/coding/paas/v4` (coding-plan quota, not `paas/v4`). Also `glm-5.3-flash`. |
+| `opencode-go` | `OPENCODE_GO_API_KEY` (`OPENCODE_API_KEY` fallback) | `deepseek-v4.1-flash` | OpenCode Go. Only `deepseek-v4.1-flash` (chat/completions) and `muse-spark-1.3-contributor` (Responses API, routed by model) are wired. Sends `x-opencode-session` per process. |
+
+```bash
+tk exec --provider zai --model glm-5.3 "reply with the single word pong"
+tk exec --provider opencode-go --model deepseek-v4.1-flash "reply with the single word pong"
+tk exec --provider opencode-go --model muse-spark-1.3-contributor "reply with the single word pong"
+```
+
 ## TUI
 
 | feature | description |

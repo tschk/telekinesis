@@ -180,9 +180,12 @@ pub fn print_help() {
     println!("ENVIRONMENT:");
     println!("  XAI_API_KEY         xAI Grok API key");
     println!("  OPENAI_API_KEY      OpenAI API key");
+    println!("  OPENAI_BASE_URL     OpenAI-compatible base URL override");
+    println!("  ZAI_API_KEY         Z.ai GLM Coding Plan API key (coding endpoint)");
     println!("  ANTHROPIC_API_KEY   Anthropic API key");
     println!("  GOOGLE_API_KEY      Google Gemini API key");
     println!("  OPENCODE_API_KEY    OpenCode Zen / OpenCode Go API key");
+    println!("  OPENCODE_GO_API_KEY OpenCode Go API key (preferred for opencode-go)");
     println!("  OPENROUTER_API_KEY  OpenRouter API key");
     println!("  CLINE_API_KEY       Cline-pass API key (or reuse OpenCode auth.json)");
     println!("  TK_PROVIDER         Default exec/TUI provider id (e.g. clinepass)");

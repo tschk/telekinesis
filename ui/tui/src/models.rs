@@ -1,7 +1,9 @@
 use rx4::{ModelInfo, ModelRegistry};
 
 use crate::app::ConfiguredProvider;
+use crate::opencode_go;
 use crate::provider_catalog;
+use crate::providers::{ZAI_MODELS, ZAI_DEFAULT_MODEL};
 
 pub(crate) const GPT_5_CONTEXT_WINDOW: usize = 1_050_000;
 
@@ -131,7 +133,22 @@ pub(crate) fn initial_model_registry(providers: &[(ConfiguredProvider, String)])
             }
         }
         if let Some(spec) = provider_catalog::by_id(&provider.id) {
-            for id in spec.models {
+            // `zai` and `opencode-go` are wired explicitly with curated model
+            // lists; the shared catalog still carries stale entries for them.
+            if provider.id != "zai" && provider.id != opencode_go::OPENCODE_GO_ID {
+                for id in spec.models {
+                    registry.register(host_model_info(&provider.id, id));
+                }
+            }
+        }
+        if provider.id == "zai" {
+            registry.register(host_model_info(&provider.id, ZAI_DEFAULT_MODEL));
+            for id in ZAI_MODELS {
+                registry.register(host_model_info(&provider.id, id));
+            }
+        }
+        if provider.id == opencode_go::OPENCODE_GO_ID {
+            for id in opencode_go::OPENCODE_GO_MODELS {
                 registry.register(host_model_info(&provider.id, id));
             }
         }
@@ -217,4 +234,60 @@ pub(crate) fn openrouter_model_info(value: &serde_json::Value) -> Option<ModelIn
                 .any(|modality| modality.as_str() == Some("image"))
         });
     Some(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn configured(id: &str, default_model: &str) -> (ConfiguredProvider, String) {
+        (
+            ConfiguredProvider {
+                id: id.to_string(),
+                name: id.to_string(),
+                client: Arc::new(rx4::provider::OpenAIProvider::with_base_url(
+                    "https://example.invalid/v1",
+                    "test-key-not-real",
+                    id,
+                    id,
+                )),
+            },
+            default_model.to_string(),
+        )
+    }
+
+    fn model_ids(registry: &ModelRegistry, provider: &str) -> Vec<String> {
+        let mut ids: Vec<String> = registry
+            .models()
+            .filter(|info| info.provider == provider)
+            .map(|info| info.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn registry_registers_only_curated_go_models() {
+        let registry = initial_model_registry(&[configured(
+            "opencode-go",
+            "deepseek-v4.1-flash",
+        )]);
+        assert_eq!(
+            model_ids(&registry, "opencode-go"),
+            vec![
+                "deepseek-v4.1-flash".to_string(),
+                "muse-spark-1.3-contributor".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn registry_registers_only_curated_zai_models() {
+        let registry = initial_model_registry(&[configured("zai", "glm-5.3")]);
+        assert_eq!(
+            model_ids(&registry, "zai"),
+            vec!["glm-5.3".to_string(), "glm-5.3-flash".to_string()]
+        );
+    }
 }
