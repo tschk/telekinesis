@@ -26,7 +26,6 @@ pub fn env_key(spec: &ProviderSpec) -> Option<String> {
 /// as ~/.ssh keys — file permissions, no daemon prompts.
 ///
 /// Reads are cached per process; menus render rows every frame.
-
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -34,6 +33,12 @@ use std::sync::OnceLock;
 fn key_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_lock() -> std::sync::MutexGuard<'static, HashMap<String, Option<String>>> {
+    key_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn store_path() -> Option<std::path::PathBuf> {
@@ -59,6 +64,18 @@ fn save_store(keys: &HashMap<String, String>) -> Result<(), String> {
     };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Default store lives in ~/.telekinesis; keep that directory private.
+            // Do not chmod arbitrary TELEKINESIS_KEYS_PATH parents (e.g. $HOME).
+            if parent
+                .file_name()
+                .is_some_and(|name| name == ".telekinesis")
+            {
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
+        }
     }
     let raw = serde_json::to_string_pretty(keys).map_err(|e| format!("serialize: {e}"))?;
     let tmp = path.with_extension("json.tmp");
@@ -77,18 +94,23 @@ pub fn save_provider_key(id: &str, key: &str) -> Result<(), String> {
     let mut keys = load_store();
     keys.insert(id.to_string(), key.to_string());
     save_store(&keys)?;
-    key_cache().lock().unwrap().insert(id.to_string(), Some(key.to_string()));
+    cache_lock().insert(id.to_string(), Some(key.to_string()));
     Ok(())
 }
 
 /// Load a provider's API key from the local key store (cached per process).
 pub fn load_provider_key(id: &str) -> Result<Option<String>, String> {
-    let cache = key_cache();
-    if let Some(cached) = cache.lock().unwrap().get(id) {
-        return Ok(cached.clone());
+    {
+        let cache = cache_lock();
+        if let Some(cached) = cache.get(id) {
+            return Ok(cached.clone());
+        }
     }
-    let value = load_store().get(id).map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
-    cache.lock().unwrap().insert(id.to_string(), value.clone());
+    let value = load_store()
+        .get(id)
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty());
+    cache_lock().insert(id.to_string(), value.clone());
     Ok(value)
 }
 
@@ -97,7 +119,7 @@ pub fn delete_provider_key(id: &str) -> Result<(), String> {
     let mut keys = load_store();
     let existed = keys.remove(id).is_some();
     save_store(&keys)?;
-    key_cache().lock().unwrap().insert(id.to_string(), None);
+    cache_lock().insert(id.to_string(), None);
     if existed {
         Ok(())
     } else {
@@ -126,6 +148,25 @@ pub fn opencode_auth_path() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))?;
     Some(data.join("opencode").join("auth.json"))
+}
+
+#[cfg(test)]
+pub(crate) fn with_isolated_store<F: FnOnce()>(f: F) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static GATE: Mutex<()> = Mutex::new(());
+    static ISOLATE: AtomicU64 = AtomicU64::new(0);
+    let _gate = GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let n = ISOLATE.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("tk-keys-test-{n}-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("keys.json");
+    std::env::set_var("TELEKINESIS_KEYS_PATH", &path);
+    cache_lock().clear();
+    f();
+    cache_lock().clear();
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&dir);
+    std::env::remove_var("TELEKINESIS_KEYS_PATH");
 }
 
 #[cfg(test)]
@@ -184,5 +225,32 @@ mod tests {
             Some("clinepass")
         );
         assert!(infer_from_model("deepseek-v4-flash").is_none());
+    }
+
+    #[test]
+    fn key_store_roundtrip_is_mode_600_and_isolated_from_home() {
+        with_isolated_store(|| {
+            assert!(load_provider_key("openai").unwrap().is_none());
+            save_provider_key("openai", " sk-test ").unwrap();
+            assert_eq!(
+                load_provider_key("openai").unwrap().as_deref(),
+                Some(" sk-test ")
+            );
+            assert!(has_provider_key("openai"));
+            let path = store_path().expect("isolated path");
+            assert!(
+                !path.starts_with(dirs::home_dir().unwrap().join(".telekinesis")),
+                "tests must not write ~/.telekinesis/keys.json"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600);
+            }
+            delete_provider_key("openai").unwrap();
+            assert!(load_provider_key("openai").unwrap().is_none());
+            assert!(!has_provider_key("openai"));
+        });
     }
 }

@@ -158,19 +158,22 @@ impl AcpHost {
                 {
                     return error_response(id, -32002, "session cancelled");
                 }
-                let msgs = agent.messages.read().clone();
-                let content = msgs
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == Role::Assistant)
-                    .map(|m| m.content.clone())
-                    .unwrap_or_default();
+                let (content, message_count) = {
+                    let msgs = agent.messages.read();
+                    let content = msgs
+                        .iter()
+                        .rev()
+                        .find(|m| m.role == Role::Assistant)
+                        .map(|m| m.content.clone())
+                        .unwrap_or_default();
+                    (content, msgs.len())
+                };
                 ok_response(
                     id,
                     json!({
                         "sessionId": sid,
                         "content": content,
-                        "messageCount": msgs.len(),
+                        "messageCount": message_count,
                     }),
                 )
             }
