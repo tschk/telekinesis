@@ -61,7 +61,9 @@ step "apt build deps" ensure_apt \
   pkg-config \
   libssl-dev \
   ca-certificates \
-  curl
+  curl \
+  docker-compose-plugin \
+  docker-buildx-plugin
 
 if [ ! -x "$HOME/.cargo/bin/rustup" ] && ! command -v rustup >/dev/null 2>&1; then
   step "install rustup (stable + rustfmt + clippy)" \
