@@ -22,14 +22,14 @@ export function PromptBox({ disabled, busy, onRun }: Props) {
       <textarea
         className="tk-textarea"
         rows={4}
-        placeholder="Prompt / shell source to exec in the selected workspace…"
+        placeholder="Prompt the agent in the selected workspace…"
         value={source}
         disabled={disabled || busy}
         onChange={(e) => setSource(e.target.value)}
       />
       <div className="tk-prompt__footer">
         <Button type="submit" disabled={disabled || busy || !source.trim()}>
-          {busy ? "Running…" : "Run"}
+          {busy ? "Sending…" : "Send"}
         </Button>
       </div>
     </form>

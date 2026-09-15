@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createWorkspace,
-  exec,
   getHealth,
   getWorkspace,
   listWorkspaces,
+  promptText,
+  promptWorkspace,
 } from "./api/client";
 import type { WorkspaceMeta } from "./api/types";
 import { AppShell } from "./components/AppShell";
@@ -133,26 +134,29 @@ export default function App() {
     }
   }
 
-  async function handleRun(source: string) {
+  async function handleRun(prompt: string) {
     if (!selectedId) return;
     setBusy(true);
     setError(null);
-    appendLog(`$ exec ${selectedId}\n${source}`, "muted");
+    appendLog(`$ prompt ${selectedId}\n${prompt}`, "muted");
     try {
-      const result = await exec(selectedId, { source });
+      const result = await promptWorkspace(selectedId, { prompt });
       const bits: string[] = [];
-      if (result.message) bits.push(result.message);
-      if (result.stdout) bits.push(result.stdout);
+      const text = promptText(result);
+      if (text) bits.push(text);
       if (result.stderr) bits.push(result.stderr);
       if (result.exitCode !== undefined) bits.push(`exitCode=${result.exitCode}`);
       if (result.backend) bits.push(`backend=${result.backend}`);
       if (result.stub) bits.push("(stub)");
-      const text = bits.join("\n") || JSON.stringify(result);
-      appendLog(text, result.ok ? "ok" : "danger");
+      if (result.fallback === "exec") {
+        bits.push("(via exec fallback: POST /prompt not implemented yet)");
+      }
+      const body = bits.join("\n") || JSON.stringify(result);
+      appendLog(body, result.ok ? "ok" : "danger");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
-      appendLog(`Exec failed: ${msg}`, "danger");
+      appendLog(`Prompt failed: ${msg}`, "danger");
     } finally {
       setBusy(false);
     }
@@ -209,7 +213,7 @@ export default function App() {
 
         <section className="tk-layout__main">
           <Panel
-            title={selected ? `Exec · ${selected.name || selected.id}` : "Exec"}
+            title={selected ? `Prompt · ${selected.name || selected.id}` : "Prompt"}
           >
             {!selected ? (
               <p className="tk-hint">Select or create a workspace to run prompts.</p>

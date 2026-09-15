@@ -18,6 +18,29 @@ export interface CreateWorkspaceRequest {
   tier?: WorkspaceTier | string;
 }
 
+/**
+ * Agent prompt turn (web parity; mirrors in-progress tk-cloud
+ * `POST /v1/workspaces/:id/prompt`). Types only — no client call yet.
+ */
+export interface PromptRequest {
+  prompt: string;
+  model?: string;
+  cwd?: string;
+}
+
+export interface PromptResult {
+  ok: boolean;
+  text?: string;
+  output?: string;
+  stdout?: string;
+  stderr?: string;
+  message?: string;
+  exitCode?: number;
+  backend?: ComputerBackend | string;
+  stub?: boolean;
+  fallback?: "exec";
+}
+
 export interface ListWorkspacesResult {
   workspaces: WorkspaceMeta[];
   /** Present when GET /v1/workspaces returned 404/501 (endpoint not ready). */
