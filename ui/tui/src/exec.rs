@@ -189,6 +189,17 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
             agent.max_tool_iterations = rx4::guardrails::clamp_max_tool_iterations(n);
         }
     }
+    // Optional wall-clock cap checked between turns. Unset/0 = off.
+    // Per-wait hang is handled in rx4 `exec wait` (default 120s).
+    if let Ok(value) = std::env::var("TK_MAX_DURATION_SECS") {
+        if let Ok(duration_secs) = value.parse::<u64>() {
+            if duration_secs > 0 {
+                let mut budget = agent.budget.take().unwrap_or_default();
+                budget.max_duration_seconds = Some(duration_secs);
+                agent.budget = Some(budget);
+            }
+        }
+    }
 
     agent.subscribe(move |event: &Rx4Event| {
         if let Some(surface) = event.host_surface() {
