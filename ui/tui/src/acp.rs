@@ -20,7 +20,7 @@ use crate::exec::{pick_configured_provider, resolve_exec_effort};
 use crate::host::build_agent;
 use crate::models::host_model_info;
 use crate::providers::setup_providers;
-use crate::tools::discover_mcp_tools;
+use crate::tools::{discover_mcp_tools, McpToolSpec};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AcpArgs {
@@ -32,34 +32,30 @@ pub struct AcpArgs {
     pub mcp: bool,
 }
 
-#[derive(Debug, Clone)]
 pub struct AcpSession {
     pub id: String,
     pub cancelled: bool,
     pub turns: usize,
+    agent: Arc<tokio::sync::Mutex<Agent>>,
 }
 
 pub struct AcpHost {
-    agent: Arc<tokio::sync::Mutex<Agent>>,
+    spawn: Arc<dyn Fn() -> Agent + Send + Sync>,
     sessions: Mutex<HashMap<String, AcpSession>>,
     protocol_version: u32,
 }
 
 impl AcpHost {
     pub fn new() -> Self {
-        Self::with_agent(Agent::new())
+        Self::with_factory(Agent::new)
     }
 
-    pub fn with_agent(agent: Agent) -> Self {
+    pub fn with_factory(spawn: impl Fn() -> Agent + Send + Sync + 'static) -> Self {
         Self {
-            agent: Arc::new(tokio::sync::Mutex::new(agent)),
+            spawn: Arc::new(spawn),
             sessions: Mutex::new(HashMap::new()),
             protocol_version: 1,
         }
-    }
-
-    pub fn agent(&self) -> Arc<tokio::sync::Mutex<Agent>> {
-        self.agent.clone()
     }
 
     fn handle_initialize(&self, id: Value) -> Value {
@@ -82,12 +78,14 @@ impl AcpHost {
 
     fn handle_session_new(&self, id: Value) -> Value {
         let sid = Uuid::new_v4().to_string();
+        let agent = Arc::new(tokio::sync::Mutex::new((self.spawn)()));
         self.sessions.lock().insert(
             sid.clone(),
             AcpSession {
                 id: sid.clone(),
                 cancelled: false,
                 turns: 0,
+                agent,
             },
         );
         ok_response(id, json!({ "sessionId": sid }))
@@ -136,7 +134,7 @@ impl AcpHost {
         if prompt.is_empty() {
             return error_response(id, -32602, "prompt required");
         }
-        {
+        let agent = {
             let mut sessions = self.sessions.lock();
             let Some(session) = sessions.get_mut(sid) else {
                 return error_response(id, -32001, &format!("unknown session: {sid}"));
@@ -145,9 +143,10 @@ impl AcpHost {
                 return error_response(id, -32002, "session cancelled");
             }
             session.turns += 1;
-        }
+            session.agent.clone()
+        };
 
-        let mut agent = self.agent.lock().await;
+        let mut agent = agent.lock().await;
         match agent.prompt(prompt).await {
             Ok(()) => {
                 if self
@@ -158,19 +157,22 @@ impl AcpHost {
                 {
                     return error_response(id, -32002, "session cancelled");
                 }
-                let msgs = agent.messages.read().clone();
-                let content = msgs
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == Role::Assistant)
-                    .map(|m| m.content.clone())
-                    .unwrap_or_default();
+                let (content, message_count) = {
+                    let msgs = agent.messages.read();
+                    let content = msgs
+                        .iter()
+                        .rev()
+                        .find(|m| m.role == Role::Assistant)
+                        .map(|m| m.content.clone())
+                        .unwrap_or_default();
+                    (content, msgs.len())
+                };
                 ok_response(
                     id,
                     json!({
                         "sessionId": sid,
                         "content": content,
-                        "messageCount": msgs.len(),
+                        "messageCount": message_count,
                     }),
                 )
             }
@@ -318,6 +320,30 @@ pub fn run_acp(parsed: AcpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn spawn_stdio_agent(
+    workspace: PathBuf,
+    effort: &str,
+    no_yolo: bool,
+    provider: Option<Arc<dyn rx4::provider::Provider>>,
+    provider_id: &str,
+    model: &str,
+    mcp: &[McpToolSpec],
+) -> Agent {
+    let registry = if provider.is_some() {
+        ModelRegistry::from_models([host_model_info(provider_id, model)])
+    } else {
+        ModelRegistry::new()
+    };
+    let (mut agent, _subagent_manager) =
+        build_agent(provider, model, effort, workspace, registry, mcp);
+    if no_yolo {
+        agent.set_approver(Arc::new(rx4::permissions::AlwaysDeny));
+    } else {
+        agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
+    }
+    agent
+}
+
 fn build_stdio_host(rt: &tokio::runtime::Runtime, parsed: &AcpArgs) -> AcpHost {
     let providers = setup_providers(rt);
     let mcp = if parsed.mcp {
@@ -336,8 +362,9 @@ fn build_stdio_host(rt: &tokio::runtime::Runtime, parsed: &AcpArgs) -> AcpHost {
         parsed.provider.as_deref(),
         parsed.model.as_deref(),
     );
+    let no_yolo = parsed.no_yolo;
 
-    let (mut agent, _subagent_manager) = if let Some((configured, default_model)) = picked {
+    if let Some((configured, default_model)) = picked {
         let configured_id = configured.id.clone();
         let model = parsed
             .model
@@ -356,33 +383,32 @@ fn build_stdio_host(rt: &tokio::runtime::Runtime, parsed: &AcpArgs) -> AcpHost {
             effort,
             workspace.display()
         );
-        build_agent(
-            Some(configured.client),
-            &model,
-            &effort,
-            workspace,
-            ModelRegistry::from_models([host_model_info(&configured_id, &model)]),
-            &mcp,
-        )
+        let client = configured.client;
+        AcpHost::with_factory(move || {
+            spawn_stdio_agent(
+                workspace.clone(),
+                &effort,
+                no_yolo,
+                Some(client.clone()),
+                &configured_id,
+                &model,
+                &mcp,
+            )
+        })
     } else {
         eprintln!("· no provider credentials; initialize still works, session/prompt will error");
-        build_agent(
-            None,
-            "default",
-            &effort,
-            workspace,
-            ModelRegistry::new(),
-            &mcp,
-        )
-    };
-
-    if parsed.no_yolo {
-        agent.set_approver(Arc::new(rx4::permissions::AlwaysDeny));
-    } else {
-        agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
+        AcpHost::with_factory(move || {
+            spawn_stdio_agent(
+                workspace.clone(),
+                &effort,
+                no_yolo,
+                None,
+                "default",
+                "default",
+                &mcp,
+            )
+        })
     }
-
-    AcpHost::with_agent(agent)
 }
 
 #[cfg(test)]
@@ -485,6 +511,76 @@ mod tests {
         )
         .await;
         assert_eq!(listed["result"]["sessions"][0]["cancelled"], json!(true));
+    }
+
+    struct ScriptedProvider;
+
+    #[async_trait::async_trait]
+    impl rx4::provider::Provider for ScriptedProvider {
+        fn id(&self) -> &str {
+            "scripted"
+        }
+
+        fn name(&self) -> &str {
+            "scripted"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[rx4::provider::Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<rx4::provider::StreamResult, rx4::provider::ProviderError> {
+            Ok(Box::new(futures::stream::iter([
+                Ok(rx4::provider::StreamEvent::Delta("ok".into())),
+                Ok(rx4::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    fn scripted_host() -> AcpHost {
+        AcpHost::with_factory(|| {
+            let mut agent = Agent::new();
+            agent.set_provider(Arc::new(ScriptedProvider));
+            agent
+        })
+    }
+
+    async fn new_session(host: &AcpHost, id: i64) -> String {
+        let created = result_of(
+            host,
+            json!({"jsonrpc":"2.0","id":id,"method":"session/new"}),
+        )
+        .await;
+        created["result"]["sessionId"].as_str().unwrap().to_string()
+    }
+
+    async fn prompt(host: &AcpHost, id: i64, sid: &str, text: &str) -> Value {
+        result_of(
+            host,
+            json!({
+                "jsonrpc":"2.0","id":id,"method":"session/prompt",
+                "params":{"sessionId": sid, "prompt": text}
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn prompts_on_separate_sessions_do_not_share_history() {
+        let host = scripted_host();
+        let a = new_session(&host, 1).await;
+        let b = new_session(&host, 2).await;
+        let first = prompt(&host, 3, &a, "one").await;
+        let second = prompt(&host, 4, &b, "two").await;
+        let first_again = prompt(&host, 5, &a, "one more").await;
+        assert_eq!(first["result"]["content"], "ok");
+        assert_eq!(first["result"]["messageCount"], 2);
+        assert_eq!(second["result"]["content"], "ok");
+        assert_eq!(second["result"]["messageCount"], 2);
+        assert_eq!(first_again["result"]["messageCount"], 4);
     }
 
     #[tokio::test]
