@@ -127,10 +127,7 @@ pub(crate) fn providers_summary(app: &App) -> String {
             } else {
                 "not configured"
             };
-            format!(
-                "  {name:<25} {status:<14} {}",
-                env_vars.join(", "),
-            )
+            format!("  {name:<25} {status:<14} {}", env_vars.join(", "),)
         })
         .collect::<Vec<_>>()
         .join("\n");

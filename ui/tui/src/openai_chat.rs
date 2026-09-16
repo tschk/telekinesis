@@ -102,7 +102,9 @@ impl Provider for OpenAiChatProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|error| ProviderError::Api(format!("{} request failed: {error}", self.name)))?;
+            .map_err(|error| {
+                ProviderError::Api(format!("{} request failed: {error}", self.name))
+            })?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
@@ -265,10 +267,7 @@ fn handle_chat_sse_block(
     }
     if let Some(fragments) = delta.get("tool_calls").and_then(Value::as_array) {
         for fragment in fragments {
-            let index = fragment
-                .get("index")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
+            let index = fragment.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
             let call = state.calls.entry(index).or_insert_with(|| ToolCall {
                 id: String::new(),
                 name: String::new(),
