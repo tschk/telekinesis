@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream;
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use reqwest::StatusCode;
 use rx4::agent::ToolCall;
 use rx4::cost::TokenUsage;
 use rx4::provider::{Message, Provider, ProviderError, StreamEvent, StreamResult};
@@ -74,6 +76,44 @@ impl OpenAiChatProvider {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         Ok(headers)
     }
+
+    /// POST with bounded backoff on 429/5xx. Coding-plan rate limits are
+    /// per-account and concurrent bench harnesses hit them constantly; an
+    /// unbackoffed fail was killing SWE cells minutes after the 400 fix.
+    async fn send_with_retry(
+        url: &str,
+        headers: &HeaderMap,
+        body: &Value,
+    ) -> Result<reqwest::Response, String> {
+        const MAX_ATTEMPTS: u32 = 6;
+        let mut delay = Duration::from_secs(5);
+        for attempt in 1..=MAX_ATTEMPTS {
+            let response = reqwest::Client::new()
+                .post(url)
+                .headers(headers.clone())
+                .json(body)
+                .send()
+                .await
+                .map_err(|error| format!("request failed: {error}"))?;
+            let status = response.status();
+            let retryable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+            if !retryable || attempt == MAX_ATTEMPTS {
+                return Ok(response);
+            }
+            // Honor Retry-After when the endpoint sends one.
+            let wait = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .map(Duration::from_secs)
+                .unwrap_or(delay);
+            drop(response);
+            tokio::time::sleep(wait).await;
+            delay = (delay * 2).min(Duration::from_secs(120));
+        }
+        unreachable!("loop returns on every branch")
+    }
 }
 
 #[async_trait]
@@ -96,11 +136,7 @@ impl Provider for OpenAiChatProvider {
     ) -> Result<StreamResult, ProviderError> {
         let bare = model.split('/').next_back().unwrap_or(model);
         let body = chat_request_body(messages, system, bare, tools, reasoning_effort);
-        let response = reqwest::Client::new()
-            .post(self.chat_url)
-            .headers(self.headers()?)
-            .json(&body)
-            .send()
+        let response = Self::send_with_retry(self.chat_url, &self.headers()?, &body)
             .await
             .map_err(|error| {
                 ProviderError::Api(format!("{} request failed: {error}", self.name))

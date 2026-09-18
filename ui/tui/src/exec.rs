@@ -82,6 +82,8 @@ pub fn is_transient_provider_error(message: &str) -> bool {
         || lower.contains("error decoding response body")
         || lower.contains("connection reset")
         || lower.contains("unexpected eof")
+        || lower.contains("too many requests")
+        || lower.contains("http 429")
 }
 
 fn exec_failure(json: bool, message: &str) -> ! {
