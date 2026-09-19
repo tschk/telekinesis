@@ -41,6 +41,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ui/tui
@@ -49,7 +50,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: test "v$(cargo metadata --no-deps --format-version 1 | ruby -rjson -e 'puts JSON.parse(STDIN.read)["packages"].find { |package| package["name"] == "telekinesis" }["version"]')" = "$RELEASE_TAG"
-      - run: cargo build --locked --release --target "${{ matrix.target }}"
+      - name: Build with PGO + LLVM PGSO
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/pgo/pgo.sh --target "${{ matrix.target }}"
       - name: Package
         env:
           TARGET: ${{ matrix.target }}

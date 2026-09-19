@@ -19,6 +19,9 @@ cd ui/tui && cargo build --release
 # binary: ui/tui/target/release/tk
 ```
 
+Release profile uses `panic = "abort"`, LTO, and strip. GitHub Release artifacts
+also run the PGO + LLVM PGSO lane (`scripts/pgo/pgo.sh`). See [PGO.md](PGO.md).
+
 Default `tk` is the lightest useful coding CLI (`pi-compat` + rx4
 `providers` / `builtin-tools`). Everything else is opt-in:
 

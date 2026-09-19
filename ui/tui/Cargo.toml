@@ -28,6 +28,7 @@ full = ["mcp", "search", "computer-use", "skills", "graph-memory"]
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"
 
 [dependencies]
 crepuscularity-tui = "0.4.23"
