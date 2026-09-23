@@ -142,7 +142,8 @@ Model, scope, and effort are persisted to `~/.telekinesis/prefs.json`.
 | `/plan-approval ask\|bypass\|off` | review, automatically allow, or disable whole-turn plan gates |
 | `/mcp` | list connected MCP tools + `~/.telekinesis/mcp.json` help (`--features mcp` or `full`; otherwise tells you to rebuild) |
 | `/search` | darash `web_search` status (`--features search` or `full`; otherwise tells you to rebuild) |
-| `/todo` | host surface note (engine todo tool when available) |
+| `/todo [item]` | read or append `.tasks/TODO.md` |
+| `/memory [query]` | show MEMORY.md one-pager, or keyword-search MEMORY.md / `memory/*.md` |
 | `/sessions` | list JSONL sessions for this project (newest first) |
 | `/resume <n>` | switch to a session listed by `/sessions` |
 | `/clear` | clear messages + reset cost |

@@ -112,8 +112,9 @@ pub fn apply_scope(agent: &mut Agent, scope: Scope) {
     let profile = mode::profile(scope);
     agent.policy.apply_scope(&profile.policy);
     agent.set_policy(agent.policy.clone());
-    let base = include_str!("../SYSTEM_PROMPT.md");
-    agent.set_system_prompt(mode::compose_prompt(Some(base), &profile));
+    let base =
+        crate::memory::inject_pager(include_str!("../SYSTEM_PROMPT.md"), &agent.workspace_root);
+    agent.set_system_prompt(mode::compose_prompt(Some(&base), &profile));
     let prewalk = session_prewalk(&agent.model);
     apply_prewalk_model(agent, &prewalk.lock());
     install_host_hooks(agent, scope, prewalk);
@@ -142,7 +143,10 @@ pub(crate) fn build_agent(
         model_registry.register(host_model_info(provider.id(), model));
     }
     agent.set_model_registry(model_registry);
-    agent.set_system_prompt(include_str!("../SYSTEM_PROMPT.md"));
+    agent.set_system_prompt(crate::memory::inject_pager(
+        include_str!("../SYSTEM_PROMPT.md"),
+        &workspace,
+    ));
     let mut subagent = SubagentManager::new().with_model(model.to_string());
     if let Some(provider) = &provider {
         subagent = subagent.with_provider(provider.clone());
@@ -242,5 +246,23 @@ mod tests {
         assert!(host_tool_allowed(Scope::Coding, "mcp__fs__read_file"));
         assert!(!host_tool_allowed(Scope::Plan, "mcp__fs__read_file"));
         assert!(!host_tool_allowed(Scope::Ask, "bash"));
+    }
+
+    #[test]
+    fn build_agent_injects_memory_one_pager() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("MEMORY.md"), "Prefers short plans.").unwrap();
+        let (agent, _) = build_agent(
+            None,
+            "test-model",
+            "high",
+            dir.path().to_path_buf(),
+            ModelRegistry::new(),
+            &[],
+        );
+        let prompt = agent.system_prompt.as_deref().unwrap_or("");
+        assert!(prompt.contains("<memory_one_pager>"));
+        assert!(prompt.contains("Prefers short plans."));
+        assert!(prompt.contains("Generated at"));
     }
 }

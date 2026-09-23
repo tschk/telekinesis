@@ -14,6 +14,7 @@ pub mod login_menu;
 pub mod markdown;
 #[cfg(feature = "mcp")]
 pub mod mcp_config;
+pub mod memory;
 pub mod models;
 pub mod openai_chat;
 pub mod opencode_go;

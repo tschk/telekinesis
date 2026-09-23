@@ -50,7 +50,7 @@ pub(crate) const SESSION_PERSIST_INTERVAL: std::time::Duration =
 
 /// (command, description) — pi-style autocomplete shows the description next
 /// to each command name.
-pub(crate) const SLASH_COMMANDS: [(&str, &str); 24] = [
+pub(crate) const SLASH_COMMANDS: [(&str, &str); 25] = [
     ("/login", "sign in with a provider"),
     ("/providers", "browse and configure providers"),
     ("/provider", "alias for /providers"),
@@ -88,7 +88,8 @@ pub(crate) const SLASH_COMMANDS: [(&str, &str); 24] = [
             "requires rebuild --features search (or full)"
         },
     ),
-    ("/todo", "session todo note"),
+    ("/todo", "read or append .tasks/TODO.md"),
+    ("/memory", "search MEMORY.md and memory/*.md"),
     ("/clear", "clear messages and reset cost"),
     ("/cost", "show cost breakdown"),
     ("/usage", "local request/token totals per provider"),
@@ -1348,6 +1349,20 @@ impl App {
                 self.active_plan.clear();
                 #[cfg(feature = "pi-compat")]
                 self.flush_session();
+                if let Some(preview) = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "assistant" && !message.is_tool)
+                    .map(|message| message.content.clone())
+                {
+                    if let Some(agent) = &self.agent {
+                        if let Ok(agent) = agent.try_lock() {
+                            let _ =
+                                crate::memory::append_session_note(&agent.workspace_root, &preview);
+                        }
+                    }
+                }
             }
             AppEvent::ProvidersReady(configured) => {
                 self.providers_connecting = false;
@@ -3693,6 +3708,8 @@ mod tests {
         use super::slash_description;
         assert!(slash_description("/model").contains("model"));
         assert!(slash_description("/clear").contains("clear"));
+        assert!(slash_description("/todo").contains("TODO.md"));
+        assert!(slash_description("/memory").contains("MEMORY.md"));
         assert_eq!(slash_description("/unknown"), "");
     }
 
@@ -3769,6 +3786,38 @@ mod tests {
         } else {
             assert!(search.contains("--features search"));
         }
+    }
+
+    #[test]
+    fn todo_and_memory_slash_commands_use_workspace_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("MEMORY.md"), "Prefers pasta.").unwrap();
+        let mut agent = rx4::agent::Agent::new();
+        agent.set_workspace_root(dir.path().to_path_buf());
+        let agent = Arc::new(Mutex::new(agent));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new();
+        handle_slash_command(&mut app, "/todo ship memory", &agent, &tx);
+        assert!(app
+            .messages
+            .last()
+            .expect("todo add")
+            .content
+            .contains("ship memory"));
+        handle_slash_command(&mut app, "/todo", &agent, &tx);
+        assert!(app
+            .messages
+            .last()
+            .expect("todo list")
+            .content
+            .contains("ship memory"));
+        handle_slash_command(&mut app, "/memory pasta", &agent, &tx);
+        assert!(app
+            .messages
+            .last()
+            .expect("memory search")
+            .content
+            .contains("pasta"));
     }
 
     #[test]
