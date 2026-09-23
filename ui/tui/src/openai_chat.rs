@@ -152,53 +152,100 @@ impl Provider for OpenAiChatProvider {
         }
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<StreamEvent, ProviderError>>();
-        let mut byte_stream = response.bytes_stream();
-        tokio::spawn(async move {
-            let mut buffer = String::new();
-            let mut state = ChatStreamState::default();
-            let mut failed: Option<ProviderError> = None;
-            while let Some(chunk) = byte_stream.next().await {
-                let chunk = match chunk {
-                    Ok(chunk) => chunk,
-                    Err(error) => {
-                        failed = Some(ProviderError::Stream(format!(
-                            "chat stream read failed: {error}"
-                        )));
-                        break;
-                    }
-                };
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(position) = buffer.find("\n\n") {
-                    let block = buffer[..position].to_string();
-                    buffer = buffer[position + 2..].to_string();
-                    if let Err(error) = handle_chat_sse_block(&block, &tx, &mut state) {
-                        failed = Some(error);
-                        break;
-                    }
-                }
-                if failed.is_some() {
-                    break;
-                }
-            }
-            if failed.is_none() && !buffer.trim().is_empty() {
-                failed = handle_chat_sse_block(&buffer, &tx, &mut state).err();
-            }
-            if let Some(error) = failed {
-                let _ = tx.send(Err(error));
-            } else {
-                for call in state.calls.into_values() {
-                    let _ = tx.send(Ok(StreamEvent::ToolCall(call)));
-                }
-                if !state.terminated {
-                    let _ = tx.send(Ok(StreamEvent::Done));
-                }
-            }
-        });
+        let byte_stream = response.bytes_stream();
+        tokio::spawn(pump_chat_sse(byte_stream, tx, stream_idle_timeout()));
 
         let stream = stream::unfold(rx, |mut rx| async move {
             rx.recv().await.map(|item| (item, rx))
         });
         Ok(Box::new(Box::pin(stream)))
+    }
+}
+
+/// Cap on silence between chat-stream bytes. A connection that dies
+/// without FIN/RST (NAT drop, LB idle timeout) leaves
+/// `byte_stream.next()` pending forever — the agent then hangs past
+/// every outer deadline, which stalled two Z.ai bench trials for
+/// hours. On expiry the pump surfaces a `Stream` error so the agent
+/// loop's retry stack can re-issue the turn. Override with
+/// `TK_STREAM_IDLE_TIMEOUT_SECS`; zero or unparsed values fall back to
+/// the default (there is deliberately no off switch: hanging is the
+/// failure mode).
+fn stream_idle_timeout() -> Duration {
+    const DEFAULT_SECS: u64 = 120;
+    static TIMEOUT: OnceLock<Duration> = OnceLock::new();
+    *TIMEOUT.get_or_init(|| {
+        std::env::var("TK_STREAM_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|secs| *secs > 0)
+            .map_or_else(|| Duration::from_secs(DEFAULT_SECS), Duration::from_secs)
+    })
+}
+
+/// Drain a chat-completions SSE byte stream into provider events,
+/// aborting when no byte arrives within `idle_timeout`.
+async fn pump_chat_sse<S, T, E>(
+    mut byte_stream: S,
+    tx: tokio::sync::mpsc::UnboundedSender<Result<StreamEvent, ProviderError>>,
+    idle_timeout: Duration,
+) where
+    S: futures::Stream<Item = Result<T, E>> + Unpin,
+    T: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    let mut buffer = String::new();
+    let mut state = ChatStreamState::default();
+    let mut failed: Option<ProviderError> = None;
+    loop {
+        let next = match tokio::time::timeout(idle_timeout, byte_stream.next()).await {
+            Ok(next) => next,
+            Err(_) => {
+                failed = Some(ProviderError::Stream(format!(
+                    "chat stream idle for {}s; connection presumed dead",
+                    idle_timeout.as_secs()
+                )));
+                break;
+            }
+        };
+        let chunk = match next {
+            Some(chunk) => chunk,
+            None => break,
+        };
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                failed = Some(ProviderError::Stream(format!(
+                    "chat stream read failed: {error}"
+                )));
+                break;
+            }
+        };
+        buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+        while let Some(position) = buffer.find("\n\n") {
+            let block = buffer[..position].to_string();
+            buffer = buffer[position + 2..].to_string();
+            if let Err(error) = handle_chat_sse_block(&block, &tx, &mut state) {
+                failed = Some(error);
+                break;
+            }
+        }
+        if failed.is_some() {
+            break;
+        }
+    }
+    if failed.is_none() && !buffer.trim().is_empty() {
+        failed = handle_chat_sse_block(&buffer, &tx, &mut state).err();
+    }
+    if let Some(error) = failed {
+        let _ = tx.send(Err(error));
+    } else {
+        for call in state.calls.into_values() {
+            let _ = tx.send(Ok(StreamEvent::ToolCall(call)));
+        }
+        if !state.terminated {
+            let _ = tx.send(Ok(StreamEvent::Done));
+        }
     }
 }
 
@@ -365,6 +412,56 @@ fn parse_token_usage(value: &Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn idle_connection_errors_instead_of_hanging() {
+        // A connection that dies without FIN/RST yields a byte stream
+        // that never resolves; the pump must surface a Stream error
+        // after the idle timeout instead of pending forever (the Z.ai
+        // bench hang).
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<StreamEvent, ProviderError>>();
+        let pending = stream::pending::<Result<&'static [u8], std::io::Error>>();
+        tokio::spawn(pump_chat_sse(pending, tx, Duration::from_millis(50)));
+        let item = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("pump must terminate on an idle stream");
+        match item {
+            Some(Err(ProviderError::Stream(message))) => {
+                assert!(message.contains("idle"), "unexpected error: {message}");
+            }
+            other => panic!("expected stream idle error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn live_stream_still_drains_across_idle_guard() {
+        // Chunks arriving faster than the idle timeout must stream
+        // through untouched.
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<StreamEvent, ProviderError>>();
+        let chunks: Vec<Result<&'static [u8], std::io::Error>> = vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"po\"}}]}\n\n"),
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"ng\"}}]}\n\n"),
+            Ok(b"data: [DONE]\n\n"),
+        ];
+        tokio::spawn(pump_chat_sse(
+            stream::iter(chunks),
+            tx,
+            Duration::from_secs(120),
+        ));
+        let mut deltas = String::new();
+        let mut dones = 0;
+        while let Some(item) = rx.recv().await {
+            match item.unwrap() {
+                StreamEvent::Delta(delta) => deltas.push_str(&delta),
+                StreamEvent::Done => dones += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(deltas, "pong");
+        assert_eq!(dones, 1);
+    }
 
     #[test]
     fn chat_body_carries_system_tools_and_effort() {
