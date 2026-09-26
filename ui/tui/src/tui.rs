@@ -783,13 +783,28 @@ pub(crate) fn truncate_args(args: &str, max: usize) -> String {
 }
 
 pub(crate) fn bounded_plan_preview(proposal: &PlanProposal) -> Vec<String> {
-    let rendered = proposal.render();
-    let mut rows: Vec<String> = rendered
-        .lines()
+    // Render steps as `1. bash: cargo test` — the tool's primary argument,
+    // not the raw JSON blob (rx4's `PlanProposal::render` dumps arguments
+    // verbatim, which leaks machine syntax into the transcript).
+    let mut lines: Vec<String> = Vec::new();
+    if !proposal.plan.trim().is_empty() {
+        lines.extend(proposal.plan.trim().lines().map(str::to_string));
+    }
+    for (index, call) in proposal.calls.iter().enumerate() {
+        let detail = tool_detail(&call.name, &call.arguments);
+        let step = if detail.is_empty() {
+            call.name.clone()
+        } else {
+            format!("{}: {detail}", call.name)
+        };
+        lines.push(format!("{}. {step}", index + 1));
+    }
+    let mut rows: Vec<String> = lines
+        .iter()
         .take(PLAN_PREVIEW_MAX_LINES)
         .map(|line| clean_search_text(line, PLAN_PREVIEW_LINE_LIMIT))
         .collect();
-    if rendered.lines().nth(PLAN_PREVIEW_MAX_LINES).is_some() {
+    if lines.len() > PLAN_PREVIEW_MAX_LINES {
         rows.push("… (plan preview truncated)".to_string());
     }
     rows

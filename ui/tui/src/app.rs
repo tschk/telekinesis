@@ -2067,20 +2067,29 @@ impl App {
                 }
             }
             HostSurface::RequestPermissions { tool, paths } => {
-                let detail = paths.join(" ");
-                let content = if detail.is_empty() {
-                    format!("Approval required: {tool}")
-                } else {
-                    format!("Approval required: {tool} ({detail})")
-                };
-                self.messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content,
-                    is_tool: false,
-                    tool_name: String::new(),
-                    tool_call_id: String::new(),
-                    is_streaming: false,
-                });
+                // In bypass mode the ask is granted without a gate, so the
+                // message is pure noise on top of the tool row that already
+                // shows the call. Only surface it when a gate is real.
+                let bypass = self
+                    .approval_mode
+                    .as_ref()
+                    .is_none_or(|mode| mode.is_bypass());
+                if !bypass {
+                    let detail = paths.join(" ");
+                    let content = if detail.is_empty() {
+                        format!("Approval required: {tool}")
+                    } else {
+                        format!("Approval required: {tool} ({detail})")
+                    };
+                    self.messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content,
+                        is_tool: false,
+                        tool_name: String::new(),
+                        tool_call_id: String::new(),
+                        is_streaming: false,
+                    });
+                }
             }
             HostSurface::PatchHunk { path, hunk } => {
                 if let Some(msg) = self.messages.iter_mut().rev().find(|message| {
@@ -2890,6 +2899,30 @@ mod tests {
     }
 
     #[test]
+    fn plan_preview_renders_tool_details_not_raw_json() {
+        let proposal = PlanProposal {
+            prompt: "status".to_string(),
+            plan: "Check the tree.".to_string(),
+            calls: vec![rx4::agent::ToolCall {
+                id: "call-1".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"pwd && ls","timeout_sec":10}"#.into(),
+            }],
+            turn: 0,
+        };
+        let rows = bounded_plan_preview(&proposal);
+        assert!(rows.contains(&"Check the tree.".to_string()));
+        assert!(
+            rows.iter().any(|row| row == "1. bash: pwd && ls"),
+            "steps show the tool's primary argument, got {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("{\"")),
+            "no raw JSON arguments in the plan rows: {rows:?}"
+        );
+    }
+
+    #[test]
     fn budget_command_exposes_bounded_turn_controls() {
         let mut agent = rx4::agent::Agent::new();
         assert!(budget_summary(&agent).contains("max_turns=50"));
@@ -3391,6 +3424,13 @@ mod tests {
             process_id: "pty-9".into(),
             bytes: 4,
         });
+        // Ask mode gates on a real approval, so the notice renders. (The
+        // default bypass mode suppresses it; asserted below.)
+        let (approver, _approval_rx) = crate::channel_approver::ChannelApprover::pair();
+        let ask_mode = approver.mode();
+        ask_mode.toggle();
+        assert!(!ask_mode.is_bypass());
+        app.approval_mode = Some(ask_mode);
         app.render_host_surface(HostSurface::RequestPermissions {
             tool: "write".into(),
             paths: vec!["src/lib.rs".into()],
@@ -3458,6 +3498,25 @@ mod tests {
         );
         assert_eq!(app.messages[7].role, "error");
         assert_eq!(app.messages[7].content, "spill: spill_failed (20 bytes)");
+    }
+
+    #[test]
+    fn bypass_mode_suppresses_permission_notices() {
+        let mut app = App::new();
+        assert!(app
+            .approval_mode
+            .as_ref()
+            .is_none_or(|mode| mode.is_bypass()));
+        app.render_host_surface(HostSurface::RequestPermissions {
+            tool: "bash".into(),
+            paths: Vec::new(),
+        });
+        assert!(
+            !app.messages
+                .iter()
+                .any(|message| message.content.starts_with("Approval required")),
+            "bypass auto-grants, so the notice is noise"
+        );
     }
 
     #[test]
