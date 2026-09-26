@@ -3423,7 +3423,7 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "telekinesis"
-version = "0.6.22"
+version = "0.6.23"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -3451,7 +3451,7 @@ dependencies = [
 
 [[package]]
 name = "telekinesis-router"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "dirs",
  "rs_ai_providers",
