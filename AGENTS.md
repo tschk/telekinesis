@@ -37,7 +37,7 @@ flowchart TD
 - **Rust** — the entire product is Rust
 - crepuscularity-tui (`ui/tui`) — ratatui-based TUI with hot-reloadable
   `shell.crepus` template — **primary surface**
-- **rx4** crate — git `tschk/rotary` @ `36ea3f3` (0.7.3) for harness APIs. Default `tk` features:
+- **rx4** crate — git `tschk/rotary` @ `b5d5b63` (`chore/rx4-0.7.3-background-cu`: 0.7.3 + enforced background-first computer use) for harness APIs. Default `tk` features:
   providers + builtin-tools + script. Opt-in: `mcp`, `search` (darash), computer-use,
   skills, graph-memory. `--features full` enables all of those.
 - tokio — async runtime, channels between TUI and agent loop
