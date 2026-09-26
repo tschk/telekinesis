@@ -4,8 +4,32 @@
 //! extraction, OS keychain) live here alongside the re-export.
 
 pub use rs_ai_providers::catalog::{
-    by_id, find, infer_from_model, normalize_model, ProviderApi, ProviderSpec, API_KEY_PROVIDERS,
+    by_id, find, infer_from_model, ProviderApi, ProviderSpec, API_KEY_PROVIDERS,
 };
+
+/// Wire model id for a provider.
+///
+/// The picker, `/model`, and `--model` all accept `provider/id`, so drop a
+/// prefix that names this provider before the request goes out. Cline-pass is
+/// the one provider that addresses models with its own prefix, and only bare
+/// ids need it: an id that already carries a vendor namespace
+/// (`z-ai/glm-5.3-flash`) is sent as the provider lists it.
+pub fn normalize_model(spec: &ProviderSpec, model: &str) -> String {
+    let model = model.trim();
+    let bare = match model.split_once('/') {
+        Some((prefix, rest))
+            if prefix.eq_ignore_ascii_case(spec.id)
+                || find(prefix).is_some_and(|found| found.id == spec.id) =>
+        {
+            rest
+        }
+        _ => model,
+    };
+    match spec.id {
+        "clinepass" if !bare.contains('/') => format!("cline-pass/{bare}"),
+        _ => bare.to_string(),
+    }
+}
 
 /// Resolve a provider's API key: env var first, then keychain.
 pub fn env_key(spec: &ProviderSpec) -> Option<String> {
@@ -196,6 +220,33 @@ mod tests {
         assert_eq!(
             normalize_model(spec, "cline-pass/qwen3.7-max"),
             "cline-pass/qwen3.7-max"
+        );
+        // A vendor-namespaced id is already the provider's own id.
+        assert_eq!(
+            normalize_model(spec, "z-ai/glm-5.3-flash"),
+            "z-ai/glm-5.3-flash"
+        );
+    }
+
+    #[test]
+    fn strips_a_provider_prefix_from_qualified_ids() {
+        for provider in ["zai-coding-plan", "opencode-go", "deepseek", "openai"] {
+            let spec = find(provider).unwrap();
+            let id = "glm-5.3-flash";
+            assert_eq!(normalize_model(spec, &format!("{provider}/{id}")), id);
+            assert_eq!(normalize_model(spec, id), id);
+        }
+        // An unrelated prefix stays: the id belongs to another provider's shape.
+        let spec = find("deepseek").unwrap();
+        assert_eq!(
+            normalize_model(spec, "z-ai/glm-5.3-flash"),
+            "z-ai/glm-5.3-flash"
+        );
+        // Aliases name the provider too.
+        let spec = find("zai-coding-plan").unwrap();
+        assert_eq!(
+            normalize_model(spec, "zai-code/glm-5.3-flash"),
+            "glm-5.3-flash"
         );
     }
 
