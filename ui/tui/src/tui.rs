@@ -25,6 +25,30 @@ use crate::providers::{choose_provider, push_system_message, run_login, setup_pr
 use crate::slash::{clean_search_text, handle_slash_command};
 use crate::tools::discover_mcp_tools;
 
+/// Provider rail to start on: the persisted provider when it is still
+/// configured, else the provider that owns the persisted model.
+pub(crate) fn preferred_provider_index(
+    providers: &[(crate::app::ConfiguredProvider, String)],
+    registry: &rx4::ModelRegistry,
+    prefs: &host::Prefs,
+    model: Option<&str>,
+) -> usize {
+    prefs
+        .provider
+        .as_deref()
+        .and_then(|id| providers.iter().position(|item| item.0.id == id))
+        .or_else(|| {
+            model.and_then(|model| {
+                registry.get(model).and_then(|entry| {
+                    providers
+                        .iter()
+                        .position(|item| item.0.id == entry.provider)
+                })
+            })
+        })
+        .unwrap_or(0)
+}
+
 #[cfg(feature = "pi-compat")]
 pub(crate) fn newest_session(dir: &std::path::Path) -> Option<PathBuf> {
     std::fs::read_dir(dir)
@@ -215,16 +239,12 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     let preferred_model = prefs.model.clone().or(resumed_model);
     let effort = prefs.effort.clone().unwrap_or(resumed_effort.clone());
     let initial_registry = initial_model_registry(&providers);
-    let preferred_provider = preferred_model
-        .as_deref()
-        .and_then(|model| {
-            initial_registry.get(model).and_then(|entry| {
-                providers
-                    .iter()
-                    .position(|item| item.0.id == entry.provider)
-            })
-        })
-        .unwrap_or(0);
+    let preferred_provider = preferred_provider_index(
+        &providers,
+        &initial_registry,
+        &prefs,
+        preferred_model.as_deref(),
+    );
     let (provider, model) = if let Some(selected) = providers.get(preferred_provider).cloned() {
         (selected.0.client, preferred_model.unwrap_or(selected.1))
     } else {
@@ -252,6 +272,8 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     #[cfg(feature = "pi-compat")]
     if let Some(session) = &loaded_session {
         *agent.messages.write() = session.messages();
+        // The engine holds todos in memory only; the session is the durable copy.
+        agent.set_todo_state(session.todos());
     }
     let (approver, approval_rx) = ChannelApprover::pair();
     let approval_mode = approver.mode();
@@ -315,6 +337,10 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
             .as_ref()
             .map(restored_chat)
             .unwrap_or_default();
+        app.todos = loaded_session
+            .as_ref()
+            .map(PiSession::todos)
+            .unwrap_or_default();
         app.session = Some((
             loaded_session.unwrap_or_else(|| {
                 PiSession::new(
@@ -332,8 +358,16 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
         .into_iter()
         .map(|(provider, _)| provider)
         .collect();
+    app.provider_choice = preferred_provider;
+    app.model_provider = app
+        .providers
+        .get(preferred_provider)
+        .map(|configured| configured.id.clone());
     app.model_registry = initial_registry;
     app.refresh_model_choices();
+    // Providers publish their own model lists; warm the picker from them
+    // instead of waiting for the user to open `/model`.
+    app.refresh_remote_model_choices(event_tx.clone());
     app.agent = Some(agent.clone());
     app.cancellation = Some(cancellation);
     app.event_rx = Some(event_rx);
@@ -870,4 +904,70 @@ pub(crate) fn wrap_scrollback_line(
         ));
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::host_model_info;
+    use rx4::provider::OpenAIProvider;
+    use rx4::ModelRegistry;
+
+    fn provider(id: &str) -> (crate::app::ConfiguredProvider, String) {
+        (
+            crate::app::ConfiguredProvider {
+                id: id.to_string(),
+                name: id.to_string(),
+                client: Arc::new(OpenAIProvider::with_base_url(
+                    "http://localhost",
+                    "test",
+                    id,
+                    id,
+                )),
+            },
+            "default-model".to_string(),
+        )
+    }
+
+    #[test]
+    fn startup_rail_follows_the_persisted_provider() {
+        let providers = vec![provider("openai-codex"), provider("zai-coding-plan")];
+        // A live-only model is absent from the offline registry, so the
+        // persisted provider is the only way to pair it correctly.
+        let prefs = host::Prefs {
+            model: Some("glm-5.3-flash".to_string()),
+            provider: Some("zai-coding-plan".to_string()),
+            ..host::Prefs::default()
+        };
+        assert_eq!(
+            preferred_provider_index(
+                &providers,
+                &ModelRegistry::new(),
+                &prefs,
+                Some("glm-5.3-flash")
+            ),
+            1
+        );
+
+        // Without a persisted provider the offline registry decides.
+        let registry = ModelRegistry::from_models([host_model_info("zai-coding-plan", "glm-5.1")]);
+        let prefs = host::Prefs {
+            model: Some("glm-5.1".to_string()),
+            ..host::Prefs::default()
+        };
+        assert_eq!(
+            preferred_provider_index(&providers, &registry, &prefs, Some("glm-5.1")),
+            1
+        );
+
+        // A provider that is no longer configured falls back to the first.
+        let prefs = host::Prefs {
+            provider: Some("gone".to_string()),
+            ..host::Prefs::default()
+        };
+        assert_eq!(
+            preferred_provider_index(&providers, &ModelRegistry::new(), &prefs, None),
+            0
+        );
+    }
 }

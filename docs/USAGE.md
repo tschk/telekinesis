@@ -143,6 +143,7 @@ Model, scope, and effort are persisted to `~/.telekinesis/prefs.json`.
 | `/mcp` | list connected MCP tools + `~/.telekinesis/mcp.json` help (`--features mcp` or `full`; otherwise tells you to rebuild) |
 | `/search` | darash `web_search` status (`--features search` or `full`; otherwise tells you to rebuild) |
 | `/todo [item]` | read or append `.tasks/TODO.md` |
+| `/todos` | show the agent's todo list (rx4 `todo` tool; also in the status block) |
 | `/memory [query]` | show MEMORY.md one-pager, or keyword-search MEMORY.md / `memory/*.md` |
 | `/sessions` | list JSONL sessions for this project (newest first) |
 | `/resume <n>` | switch to a session listed by `/sessions` |
@@ -183,3 +184,22 @@ Model selector: type to search **across all configured providers** with
 fuzzy ranking (`provider`, `provider/id`, and bare id all match — e.g. `codex 55`
 finds `gpt-5.5`); the provider rails collapse while a query is active.
 `←/→` provider, `↑/↓` model, `Enter` apply, `Esc` cancel.
+
+The picker starts from the offline catalog and then merges each configured
+provider's live `/models` listing (OAuth plans and OpenRouter included) on
+startup and every time the selector opens, so a model the provider ships today
+is selectable today. A provider that answered replaces its own offline entries —
+the catalog cannot know what an account can actually reach — and if the model in
+use is no longer offered, tk switches to one that is and says so in the
+transcript. A provider that is down leaves the offline entries in place;
+`refreshing provider models…` marks a fetch still in flight.
+
+Metadata comes from [models.dev](https://models.dev) after the provider
+listings: context and output windows, plus tool, reasoning, and vision support,
+for every model already in the picker (matched by id, then by last path
+segment for vendor-namespaced ids like `z-ai/glm-5.3-flash`). A model whose
+provider does not publish a window therefore shows its real window rather than
+a family guess.
+
+The agent's todo list (`/todo`) is the engine's own state; tk mirrors it into
+the session file, so it survives `/resume` and restarts.

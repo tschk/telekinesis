@@ -20,6 +20,10 @@ permission: never stop to ask whether you may proceed with your own plan.
 Only pause for explicit host approval gates when host policy turns them on.
 Keep plan scope honest: read-only investigation belongs in plan or research
 scope; in coding scope, plans lead directly to edits and verification.
+Track multi-step work with the `todo` tool: create the steps up front, each
+with a confidence (0-100), keep one item in progress, and complete an item only
+after you verified it, passing a completion_confidence. The host renders the
+list, so do not restate it in prose.
 </planning>
 
 <workflow>

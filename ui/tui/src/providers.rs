@@ -203,12 +203,17 @@ pub(crate) fn legacy_telekinesis_token(provider: &str) -> Option<rs_ai_oauth::OA
 }
 
 pub(crate) fn saved_token(provider: &str, rt: &tokio::runtime::Runtime) -> Option<String> {
+    rt.block_on(saved_token_async(provider))
+}
+
+/// Token for background model discovery: refresh and persist an expired one.
+pub(crate) async fn saved_token_async(provider: &str) -> Option<String> {
     let oauth = oauth_provider(provider)?;
     let mut tokens =
         rs_ai_oauth::credentials::load(&oauth).or_else(|| legacy_telekinesis_token(provider))?;
     if rs_ai_oauth::credentials::is_expired(&tokens) {
-        tokens = rt
-            .block_on(rs_ai_oauth::refresh_oauth_token(oauth, &tokens))
+        tokens = rs_ai_oauth::refresh_oauth_token(oauth, &tokens)
+            .await
             .ok()?;
         rs_ai_oauth::credentials::save(&oauth, &tokens).ok()?;
     }

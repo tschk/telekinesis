@@ -10,7 +10,7 @@ use rx4::agent::{Agent, AgentError, CancellationHandle, Event as Rx4Event, ToolS
 use rx4::permissions::{Decision, PlanDecision, PlanProposal};
 use rx4::provider::{Provider, Role};
 use rx4::subagent::{SubagentManager, SubagentStatus};
-use rx4::{ModelInfo, ModelRegistry};
+use rx4::{ModelInfo, ModelRegistry, TodoState, TodoStatus};
 use tokio::sync::Mutex;
 
 use crate::channel_approver::{ApprovalMode, PendingApproval};
@@ -18,8 +18,9 @@ use crate::host::{self, load_history, save_history, save_prefs, Prefs};
 use crate::host_events::{EventExt, HostSurface};
 use crate::markdown;
 use crate::models::{
-    context_window_for_model, host_model_info, oauth_model_info, openrouter_model_info,
-    PI_CODEX_GPT56, PI_OPENAI_GPT5,
+    context_window_for_model, fetch_codex_models, fetch_live_models, fetch_models_dev_models,
+    fetch_openrouter_models, host_model_info, live_models_targets, oauth_model_info,
+    offline_codex_models, PI_OPENAI_GPT5,
 };
 #[cfg(feature = "pi-compat")]
 use crate::pi::{PiEntryType, PiSession};
@@ -47,10 +48,12 @@ pub(crate) const FILE_SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration
 /// Throttle JSONL session appends (fsync per tool event is wasteful).
 pub(crate) const SESSION_PERSIST_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(500);
+/// How long the picker claims a provider-model refresh is still in flight.
+pub(crate) const MODELS_REFRESH_HINT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// (command, description) — pi-style autocomplete shows the description next
 /// to each command name.
-pub(crate) const SLASH_COMMANDS: [(&str, &str); 25] = [
+pub(crate) const SLASH_COMMANDS: [(&str, &str); 26] = [
     ("/login", "sign in with a provider"),
     ("/providers", "browse and configure providers"),
     ("/provider", "alias for /providers"),
@@ -89,6 +92,7 @@ pub(crate) const SLASH_COMMANDS: [(&str, &str); 25] = [
         },
     ),
     ("/todo", "read or append .tasks/TODO.md"),
+    ("/todos", "show the agent's todo list"),
     ("/memory", "search MEMORY.md and memory/*.md"),
     ("/clear", "clear messages and reset cost"),
     ("/cost", "show cost breakdown"),
@@ -330,6 +334,108 @@ pub(crate) fn blink_cursor(start: Instant) -> &'static str {
     }
 }
 
+/// One model source's answer: the provider it speaks for and what it listed.
+type ModelAnswer = Vec<(String, Vec<ModelInfo>)>;
+
+/// One source's contribution to the picker; the app merges and dedups.
+/// `replaces_provider` marks a list the provider itself published.
+fn send_model_choices(
+    tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    provider: String,
+    infos: Vec<ModelInfo>,
+    replaces_provider: bool,
+) {
+    let _ = tx.send(AppEvent::ModelChoices {
+        provider,
+        // An empty answer taught us nothing, so the offline entries stay.
+        authoritative: replaces_provider && !infos.is_empty(),
+        models: infos,
+    });
+}
+
+/// Offline catalog for one provider: the codex list, the provider spec's
+/// models, or pi's OpenAI GPT-5 family. Used until the provider answers.
+fn offline_models_for(provider: &ConfiguredProvider) -> Vec<ModelInfo> {
+    let mut models = Vec::new();
+    if provider.id == "openai-codex" {
+        models.extend(offline_codex_models().map(|id| host_model_info("openai-codex", id)));
+    }
+    if let Some(spec) = provider_catalog::by_id(&provider.id) {
+        models.extend(
+            spec.models
+                .iter()
+                .map(|id| host_model_info(&provider.id, id)),
+        );
+    }
+    if provider.id == "openai" {
+        models.extend(
+            PI_OPENAI_GPT5
+                .iter()
+                .map(|id| host_model_info("openai", id)),
+        );
+    }
+    models
+}
+
+/// Pick a replacement from a provider's freshly listed models: the catalog
+/// default when it is listed, else the provider's own first entry.
+fn fallback_model(
+    spec: Option<&provider_catalog::ProviderSpec>,
+    models: &[ModelInfo],
+) -> Option<String> {
+    spec.map(|spec| spec.default_model)
+        .filter(|default| models.iter().any(|model| model.id == *default))
+        .map(str::to_string)
+        .or_else(|| models.first().map(|model| model.id.clone()))
+}
+
+/// Glyph for one engine-owned todo item in the host status block.
+pub(crate) fn todo_mark(status: &TodoStatus) -> &'static str {
+    match status {
+        TodoStatus::Pending => "·",
+        TodoStatus::InProgress => "▸",
+        TodoStatus::PendingVerification => "?",
+        TodoStatus::Completed => "✔",
+    }
+}
+
+fn todo_status_label(status: &TodoStatus) -> &'static str {
+    match status {
+        TodoStatus::Pending => "pending",
+        TodoStatus::InProgress => "in progress",
+        TodoStatus::PendingVerification => "needs verification",
+        TodoStatus::Completed => "done",
+    }
+}
+
+/// One-line todo progress for the status area.
+pub(crate) fn todo_summary(state: &TodoState) -> String {
+    let done = state
+        .items
+        .iter()
+        .filter(|item| item.status == TodoStatus::Completed)
+        .count();
+    format!("todos · {done}/{} done", state.items.len())
+}
+
+/// `/todo` body: the model's own task list, as the engine holds it.
+pub(crate) fn todo_report(state: &TodoState) -> String {
+    if state.items.is_empty() {
+        return "No todos. The agent records multi-step work here with the `todo` tool."
+            .to_string();
+    }
+    let mut lines = vec![todo_summary(state)];
+    for item in &state.items {
+        lines.push(format!(
+            "  {} {} — {}",
+            todo_mark(&item.status),
+            item.content,
+            todo_status_label(&item.status)
+        ));
+    }
+    lines.join("\n")
+}
+
 pub(crate) fn load_template(path: Option<&std::ffi::OsStr>) -> anyhow::Result<Template> {
     match path {
         Some(path) => Template::from_path(PathBuf::from(path)).map_err(|e| anyhow::anyhow!("{e}")),
@@ -521,6 +627,16 @@ pub(crate) struct App {
     /// True while background provider setup is still connecting; prompts
     /// submitted in this window are queued instead of erroring.
     pub(crate) providers_connecting: bool,
+    /// Deadline for the "refreshing provider models…" hint in the picker.
+    pub(crate) models_refreshing_until: Option<Instant>,
+    /// Current model metadata per provider: seeded from the offline catalog,
+    /// replaced by what the provider lists, enriched by models.dev.
+    pub(crate) provider_models: HashMap<String, Vec<ModelInfo>>,
+    /// Provider that owns `model`, so a provider listing can tell whether the
+    /// model in use is still offered without consulting the picker.
+    pub(crate) model_provider: Option<String>,
+    /// Engine-owned todo list, mirrored from rx4 `TodoUpdated` events.
+    pub(crate) todos: TodoState,
     /// Model preferred by prefs, applied once providers connect.
     #[allow(dead_code)]
     pub(crate) pending_model: Option<String>,
@@ -544,10 +660,13 @@ pub(crate) enum AppEvent {
         query: String,
         paths: Vec<String>,
     },
+    /// One model source's answer for a single provider. `authoritative` marks
+    /// a list the provider itself published, which replaces the offline
+    /// catalog entries for that provider.
     ModelChoices {
-        choices: Vec<ModelChoice>,
-        context_windows: HashMap<String, usize>,
+        provider: String,
         models: Vec<ModelInfo>,
+        authoritative: bool,
     },
     #[allow(dead_code)]
     ProvidersReady(Vec<(ConfiguredProvider, String)>),
@@ -623,6 +742,10 @@ impl App {
             mcp_tools: Vec::new(),
             mcp_connecting: false,
             providers_connecting: false,
+            models_refreshing_until: None,
+            provider_models: HashMap::new(),
+            model_provider: None,
+            todos: TodoState::default(),
             pending_model: None,
             queued_prompts: Vec::new(),
             subagent_manager: None,
@@ -1101,6 +1224,11 @@ impl App {
         }
         tpl.set("agent_mode", self.agent_mode.clone());
         tpl.set("providers_connecting", self.providers_connecting);
+        tpl.set(
+            "models_refreshing",
+            self.models_refreshing_until
+                .is_some_and(|until| Instant::now() < until),
+        );
         tpl.set("permission_prompt", self.permission_prompt);
         tpl.set("permission_tool", self.permission_tool.clone());
         tpl.set("plan_prompt", self.plan_prompt);
@@ -1172,6 +1300,20 @@ impl App {
             .unwrap_or_default();
         tpl.set("has_running_subagents", !running_subagents.is_empty());
         tpl.set("running_subagents", TemplateValue::List(running_subagents));
+        tpl.set("has_todos", !self.todos.items.is_empty());
+        tpl.set("todo_summary", todo_summary(&self.todos));
+        let todo_rows = self
+            .todos
+            .items
+            .iter()
+            .map(|item| {
+                let mut row = TemplateContext::new();
+                row.set("mark", todo_mark(&item.status));
+                row.set("content", item.content.clone());
+                row
+            })
+            .collect::<Vec<_>>();
+        tpl.set("todo_rows", TemplateValue::List(todo_rows));
 
         let msgs: Vec<TemplateContext> = self
             .messages
@@ -1324,22 +1466,42 @@ impl App {
                 }
             }
             AppEvent::ModelChoices {
-                choices,
-                context_windows,
+                provider,
                 models,
+                authoritative,
             } => {
-                self.model_choices.extend(choices);
-                self.model_choices
-                    .sort_by(|a, b| a.provider.cmp(&b.provider).then(a.id.cmp(&b.id)));
-                self.model_choices
-                    .dedup_by(|a, b| a.provider == b.provider && a.id == b.id);
-                self.model_context_windows.extend(context_windows);
-                self.model_registry.extend(models);
-                if let Some(agent) = &self.agent {
-                    if let Ok(mut agent) = agent.try_lock() {
-                        agent.set_model_registry(self.model_registry.clone());
+                // A provider that answered replaces its offline entries: the
+                // catalog cannot know what this account can actually reach.
+                let replaced_in_use = authoritative
+                    && self.model_provider.as_deref() == Some(provider.as_str())
+                    && !models.iter().any(|model| model.id == self.model);
+                let replacement = replaced_in_use
+                    .then(|| fallback_model(provider_catalog::by_id(&provider), &models))
+                    .flatten();
+                if authoritative {
+                    self.provider_models.insert(provider.clone(), models);
+                } else if let Some(stored) = self.provider_models.get_mut(&provider) {
+                    // Enrichment carries metadata only, never membership.
+                    for info in &models {
+                        if let Some(entry) = stored.iter_mut().find(|entry| entry.id == info.id) {
+                            *entry = info.clone();
+                        }
                     }
                 }
+                self.refresh_model_choices();
+                // The provider does not offer the model in use: every prompt
+                // would fail, so move to one it does list and say so.
+                if let Some(replacement) = replacement {
+                    let from = self.model.clone();
+                    self.select_model(&format!("{provider}/{replacement}"));
+                    push_system_message(
+                        self,
+                        format!(
+                            "{provider} does not offer {from}; switched to {provider}/{replacement}."
+                        ),
+                    );
+                }
+                self.refresh_context_window();
                 if self.selecting_model {
                     self.reset_model_choice();
                 }
@@ -1691,11 +1853,21 @@ impl App {
                 });
             }
             Rx4Event::TurnEnd { .. } => {}
+            // The engine todo tool is opt-in (see `host::build_agent`); when
+            // it is on, this is the host's only view of the model's task list,
+            // so it is mirrored into the session for the next start.
+            Rx4Event::TodoUpdated { todos } => {
+                #[cfg(feature = "pi-compat")]
+                self.append_session(PiEntryType::Custom {
+                    extension: crate::pi::TODOS_EXTENSION.to_string(),
+                    payload: serde_json::to_value(&todos).unwrap_or(serde_json::Value::Null),
+                });
+                self.todos = todos;
+            }
             // Optional rx4 0.6.4 host-observability events. The detailed UI
             // wiring follows separately; keeping them no-op preserves the
             // existing transcript behaviour while accepting the additive API.
-            Rx4Event::TodoUpdated { .. }
-            | Rx4Event::TurnEnded { .. }
+            Rx4Event::TurnEnded { .. }
             | Rx4Event::CacheAudit(_)
             | Rx4Event::GateResult(_)
             | Rx4Event::MemoryRecalled { .. } => {}
@@ -1998,62 +2170,33 @@ impl App {
     /// The host-owned offline catalog is used until logged-in providers are
     /// refreshed from their live `/models` endpoints.
     pub(crate) fn refresh_model_choices(&mut self) {
+        // A provider that has answered owns its entries; the offline catalog
+        // only seeds providers we have not heard from.
+        for provider in &self.providers {
+            if !self.provider_models.contains_key(&provider.id) {
+                self.provider_models
+                    .insert(provider.id.clone(), offline_models_for(provider));
+            }
+        }
         let mut registry = ModelRegistry::new();
         let mut context_windows = HashMap::new();
         let mut choices = Vec::new();
         let mut models = Vec::new();
-        for provider in &self.providers {
-            if let Some(spec) = provider_catalog::by_id(&provider.id) {
-                for id in spec.models {
-                    let model = host_model_info(&provider.id, id);
-                    context_windows.insert(model.id.clone(), model.context_window);
-                    choices.push(ModelChoice {
-                        id: model.id.clone(),
-                        provider: model.provider.clone(),
-                    });
-                    models.push(model);
-                }
-            }
-        }
-        if self
-            .providers
-            .iter()
-            .any(|provider| provider.id == "openai-codex")
-        {
-            for id in rs_ai_oauth::codex::CHATGPT_CODEX_MODELS
-                .iter()
-                .chain(PI_CODEX_GPT56.iter())
-            {
-                let model = host_model_info("openai-codex", id);
-                context_windows.insert(model.id.clone(), model.context_window);
-                models.push(model.clone());
+        for infos in self.provider_models.values() {
+            for info in infos {
+                context_windows.insert(info.id.clone(), info.context_window);
                 choices.push(ModelChoice {
-                    id: model.id,
-                    provider: "openai-codex".to_string(),
+                    id: info.id.clone(),
+                    provider: info.provider.clone(),
                 });
-            }
-        }
-        // pi's current openai GPT-5.x family for the API-key provider.
-        if self
-            .providers
-            .iter()
-            .any(|provider| provider.id == "openai")
-        {
-            for id in PI_OPENAI_GPT5 {
-                let model = host_model_info("openai", id);
-                context_windows.insert(model.id.clone(), model.context_window);
-                models.push(model.clone());
-                choices.push(ModelChoice {
-                    id: model.id,
-                    provider: "openai".to_string(),
-                });
+                models.push(info.clone());
             }
         }
         choices.sort_by(|a, b| a.provider.cmp(&b.provider).then(a.id.cmp(&b.id)));
         choices.dedup_by(|a, b| a.provider == b.provider && a.id == b.id);
         self.model_context_windows = context_windows;
         self.model_choices = choices;
-        registry.extend(models.clone());
+        registry.extend(models);
         self.model_registry = registry;
         if let Some(agent) = &self.agent {
             if let Ok(mut agent) = agent.try_lock() {
@@ -2062,103 +2205,128 @@ impl App {
         }
     }
 
-    /// Refresh live OAuth and OpenRouter model metadata off the UI thread.
-    /// A provider outage leaves the offline catalog intact.
+    /// Refresh live OAuth, OpenRouter, and configured-provider `/models`
+    /// metadata off the UI thread. Each source reports as soon as it answers,
+    /// so one slow provider cannot hold the picker back; a provider outage
+    /// leaves the offline catalog intact.
     pub(crate) fn refresh_remote_model_choices(
-        &self,
+        &mut self,
         tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
     ) {
         let provider_ids: Vec<String> = self.providers.iter().map(|p| p.id.clone()).collect();
-        std::thread::spawn(move || {
-            let mut choices = Vec::new();
-            let mut context_windows = HashMap::new();
-            let mut models = Vec::new();
+        let known_models: Vec<(String, String)> = self
+            .model_choices
+            .iter()
+            .map(|choice| (choice.provider.clone(), choice.id.clone()))
+            .collect();
+        let live_targets = live_models_targets(&provider_ids);
+        let openrouter_key = provider_ids
+            .iter()
+            .any(|id| id == "openrouter")
+            .then(|| {
+                std::env::var("OPENROUTER_API_KEY")
+                    .ok()
+                    .filter(|key| !key.is_empty())
+            })
+            .flatten();
+        // Only claim a refresh when a configured provider can answer; with no
+        // providers the picker is empty for another reason.
+        if !self.providers.is_empty() {
+            self.models_refreshing_until = Some(Instant::now() + MODELS_REFRESH_HINT);
+        }
 
-            if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-            {
-                if let Ok(provider_models) =
-                    runtime.block_on(rs_ai_oauth::fetch_logged_in_models_async())
-                {
-                    for discovered in provider_models {
-                        let Some(provider_id) =
-                            configured_provider_id(discovered.provider, &provider_ids)
+            else {
+                return;
+            };
+            // The Codex listing needs the ChatGPT OAuth token; fetch it before
+            // the async block, since refreshing it blocks.
+            let codex_token = provider_ids
+                .iter()
+                .any(|id| id == "openai-codex")
+                .then(|| crate::providers::saved_token("openai", &runtime))
+                .flatten();
+            runtime.block_on(async move {
+                let mut sources: Vec<futures::future::BoxFuture<'static, ModelAnswer>> = Vec::new();
+
+                // One provider's outage must not hide the others, and the
+                // generic `/models` call does not work for every plan.
+                sources.push(Box::pin(async move {
+                    let mut answers = Vec::new();
+                    for provider in rs_ai_oauth::credentials::logged_in_providers() {
+                        let Some(token) =
+                            crate::providers::saved_token_async(provider.name()).await
                         else {
                             continue;
                         };
-                        for model in discovered.models {
-                            if let Some(context_window) = model
-                                .limits
-                                .context_window
-                                .and_then(|value| usize::try_from(value).ok())
-                            {
-                                context_windows.insert(model.id.clone(), context_window);
-                            }
-                            choices.push(ModelChoice {
-                                id: model.id.clone(),
-                                provider: provider_id.clone(),
-                            });
-                            models.push(oauth_model_info(&provider_id, model));
-                        }
+                        let Ok(models) = rs_ai_oauth::fetch_models_async(provider, &token).await
+                        else {
+                            continue;
+                        };
+                        let Some(provider_id) = configured_provider_id(provider, &provider_ids)
+                        else {
+                            continue;
+                        };
+                        answers.push((
+                            provider_id.clone(),
+                            models
+                                .into_iter()
+                                .map(|model| oauth_model_info(&provider_id, model))
+                                .collect(),
+                        ));
+                    }
+                    answers
+                }));
+
+                // ChatGPT accounts get their own listing: the plan decides which
+                // Codex models exist, and the offline catalog cannot know that.
+                if let Some(token) = codex_token {
+                    sources.push(Box::pin(async move {
+                        let account_id = rs_ai_oauth::codex::ChatGptCodexClient::new(token.clone())
+                            .account_id()
+                            .map(str::to_string);
+                        vec![(
+                            "openai-codex".to_string(),
+                            fetch_codex_models(token, account_id).await,
+                        )]
+                    }));
+                }
+
+                // Configured providers publish their own catalog: merge it so
+                // a model the provider ships today is selectable today instead
+                // of waiting for the next `rs_ai_providers` release.
+                for target in live_targets {
+                    sources.push(Box::pin(
+                        async move { vec![fetch_live_models(target).await] },
+                    ));
+                }
+
+                if let Some(key) = openrouter_key {
+                    sources.push(Box::pin(async move {
+                        vec![(
+                            "openrouter".to_string(),
+                            fetch_openrouter_models(Some(key)).await,
+                        )]
+                    }));
+                }
+
+                let mut known = known_models;
+                for answers in futures::future::join_all(sources).await {
+                    for (provider, infos) in answers {
+                        known.extend(infos.iter().map(|info| (provider.clone(), info.id.clone())));
+                        send_model_choices(&tx, provider, infos, true);
                     }
                 }
-            }
 
-            if provider_ids.iter().any(|id| id == "openrouter") {
-                if let Some(api_key) = std::env::var("OPENROUTER_API_KEY")
-                    .ok()
-                    .filter(|key| !key.is_empty())
-                {
-                    let response = reqwest::blocking::Client::builder()
-                        .timeout(std::time::Duration::from_secs(8))
-                        .build()
-                        .and_then(|client| {
-                            client
-                                .get("https://openrouter.ai/api/v1/models")
-                                .bearer_auth(api_key)
-                                .send()
-                        });
-                    if let Ok(response) = response {
-                        if response.status().is_success() {
-                            if let Ok(value) = response.json::<serde_json::Value>() {
-                                if let Some(data_models) =
-                                    value.get("data").and_then(serde_json::Value::as_array)
-                                {
-                                    for model in data_models {
-                                        let Some(id) =
-                                            model.get("id").and_then(serde_json::Value::as_str)
-                                        else {
-                                            continue;
-                                        };
-                                        if let Some(context_window) = model
-                                            .get("top_provider")
-                                            .and_then(|provider| provider.get("context_length"))
-                                            .or_else(|| model.get("context_length"))
-                                            .and_then(serde_json::Value::as_u64)
-                                            .and_then(|value| usize::try_from(value).ok())
-                                        {
-                                            context_windows.insert(id.to_string(), context_window);
-                                        }
-                                        choices.push(ModelChoice {
-                                            id: id.to_string(),
-                                            provider: "openrouter".to_string(),
-                                        });
-                                        if let Some(info) = openrouter_model_info(model) {
-                                            models.push(info);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                // models.dev last, so what the provider listings omit —
+                // windows, tool/reasoning/vision support — wins over the
+                // family heuristic instead of racing it.
+                for (provider, infos) in fetch_models_dev_models(&known).await {
+                    send_model_choices(&tx, provider, infos, false);
                 }
-            }
-
-            let _ = tx.send(AppEvent::ModelChoices {
-                choices,
-                context_windows,
-                models,
             });
         });
     }
@@ -2260,6 +2428,7 @@ impl App {
         {
             self.provider_choice = index;
         }
+        self.model_provider = Some(provider.id.clone());
         #[cfg(feature = "pi-compat")]
         self.append_session(PiEntryType::ModelChange {
             from: self.model.clone(),
@@ -2347,6 +2516,7 @@ impl App {
         {
             self.provider_choice = index;
         }
+        self.model_provider = Some(provider.id.clone());
         self.set_model(choice.id.clone());
         if let Some(agent) = &self.agent {
             if let Ok(mut agent) = agent.try_lock() {
@@ -2421,7 +2591,22 @@ impl App {
             model: Some(self.model.clone()),
             effort: Some(self.effort.clone()),
             scope: Some(self.agent_mode.clone()),
+            provider: self
+                .providers
+                .get(self.provider_choice)
+                .map(|configured| configured.id.clone()),
         });
+    }
+
+    /// A live catalog can report a different window than the offline
+    /// heuristic; keep the status bar honest about the model in use.
+    pub(crate) fn refresh_context_window(&mut self) {
+        if let Some(window) = self.model_context_windows.get(&self.model).copied() {
+            if window != self.context_window {
+                self.context_window = window;
+                self.refresh_context_pct();
+            }
+        }
     }
 
     pub(crate) fn refresh_context_pct(&mut self) {
@@ -2597,10 +2782,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        file_query, load_template, matching_slash_commands, search_files, App, ChatMessage,
-        ConfiguredProvider, HostSurface,
+        file_query, load_template, matching_slash_commands, search_files, todo_report, App,
+        AppEvent, ChatMessage, ConfiguredProvider, HostSurface, MODELS_REFRESH_HINT,
     };
-    use crate::models::{context_window_for_model, GPT_5_CONTEXT_WINDOW};
+    use crate::models::{
+        context_window_for_model, host_model_info, offline_codex_models, GPT_5_CONTEXT_WINDOW,
+        PI_CODEX_GPT56,
+    };
     #[cfg(feature = "pi-compat")]
     use crate::pi::{PiEntryType, PiSession};
     use crate::slash::{
@@ -2613,7 +2801,9 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use rx4::permissions::{PlanApprover, PlanDecision, PlanProposal};
     use rx4::provider::OpenAIProvider;
+    use rx4::{TodoState, TodoStatus};
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::sync::Mutex;
 
     fn provider(id: &str) -> ConfiguredProvider {
@@ -3368,15 +3558,18 @@ mod tests {
         let mut app = App::new();
         app.providers = vec![provider("openai-codex")];
         app.open_model_selector();
-        // The codex catalog matches pi's openai-codex.json exactly: the four
-        // rs_ai_oauth models plus gpt-5.6-luna/sol/terra.
-        for model in rs_ai_oauth::codex::CHATGPT_CODEX_MODELS {
-            assert!(app.model_choices.iter().any(|choice| choice.id == *model));
+        // The codex catalog matches pi's openai-codex.json, minus models a
+        // ChatGPT account cannot call.
+        for model in offline_codex_models() {
+            assert!(
+                app.model_choices.iter().any(|choice| choice.id == model),
+                "missing codex model {model}"
+            );
             if model.starts_with("gpt-5.5") {
                 assert_eq!(context_window_for_model(model), GPT_5_CONTEXT_WINDOW);
             }
         }
-        for model in super::PI_CODEX_GPT56 {
+        for model in PI_CODEX_GPT56 {
             assert!(
                 app.model_choices.iter().any(|choice| choice.id == model),
                 "missing codex model {model}"
@@ -3707,6 +3900,7 @@ mod tests {
     fn slash_commands_have_descriptions() {
         use super::slash_description;
         assert!(slash_description("/model").contains("model"));
+        assert!(slash_description("/todos").contains("todo"));
         assert!(slash_description("/clear").contains("clear"));
         assert!(slash_description("/todo").contains("TODO.md"));
         assert!(slash_description("/memory").contains("MEMORY.md"));
@@ -3839,6 +4033,241 @@ mod tests {
         app.refresh_file_suggestions();
         assert!(app.pending_file_query.is_none());
         assert!(app.file_search_deadline.is_none());
+    }
+
+    #[test]
+    fn live_choices_merge_into_catalog() {
+        let mut app = App::new();
+        app.providers = vec![provider("zai-coding-plan")];
+        app.refresh_model_choices();
+        let catalog_len = app.model_choices.len();
+        assert!(catalog_len > 0);
+
+        // models.dev enrichment: metadata for an id the provider already
+        // lists, without changing membership.
+        let mut enriched = host_model_info("zai-coding-plan", "glm-5.1");
+        enriched.context_window = 1_000_000;
+        app.handle_event(AppEvent::ModelChoices {
+            provider: "zai-coding-plan".to_string(),
+            models: vec![enriched],
+            authoritative: false,
+        });
+
+        assert_eq!(
+            app.model_choices.len(),
+            catalog_len,
+            "enrichment never adds picker entries"
+        );
+        assert_eq!(
+            app.model_context_windows.get("glm-5.1"),
+            Some(&1_000_000),
+            "the provider's window wins over the family heuristic"
+        );
+        assert_eq!(
+            app.model_registry
+                .get("glm-5.1")
+                .map(|info| info.context_window),
+            Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn provider_listing_retires_models_it_no_longer_offers() {
+        let mut app = App::new();
+        app.providers = vec![provider("openai-codex")];
+        app.refresh_model_choices();
+        // The persisted model is in the offline catalog but not in the
+        // account's own listing.
+        let current = "gpt-5.6-luna".to_string();
+        assert!(app
+            .model_choices
+            .iter()
+            .any(|choice| choice.id == current && choice.provider == "openai-codex"));
+        app.set_model(current.clone());
+        app.model_provider = Some("openai-codex".to_string());
+
+        app.handle_event(AppEvent::ModelChoices {
+            provider: "openai-codex".to_string(),
+            models: vec![
+                host_model_info("openai-codex", "gpt-5.4"),
+                host_model_info("openai-codex", "gpt-5.5"),
+            ],
+            authoritative: true,
+        });
+
+        assert!(
+            !app.model_choices.iter().any(|choice| choice.id == current),
+            "the account's own list replaces the offline catalog"
+        );
+        assert_eq!(app.model, "gpt-5.4", "the first listed model takes over");
+        assert!(
+            app.messages.last().is_some_and(|message| {
+                message.content.contains(&current) && message.content.contains("switched to")
+            }),
+            "{:?}",
+            app.messages.last().map(|message| message.content.clone())
+        );
+    }
+
+    #[test]
+    fn qualified_model_ids_pick_the_named_provider() {
+        let mut app = App::new();
+        app.providers = vec![provider("opencode-go"), provider("zai-coding-plan")];
+        app.refresh_model_choices();
+        app.handle_event(AppEvent::ModelChoices {
+            provider: "zai-coding-plan".to_string(),
+            models: vec![
+                host_model_info("opencode-go", "glm-5.3-flash"),
+                host_model_info("zai-coding-plan", "glm-5.3-flash"),
+            ],
+            authoritative: true,
+        });
+
+        app.select_model("zai-coding-plan/glm-5.3-flash");
+
+        assert_eq!(app.model, "glm-5.3-flash");
+        assert_eq!(app.providers[app.provider_choice].id, "zai-coding-plan");
+    }
+
+    #[test]
+    fn model_selector_reports_a_pending_refresh() {
+        use crepuscularity_tui::ratatui::backend::TestBackend;
+        use crepuscularity_tui::ratatui::Terminal;
+
+        let mut app = App::new();
+        app.providers = vec![provider("zai-coding-plan")];
+        app.open_model_selector();
+        app.input = "no-such-model".to_string();
+        app.models_refreshing_until = Some(Instant::now() + MODELS_REFRESH_HINT);
+
+        let mut template = load_template(None).unwrap();
+        app.update_template(&mut template);
+        let mut terminal = Terminal::new(TestBackend::new(90, 14)).unwrap();
+        terminal
+            .draw(|frame| template.draw(frame, frame.area()).unwrap())
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        let rows: Vec<String> = buffer
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.contains("no models match")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("refreshing provider models…")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn todo_events_fill_the_status_block() {
+        use crepuscularity_tui::ratatui::backend::TestBackend;
+        use crepuscularity_tui::ratatui::Terminal;
+        use rx4::TodoItem;
+
+        let mut app = App::new();
+        app.handle_rx4_event(rx4::agent::Event::TodoUpdated {
+            todos: TodoState {
+                items: vec![
+                    TodoItem {
+                        id: "one".to_string(),
+                        content: "read the catalog".to_string(),
+                        status: TodoStatus::Completed,
+                        creation_confidence: 80,
+                        completion_confidence: Some(85),
+                        verification_attempts: 0,
+                    },
+                    TodoItem {
+                        id: "two".to_string(),
+                        content: "wire the live refresh".to_string(),
+                        status: TodoStatus::InProgress,
+                        creation_confidence: 70,
+                        completion_confidence: None,
+                        verification_attempts: 0,
+                    },
+                ],
+            },
+        });
+        assert_eq!(app.todos.items.len(), 2);
+
+        let mut template = load_template(None).unwrap();
+        app.update_template(&mut template);
+        let mut terminal = Terminal::new(TestBackend::new(90, 14)).unwrap();
+        terminal
+            .draw(|frame| template.draw(frame, frame.area()).unwrap())
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        let rows: Vec<String> = buffer
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.contains("todos · 1/2 done")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("✔ read the catalog")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("▸ wire the live refresh")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "pi-compat")]
+    fn todo_updates_persist_into_the_session() {
+        use rx4::TodoItem;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.session = Some((PiSession::new("/test", "gpt-5.5"), dir.path().to_path_buf()));
+        app.handle_rx4_event(rx4::agent::Event::TodoUpdated {
+            todos: TodoState {
+                items: vec![TodoItem {
+                    id: "one".to_string(),
+                    content: "read the catalog".to_string(),
+                    status: TodoStatus::Completed,
+                    creation_confidence: 70,
+                    completion_confidence: Some(75),
+                    verification_attempts: 0,
+                }],
+            },
+        });
+
+        let session = &app.session.as_ref().unwrap().0;
+        assert_eq!(session.todos().items.len(), 1);
+        assert_eq!(session.todos().items[0].content, "read the catalog");
+    }
+
+    #[test]
+    fn todo_report_lists_engine_items() {
+        let mut state = TodoState::default();
+        assert!(todo_report(&state).contains("No todos"));
+
+        state.items.push(rx4::TodoItem {
+            id: "one".to_string(),
+            content: "run the tests".to_string(),
+            status: TodoStatus::PendingVerification,
+            creation_confidence: 40,
+            completion_confidence: Some(90),
+            verification_attempts: 1,
+        });
+        let report = todo_report(&state);
+        assert!(report.contains("todos · 0/1 done"), "{report}");
+        assert!(
+            report.contains("? run the tests — needs verification"),
+            "{report}"
+        );
     }
 
     #[test]

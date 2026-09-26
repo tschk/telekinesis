@@ -24,6 +24,10 @@ pub struct Prefs {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub scope: Option<String>,
+    /// Provider that owns `model`. Without it a restart cannot tell which
+    /// configured provider a bare model id belongs to.
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 pub fn history_path() -> Option<PathBuf> {
@@ -157,6 +161,10 @@ pub(crate) fn build_agent(
     subagent_manager.lock().set_tools(agent.tools.clone());
     agent.set_workspace_root(workspace);
     agent.load_project_context();
+    // Engine-owned todo state: the model's task list is the engine's, not the
+    // legacy per-workspace side store, so `/todo` and the status block show it
+    // and a completion has to survive the confidence gate.
+    agent.set_todo_config(rx4::TodoConfig::default());
     agent.set_model(model);
     agent.set_reasoning_effort(Some(effort.to_string()));
     if let Some(provider) = provider {
