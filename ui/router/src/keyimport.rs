@@ -84,19 +84,21 @@ mod tests {
 
     #[test]
     fn imports_api_entries_only() {
-        let json = r#"{
+        crate::catalog::with_isolated_store(|| {
+            let json = r#"{
             "openai": {"type":"api","key":"sk-openai-test"},
             "anthropic": {"type":"oauth","key":"not-an-api-key"},
             "cline-pass": {"type":"api","key":"sk-cline-test"},
             "unknown-provider": {"type":"api","key":"sk-nope"},
             "groq": {"type":"api","key":"  "}
         }"#;
-        let ids = import_from_opencode_json(json).unwrap();
-        assert!(ids.contains(&"openai".to_string()));
-        assert!(ids.contains(&"clinepass".to_string()));
-        assert!(!ids.contains(&"groq".to_string()));
-        assert!(!ids.contains(&"unknown-provider".to_string()));
-        assert!(!ids.iter().any(|id| id == "anthropic"));
+            let ids = import_from_opencode_json(json).unwrap();
+            assert!(ids.contains(&"openai".to_string()));
+            assert!(ids.contains(&"clinepass".to_string()));
+            assert!(!ids.contains(&"groq".to_string()));
+            assert!(!ids.contains(&"unknown-provider".to_string()));
+            assert!(!ids.iter().any(|id| id == "anthropic"));
+        });
     }
 
     #[test]
