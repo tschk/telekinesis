@@ -20,7 +20,7 @@ flowchart TD
     TUI["TUI (crepuscularity-tui)<br/>sidebar · themes · slash palette"]
     CLI["CLI<br/>login · exec · acp (JSON-RPC stdio)"]
     Pi["pi protocol compat<br/>JSONL v3 · tool mapping · embed SDK"]
-    Slash["slash commands<br/>/model /scope /plan /review /mcp /todo /sessions /clear /cost /usage"]
+    Slash["slash commands<br/>/model /scope /plan /review /mcp /todo /memory /sessions /clear /cost /usage"]
   end
   TK -->|"tokio channels — in-process"| RX4
   subgraph RX4["rx4 harness engine"]
@@ -74,7 +74,8 @@ flowchart TD
   Match -->|/model| Model["set_model on rx4 Agent"]
   Match -->|/scope| Scope["apply_scope on rx4 Agent"]
   Match -->|/mcp| Mcp["list MCP tools / config help"]
-  Match -->|/todo| Todo["host todo surface note"]
+  Match -->|/todo| Todo["read or append .tasks/TODO.md"]
+  Match -->|/memory| Memory["search MEMORY.md + memory/*.md"]
   Match -->|/clear| Clear["clear messages + reset cost"]
   Match -->|/cost| Cost["show cost breakdown"]
   Match -->|/help| Help["list commands"]

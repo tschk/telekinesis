@@ -17,6 +17,13 @@ use crate::providers::{providers_summary, push_system_message, run_login_from_tu
 #[cfg(feature = "pi-compat")]
 use crate::tui::{restored_chat, session_files};
 
+fn workspace_root(agent: &Arc<Mutex<Agent>>) -> PathBuf {
+    agent
+        .try_lock()
+        .map(|locked| locked.workspace_root.clone())
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
 pub(crate) fn plan_request(task: &str) -> String {
     format!(
         "Create a concrete implementation plan for: {task}\n\nInspect the relevant code and instructions first. Return the files to change, the ordered steps, risks, and verification commands. Do not modify the workspace."
@@ -191,7 +198,8 @@ pub(crate) fn handle_slash_command(
                     /plan-approval ask|bypass|off — plan gating\n\
                     /mcp — MCP tools\n\
                     /search — web search\n\
-                    /todo — session note\n\
+                    /todo [item] — read or append .tasks/TODO.md\n\
+                    /memory [query] — search MEMORY.md and memory/*.md\n\
                     /clear — reset conversation\n\
                     /cost — show cost\n\
                     /usage — local usage stats\n\
@@ -504,7 +512,27 @@ pub(crate) fn handle_slash_command(
             }
         }
         "/todo" => {
-            push_system_message(app, "/todo: host surface only. Engine may expose todo tool later — track work in chat or project TODO for now.".to_string());
+            let workspace = workspace_root(agent);
+            let msg = if arg.is_empty() {
+                crate::memory::read_todo(&workspace)
+            } else {
+                match crate::memory::append_todo(&workspace, arg) {
+                    Ok(added) => added,
+                    Err(error) => error,
+                }
+            };
+            push_system_message(app, msg);
+        }
+        "/memory" => {
+            let workspace = workspace_root(agent);
+            let msg = if arg.is_empty() {
+                crate::memory::profile_pager(&workspace).unwrap_or_else(|| {
+                    "No MEMORY.md yet. Add durable notes there; /memory <query> searches MEMORY.md, memory/*.md, and .tasks/TODO.md.".to_string()
+                })
+            } else {
+                crate::memory::format_search(&crate::memory::search_memory(&workspace, arg))
+            };
+            push_system_message(app, msg);
         }
         "/budget" => {
             let msg = if let Some(a) = &app.agent {
