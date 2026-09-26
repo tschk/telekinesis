@@ -2372,11 +2372,20 @@ impl App {
     }
 
     pub(crate) fn reset_model_choice(&mut self) {
+        let query = self.input.trim();
         let choices = self.filtered_models();
-        self.model_choice = choices
-            .iter()
-            .position(|model| model.id == self.model)
-            .or((!choices.is_empty()).then_some(0));
+        self.model_choice = if !query.is_empty() {
+            // Searching: highlight the top-ranked match. Pinning the selection
+            // to the model in use instead parks it below the picker's small
+            // viewport, hiding the row the user actually asked for (an exact
+            // match can rank above it and scroll out of view).
+            (!choices.is_empty()).then_some(0)
+        } else {
+            choices
+                .iter()
+                .position(|model| model.id == self.model)
+                .or((!choices.is_empty()).then_some(0))
+        };
     }
 
     pub(crate) fn move_provider_choice(&mut self, offset: isize) {
@@ -4107,6 +4116,51 @@ mod tests {
             "{:?}",
             app.messages.last().map(|message| message.content.clone())
         );
+    }
+
+    #[test]
+    fn searching_snaps_the_selection_to_the_top_match() {
+        let mut app = App::new();
+        app.providers = vec![provider("openai-codex")];
+        app.refresh_model_choices();
+        app.set_model("gpt-5.6-luna".to_string());
+        app.model_provider = Some("openai-codex".to_string());
+
+        // The account publishes a newer series; the model in use is not part
+        // of it, so an exact match ranks above the current model's fuzzy hit.
+        app.handle_event(AppEvent::ModelChoices {
+            provider: "openai-codex".to_string(),
+            models: vec![
+                host_model_info("openai-codex", "gpt-5.5"),
+                host_model_info("openai-codex", "gpt-5.6-luna"),
+                host_model_info("openai-codex", "gpt-5.6-sol"),
+                host_model_info("openai-codex", "gpt-5.6-terra"),
+                host_model_info("openai-codex", "gpt-6-astra"),
+                host_model_info("openai-codex", "gpt-6-luna"),
+                host_model_info("openai-codex", "gpt-6-sol"),
+            ],
+            authoritative: true,
+        });
+
+        app.selecting_model = true;
+        app.reset_model_choice();
+        assert_eq!(
+            app.model_choice,
+            app.filtered_models()
+                .iter()
+                .position(|choice| choice.id == "gpt-5.6-luna"),
+            "with no query the selection stays on the model in use"
+        );
+
+        // Typing must surface the exact match: the picker's viewport only
+        // renders rows around the selection, so a selection parked on the
+        // current model's fuzzy rank hides the row the user asked for.
+        app.input = "gpt-6-luna".to_string();
+        app.reset_model_choice();
+        assert_eq!(app.model_choice, Some(0));
+        let top = app.filtered_models()[0];
+        assert_eq!(top.provider, "openai-codex");
+        assert_eq!(top.id, "gpt-6-luna");
     }
 
     #[test]
