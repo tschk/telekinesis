@@ -166,6 +166,9 @@ div w-full h-fit flex-col
         if {no_model_matches}
           span text-xs text-amber-400
             "  no models match — check the provider or /login to add one"
+        if {models_refreshing}
+          span text-xs text-zinc-600
+            "  refreshing provider models…"
         span text-xs text-zinc-600
           "←/→ provider · ↑/↓ model · type to search all · enter apply · esc cancel"
     else

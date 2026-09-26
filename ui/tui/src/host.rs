@@ -24,6 +24,10 @@ pub struct Prefs {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub scope: Option<String>,
+    /// Provider that owns `model`. Without it a restart cannot tell which
+    /// configured provider a bare model id belongs to.
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 pub fn history_path() -> Option<PathBuf> {
