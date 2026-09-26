@@ -15,6 +15,7 @@ pub(crate) use darash::register_darash_tool;
 pub(crate) use mcp::{discover_mcp_tools, register_mcp_tools, McpToolSpec};
 
 #[cfg(not(feature = "mcp"))]
+#[derive(Clone)]
 pub(crate) struct McpToolSpec;
 
 #[cfg(not(feature = "mcp"))]

@@ -117,6 +117,7 @@ pub fn apply_scope(agent: &mut Agent, scope: Scope) {
     let prewalk = session_prewalk(&agent.model);
     apply_prewalk_model(agent, &prewalk.lock());
     install_host_hooks(agent, scope, prewalk);
+    product_policy::apply_os_sandbox(agent);
 }
 
 pub fn host_tool_allowed(scope: Scope, tool_name: &str) -> bool {
@@ -158,7 +159,6 @@ pub(crate) fn build_agent(
         agent.set_provider(provider);
     }
     agent.set_policy(product_policy::tele_coding_policy());
-    let _ = agent.enable_os_sandbox();
     apply_scope(&mut agent, Scope::Coding);
     attach_optional_engine(&mut agent);
     isolate_agent(&mut agent);

@@ -335,9 +335,7 @@ fn responses_usage(value: &Value) -> Option<TokenUsage> {
             .unwrap_or(0) as usize,
         cache_write_tokens: 0,
     };
-    (usage.input_tokens > 0
-        || usage.output_tokens > 0
-        || usage.cache_read_tokens > 0)
+    (usage.input_tokens > 0 || usage.output_tokens > 0 || usage.cache_read_tokens > 0)
         .then_some(usage)
 }
 
@@ -348,13 +346,9 @@ mod tests {
     #[test]
     fn routes_muse_to_responses_and_deepseek_to_chat() {
         assert!(is_responses_model("muse-spark-1.3-contributor"));
-        assert!(is_responses_model(
-            "opencode-go/muse-spark-1.3-contributor"
-        ));
+        assert!(is_responses_model("opencode-go/muse-spark-1.3-contributor"));
         assert!(!is_responses_model("deepseek-v4.1-flash"));
-        assert!(!is_responses_model(
-            "opencode-go/deepseek-v4.1-flash"
-        ));
+        assert!(!is_responses_model("opencode-go/deepseek-v4.1-flash"));
     }
 
     #[test]

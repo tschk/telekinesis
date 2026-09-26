@@ -15,6 +15,7 @@ flowchart LR
 ## Guides
 
 - [Usage](USAGE.md) — install features, CLI, OAuth, TUI slash commands and keys.
+- [PGO](PGO.md) — release `panic = "abort"` and the rustc PGO + LLVM PGSO lane.
 - [AVO](AVO.md) — NVIDIA agentic variation loop via `scripts/avo` + `tk exec`.
 - [Architecture](ARCHITECTURE.md) — product layers and the in-process event path.
 - [Rotary integration](ROTARY.md) — the host/engine boundary and the rx4 API used by the TUI.

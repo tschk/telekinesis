@@ -97,6 +97,7 @@ MCP, and ACP flows.
 - [Architecture](docs/ARCHITECTURE.md) — product layers and the in-process event path.
 - [Rotary integration](docs/ROTARY.md) — host/engine boundary and the rx4 API.
 - [AVO loop](docs/AVO.md) — NVIDIA agentic variation loop via `scripts/avo` + `tk exec`.
+- [PGO / PGSO](docs/PGO.md) — `panic = "abort"` and the rustc PGO + LLVM PGSO release lane.
 
 Build from source:
 

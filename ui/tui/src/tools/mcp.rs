@@ -5,6 +5,7 @@ use rx4::ToolRegistry;
 
 use crate::mcp_config;
 
+#[derive(Clone)]
 pub(crate) struct McpToolSpec {
     pub(crate) full_name: String,
     description: String,

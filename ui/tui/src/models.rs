@@ -3,7 +3,7 @@ use rx4::{ModelInfo, ModelRegistry};
 use crate::app::ConfiguredProvider;
 use crate::opencode_go;
 use crate::provider_catalog;
-use crate::providers::{ZAI_MODELS, ZAI_DEFAULT_MODEL};
+use crate::providers::{ZAI_DEFAULT_MODEL, ZAI_MODELS};
 
 pub(crate) const GPT_5_CONTEXT_WINDOW: usize = 1_050_000;
 
@@ -269,10 +269,7 @@ mod tests {
 
     #[test]
     fn registry_registers_only_curated_go_models() {
-        let registry = initial_model_registry(&[configured(
-            "opencode-go",
-            "deepseek-v4.1-flash",
-        )]);
+        let registry = initial_model_registry(&[configured("opencode-go", "deepseek-v4.1-flash")]);
         assert_eq!(
             model_ids(&registry, "opencode-go"),
             vec![

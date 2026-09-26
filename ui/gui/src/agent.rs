@@ -216,7 +216,7 @@ fn create_agent(
         workspace,
     )));
     agent.set_policy(crate::product_policy::tele_coding_policy());
-    let _ = agent.enable_os_sandbox();
+    crate::product_policy::apply_os_sandbox(&mut agent);
     agent.set_approver(approver);
 
     agent.subscribe(move |event: &Rx4Event| {
