@@ -10,7 +10,7 @@ use rx4::agent::{Agent, AgentError, CancellationHandle, Event as Rx4Event, ToolS
 use rx4::permissions::{Decision, PlanDecision, PlanProposal};
 use rx4::provider::{Provider, Role};
 use rx4::subagent::{SubagentManager, SubagentStatus};
-use rx4::{ModelInfo, ModelRegistry};
+use rx4::{ModelInfo, ModelRegistry, TodoState, TodoStatus};
 use tokio::sync::Mutex;
 
 use crate::channel_approver::{ApprovalMode, PendingApproval};
@@ -53,7 +53,7 @@ pub(crate) const MODELS_REFRESH_HINT: std::time::Duration = std::time::Duration:
 
 /// (command, description) — pi-style autocomplete shows the description next
 /// to each command name.
-pub(crate) const SLASH_COMMANDS: [(&str, &str); 25] = [
+pub(crate) const SLASH_COMMANDS: [(&str, &str); 26] = [
     ("/login", "sign in with a provider"),
     ("/providers", "browse and configure providers"),
     ("/provider", "alias for /providers"),
@@ -92,6 +92,7 @@ pub(crate) const SLASH_COMMANDS: [(&str, &str); 25] = [
         },
     ),
     ("/todo", "read or append .tasks/TODO.md"),
+    ("/todos", "show the agent's todo list"),
     ("/memory", "search MEMORY.md and memory/*.md"),
     ("/clear", "clear messages and reset cost"),
     ("/cost", "show cost breakdown"),
@@ -388,6 +389,53 @@ fn fallback_model(
         .or_else(|| models.first().map(|model| model.id.clone()))
 }
 
+/// Glyph for one engine-owned todo item in the host status block.
+pub(crate) fn todo_mark(status: &TodoStatus) -> &'static str {
+    match status {
+        TodoStatus::Pending => "·",
+        TodoStatus::InProgress => "▸",
+        TodoStatus::PendingVerification => "?",
+        TodoStatus::Completed => "✔",
+    }
+}
+
+fn todo_status_label(status: &TodoStatus) -> &'static str {
+    match status {
+        TodoStatus::Pending => "pending",
+        TodoStatus::InProgress => "in progress",
+        TodoStatus::PendingVerification => "needs verification",
+        TodoStatus::Completed => "done",
+    }
+}
+
+/// One-line todo progress for the status area.
+pub(crate) fn todo_summary(state: &TodoState) -> String {
+    let done = state
+        .items
+        .iter()
+        .filter(|item| item.status == TodoStatus::Completed)
+        .count();
+    format!("todos · {done}/{} done", state.items.len())
+}
+
+/// `/todo` body: the model's own task list, as the engine holds it.
+pub(crate) fn todo_report(state: &TodoState) -> String {
+    if state.items.is_empty() {
+        return "No todos. The agent records multi-step work here with the `todo` tool."
+            .to_string();
+    }
+    let mut lines = vec![todo_summary(state)];
+    for item in &state.items {
+        lines.push(format!(
+            "  {} {} — {}",
+            todo_mark(&item.status),
+            item.content,
+            todo_status_label(&item.status)
+        ));
+    }
+    lines.join("\n")
+}
+
 pub(crate) fn load_template(path: Option<&std::ffi::OsStr>) -> anyhow::Result<Template> {
     match path {
         Some(path) => Template::from_path(PathBuf::from(path)).map_err(|e| anyhow::anyhow!("{e}")),
@@ -587,6 +635,8 @@ pub(crate) struct App {
     /// Provider that owns `model`, so a provider listing can tell whether the
     /// model in use is still offered without consulting the picker.
     pub(crate) model_provider: Option<String>,
+    /// Engine-owned todo list, mirrored from rx4 `TodoUpdated` events.
+    pub(crate) todos: TodoState,
     /// Model preferred by prefs, applied once providers connect.
     #[allow(dead_code)]
     pub(crate) pending_model: Option<String>,
@@ -695,6 +745,7 @@ impl App {
             models_refreshing_until: None,
             provider_models: HashMap::new(),
             model_provider: None,
+            todos: TodoState::default(),
             pending_model: None,
             queued_prompts: Vec::new(),
             subagent_manager: None,
@@ -1249,6 +1300,20 @@ impl App {
             .unwrap_or_default();
         tpl.set("has_running_subagents", !running_subagents.is_empty());
         tpl.set("running_subagents", TemplateValue::List(running_subagents));
+        tpl.set("has_todos", !self.todos.items.is_empty());
+        tpl.set("todo_summary", todo_summary(&self.todos));
+        let todo_rows = self
+            .todos
+            .items
+            .iter()
+            .map(|item| {
+                let mut row = TemplateContext::new();
+                row.set("mark", todo_mark(&item.status));
+                row.set("content", item.content.clone());
+                row
+            })
+            .collect::<Vec<_>>();
+        tpl.set("todo_rows", TemplateValue::List(todo_rows));
 
         let msgs: Vec<TemplateContext> = self
             .messages
@@ -1788,11 +1853,21 @@ impl App {
                 });
             }
             Rx4Event::TurnEnd { .. } => {}
+            // The engine todo tool is opt-in (see `host::build_agent`); when
+            // it is on, this is the host's only view of the model's task list,
+            // so it is mirrored into the session for the next start.
+            Rx4Event::TodoUpdated { todos } => {
+                #[cfg(feature = "pi-compat")]
+                self.append_session(PiEntryType::Custom {
+                    extension: crate::pi::TODOS_EXTENSION.to_string(),
+                    payload: serde_json::to_value(&todos).unwrap_or(serde_json::Value::Null),
+                });
+                self.todos = todos;
+            }
             // Optional rx4 0.6.4 host-observability events. The detailed UI
             // wiring follows separately; keeping them no-op preserves the
             // existing transcript behaviour while accepting the additive API.
-            Rx4Event::TodoUpdated { .. }
-            | Rx4Event::TurnEnded { .. }
+            Rx4Event::TurnEnded { .. }
             | Rx4Event::CacheAudit(_)
             | Rx4Event::GateResult(_)
             | Rx4Event::MemoryRecalled { .. } => {}
@@ -2707,8 +2782,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        file_query, load_template, matching_slash_commands, search_files, App, AppEvent,
-        ChatMessage, ConfiguredProvider, HostSurface, MODELS_REFRESH_HINT,
+        file_query, load_template, matching_slash_commands, search_files, todo_report, App,
+        AppEvent, ChatMessage, ConfiguredProvider, HostSurface, MODELS_REFRESH_HINT,
     };
     use crate::models::{
         context_window_for_model, host_model_info, offline_codex_models, GPT_5_CONTEXT_WINDOW,
@@ -2726,6 +2801,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use rx4::permissions::{PlanApprover, PlanDecision, PlanProposal};
     use rx4::provider::OpenAIProvider;
+    use rx4::{TodoState, TodoStatus};
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::sync::Mutex;
@@ -3824,6 +3900,7 @@ mod tests {
     fn slash_commands_have_descriptions() {
         use super::slash_description;
         assert!(slash_description("/model").contains("model"));
+        assert!(slash_description("/todos").contains("todo"));
         assert!(slash_description("/clear").contains("clear"));
         assert!(slash_description("/todo").contains("TODO.md"));
         assert!(slash_description("/memory").contains("MEMORY.md"));
@@ -4086,6 +4163,113 @@ mod tests {
             "{rows:?}"
         );
     }
+
+    #[test]
+    fn todo_events_fill_the_status_block() {
+        use crepuscularity_tui::ratatui::backend::TestBackend;
+        use crepuscularity_tui::ratatui::Terminal;
+        use rx4::TodoItem;
+
+        let mut app = App::new();
+        app.handle_rx4_event(rx4::agent::Event::TodoUpdated {
+            todos: TodoState {
+                items: vec![
+                    TodoItem {
+                        id: "one".to_string(),
+                        content: "read the catalog".to_string(),
+                        status: TodoStatus::Completed,
+                        creation_confidence: 80,
+                        completion_confidence: Some(85),
+                        verification_attempts: 0,
+                    },
+                    TodoItem {
+                        id: "two".to_string(),
+                        content: "wire the live refresh".to_string(),
+                        status: TodoStatus::InProgress,
+                        creation_confidence: 70,
+                        completion_confidence: None,
+                        verification_attempts: 0,
+                    },
+                ],
+            },
+        });
+        assert_eq!(app.todos.items.len(), 2);
+
+        let mut template = load_template(None).unwrap();
+        app.update_template(&mut template);
+        let mut terminal = Terminal::new(TestBackend::new(90, 14)).unwrap();
+        terminal
+            .draw(|frame| template.draw(frame, frame.area()).unwrap())
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        let rows: Vec<String> = buffer
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.contains("todos · 1/2 done")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("✔ read the catalog")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("▸ wire the live refresh")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "pi-compat")]
+    fn todo_updates_persist_into_the_session() {
+        use rx4::TodoItem;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.session = Some((PiSession::new("/test", "gpt-5.5"), dir.path().to_path_buf()));
+        app.handle_rx4_event(rx4::agent::Event::TodoUpdated {
+            todos: TodoState {
+                items: vec![TodoItem {
+                    id: "one".to_string(),
+                    content: "read the catalog".to_string(),
+                    status: TodoStatus::Completed,
+                    creation_confidence: 70,
+                    completion_confidence: Some(75),
+                    verification_attempts: 0,
+                }],
+            },
+        });
+
+        let session = &app.session.as_ref().unwrap().0;
+        assert_eq!(session.todos().items.len(), 1);
+        assert_eq!(session.todos().items[0].content, "read the catalog");
+    }
+
+    #[test]
+    fn todo_report_lists_engine_items() {
+        let mut state = TodoState::default();
+        assert!(todo_report(&state).contains("No todos"));
+
+        state.items.push(rx4::TodoItem {
+            id: "one".to_string(),
+            content: "run the tests".to_string(),
+            status: TodoStatus::PendingVerification,
+            creation_confidence: 40,
+            completion_confidence: Some(90),
+            verification_attempts: 1,
+        });
+        let report = todo_report(&state);
+        assert!(report.contains("todos · 0/1 done"), "{report}");
+        assert!(
+            report.contains("? run the tests — needs verification"),
+            "{report}"
+        );
+    }
+
     #[test]
     fn embedded_template_keeps_status_rows_adjacent_and_flush() {
         use crepuscularity_tui::ratatui::backend::TestBackend;

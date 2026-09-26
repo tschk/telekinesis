@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Utc};
 use rx4::provider::{Message, Role};
+use rx4::TodoState;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -14,6 +15,8 @@ use std::path::Path;
 pub const TOOL_CALL_EXTENSION: &str = "telekinesis.tool_call";
 /// Custom-entry extension name for tool results appended by the TUI.
 pub const TOOL_RESULT_EXTENSION: &str = "telekinesis.tool_result";
+/// Custom-entry extension carrying the engine-owned todo list.
+pub const TODOS_EXTENSION: &str = "telekinesis.todos";
 /// Durable `session_info` key written before a persist rewrite so a truncated
 /// tail is not lost.
 pub const INTERRUPTED_INFO_KEY: &str = "interrupted";
@@ -299,6 +302,22 @@ impl PiSession {
         self.entries.len()
     }
 
+    /// Engine-owned todo list as of the last persisted entry.
+    ///
+    /// The engine holds todos in memory; this is what survives a restart.
+    pub fn todos(&self) -> TodoState {
+        self.entries
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.entry_type {
+                PiEntryType::Custom { extension, payload } if extension == TODOS_EXTENSION => {
+                    serde_json::from_value(payload.clone()).ok()
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     pub fn message_count(&self) -> usize {
         self.entries
             .iter()
@@ -476,6 +495,40 @@ mod tests {
         assert_eq!(loaded.header.model, "gpt-5.5");
         assert_eq!(loaded.entry_count(), 3);
         assert_eq!(loaded.message_count(), 2);
+    }
+
+    #[test]
+    fn todo_state_round_trips_through_the_session() {
+        let tmp = TempDir::new().unwrap();
+        let mut s = PiSession::new("/test/project", "gpt-5.5");
+        assert!(s.todos().items.is_empty());
+        let todos = TodoState {
+            items: vec![rx4::TodoItem {
+                id: "one".to_string(),
+                content: "wire the refresh".to_string(),
+                status: rx4::TodoStatus::InProgress,
+                creation_confidence: 60,
+                completion_confidence: None,
+                verification_attempts: 0,
+            }],
+        };
+        s.append(PiEntryType::Custom {
+            extension: TODOS_EXTENSION.to_string(),
+            payload: serde_json::to_value(&todos).unwrap(),
+        });
+
+        let path = s.save_jsonl(tmp.path()).unwrap();
+        let loaded = PiSession::load_jsonl(&path).unwrap();
+        assert_eq!(loaded.todos().items.len(), 1);
+        assert_eq!(loaded.todos().items[0].content, "wire the refresh");
+        // Unrelated custom entries are not mistaken for todos.
+        assert_eq!(
+            PiSession::new("/test/project", "gpt-5.5")
+                .todos()
+                .items
+                .len(),
+            0
+        );
     }
 
     #[test]

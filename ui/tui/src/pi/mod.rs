@@ -10,7 +10,8 @@ pub mod tools;
 pub use sdk::{create_agent_session, AgentSessionHandle, AgentSessionOptions, SessionTransport};
 pub use session::{
     session_interrupted, InterruptInfo, PiEntry, PiEntryType, PiSession, PiSessionHeader,
-    CANCELLED_INFO_KEY, INTERRUPTED_INFO_KEY, TOOL_CALL_EXTENSION, TOOL_RESULT_EXTENSION,
+    CANCELLED_INFO_KEY, INTERRUPTED_INFO_KEY, TODOS_EXTENSION, TOOL_CALL_EXTENSION,
+    TOOL_RESULT_EXTENSION,
 };
 pub use tools::{is_pi_tool_name, pi_to_rx4_tool, pi_tool_names, rx4_to_pi_tool};
 

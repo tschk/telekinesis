@@ -6,7 +6,9 @@ use rx4::mode::Scope;
 use rx4::subagent::SubagentConfig;
 use tokio::sync::Mutex;
 
-use crate::app::{slash_description, App, AppEvent, MAX_BUDGET_DURATION_SECONDS, MAX_BUDGET_TURNS};
+use crate::app::{
+    slash_description, todo_report, App, AppEvent, MAX_BUDGET_DURATION_SECONDS, MAX_BUDGET_TURNS,
+};
 use crate::host::{apply_scope, parse_host_scope, scope_usage};
 #[cfg(feature = "mcp")]
 use crate::mcp_config;
@@ -199,6 +201,7 @@ pub(crate) fn handle_slash_command(
                     /mcp — MCP tools\n\
                     /search — web search\n\
                     /todo [item] — read or append .tasks/TODO.md\n\
+                    /todos — show the agent's todo list\n\
                     /memory [query] — search MEMORY.md and memory/*.md\n\
                     /clear — reset conversation\n\
                     /cost — show cost\n\
@@ -533,6 +536,14 @@ pub(crate) fn handle_slash_command(
                 crate::memory::format_search(&crate::memory::search_memory(&workspace, arg))
             };
             push_system_message(app, msg);
+        }
+        "/todos" => {
+            let state = app
+                .agent
+                .as_ref()
+                .and_then(|agent| agent.try_lock().ok().map(|agent| agent.todos()));
+            let body = todo_report(state.as_ref().unwrap_or(&app.todos));
+            push_system_message(app, body);
         }
         "/budget" => {
             let msg = if let Some(a) = &app.agent {

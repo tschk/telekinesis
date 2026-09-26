@@ -272,6 +272,8 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     #[cfg(feature = "pi-compat")]
     if let Some(session) = &loaded_session {
         *agent.messages.write() = session.messages();
+        // The engine holds todos in memory only; the session is the durable copy.
+        agent.set_todo_state(session.todos());
     }
     let (approver, approval_rx) = ChannelApprover::pair();
     let approval_mode = approver.mode();
@@ -334,6 +336,10 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
         app.messages = loaded_session
             .as_ref()
             .map(restored_chat)
+            .unwrap_or_default();
+        app.todos = loaded_session
+            .as_ref()
+            .map(PiSession::todos)
             .unwrap_or_default();
         app.session = Some((
             loaded_session.unwrap_or_else(|| {

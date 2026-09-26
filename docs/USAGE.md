@@ -143,6 +143,7 @@ Model, scope, and effort are persisted to `~/.telekinesis/prefs.json`.
 | `/mcp` | list connected MCP tools + `~/.telekinesis/mcp.json` help (`--features mcp` or `full`; otherwise tells you to rebuild) |
 | `/search` | darash `web_search` status (`--features search` or `full`; otherwise tells you to rebuild) |
 | `/todo [item]` | read or append `.tasks/TODO.md` |
+| `/todos` | show the agent's todo list (rx4 `todo` tool; also in the status block) |
 | `/memory [query]` | show MEMORY.md one-pager, or keyword-search MEMORY.md / `memory/*.md` |
 | `/sessions` | list JSONL sessions for this project (newest first) |
 | `/resume <n>` | switch to a session listed by `/sessions` |
@@ -199,3 +200,6 @@ for every model already in the picker (matched by id, then by last path
 segment for vendor-namespaced ids like `z-ai/glm-5.3-flash`). A model whose
 provider does not publish a window therefore shows its real window rather than
 a family guess.
+
+The agent's todo list (`/todo`) is the engine's own state; tk mirrors it into
+the session file, so it survives `/resume` and restarts.
