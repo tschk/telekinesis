@@ -22,6 +22,14 @@ class FakeSocket {
     for (const fn of this.listeners.get(type) ?? []) fn({ data });
   }
 
+  sent: string[] = [];
+  readyState = 0;
+  OPEN = 1;
+
+  send(data: string) {
+    this.sent.push(data);
+  }
+
   close() {
     this.closed = true;
     this.emit("close");
@@ -57,6 +65,7 @@ describe("connectWorkspaceStream", () => {
     });
 
     const first = FakeSocket.instances[0]!;
+    first.readyState = 1;
     first.emit("open");
     first.emit(
       "message",
@@ -82,6 +91,7 @@ describe("connectWorkspaceStream", () => {
     vi.advanceTimersByTime(500);
     const second = FakeSocket.instances[1]!;
     expect(second.url).toContain("after=2");
+    second.readyState = 1;
     second.emit("open");
     second.emit(
       "message",
@@ -94,6 +104,12 @@ describe("connectWorkspaceStream", () => {
       }),
     );
     expect(seen).toEqual([1, 2, 3]);
+
+    stream.send("steer", { text: "narrow the diff" });
+    expect(JSON.parse(second.sent[0] ?? "{}")).toEqual({
+      kind: "steer",
+      payload: { text: "narrow the diff" },
+    });
 
     stream.close();
     expect(second.closed).toBe(true);

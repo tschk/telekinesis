@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AppShell,
@@ -51,6 +51,9 @@ function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [steer, setSteer] = useState("");
+  const [pendingApproval, setPendingApproval] = useState<string | null>(null);
+  const streamRef = useRef<ReturnType<typeof connectWorkspaceStream> | null>(null);
 
   const refreshHealth = useCallback(async () => {
     const result = await getHealth();
@@ -111,6 +114,15 @@ function App() {
           if (seen.has(event.id)) return null;
           seen.add(event.id);
           const text = eventText(event);
+          if (event.kind === "approval_requested") {
+            const payload = event.payload;
+            const id =
+              payload && typeof payload === "object" && "id" in payload
+              && typeof payload.id === "string"
+                ? payload.id
+                : String(event.id);
+            setPendingApproval(id);
+          }
           return text
             ? `${event.kind} #${event.id} ${text}`
             : `${event.kind} #${event.id}`;
@@ -119,7 +131,11 @@ function App() {
         setLogLines((prev) => [...prev, ...rows]);
       },
     });
-    return () => stream.close();
+    streamRef.current = stream;
+    return () => {
+      stream.close();
+      streamRef.current = null;
+    };
   }, [mode, selectedId]);
 
   async function onSpawn() {
@@ -372,6 +388,57 @@ function App() {
               onSubmit={() => void onExec()}
               disabled={execBusy || !selected}
             />
+            <form
+              className="tk-create-ws"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const text = steer.trim();
+                if (!text) return;
+                streamRef.current?.send("steer", { text });
+                setLogLines((prev) => [...prev, `steer ${text}`]);
+                setSteer("");
+              }}
+            >
+              <input
+                className="tk-create-ws__input"
+                value={steer}
+                onChange={(e) => setSteer(e.target.value)}
+                placeholder="Steer the running session"
+                disabled={!selected}
+              />
+              <Button type="submit" disabled={!selected || !steer.trim()}>
+                Steer
+              </Button>
+            </form>
+            {pendingApproval ? (
+              <div className="tk-prompt__actions">
+                <Button
+                  onClick={() => {
+                    streamRef.current?.send("approval_response", {
+                      id: pendingApproval,
+                      approved: true,
+                    });
+                    setLogLines((prev) => [...prev, `approved ${pendingApproval}`]);
+                    setPendingApproval(null);
+                  }}
+                >
+                  Approve
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    streamRef.current?.send("approval_response", {
+                      id: pendingApproval,
+                      approved: false,
+                    });
+                    setLogLines((prev) => [...prev, `denied ${pendingApproval}`]);
+                    setPendingApproval(null);
+                  }}
+                >
+                  Deny
+                </Button>
+              </div>
+            ) : null}
             <h3 className="tk-section-label">
               Log{streamStatus ? ` · ${streamStatus}` : ""}
             </h3>

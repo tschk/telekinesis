@@ -25,6 +25,8 @@ export interface WorkspaceStream {
   close(): void;
   /** Last applied event id. 0 before the first row. */
   cursor(): number;
+  /** Queue a control event. Flushed once the socket is open. */
+  send(kind: "steer" | "approval_response", payload: Record<string, unknown>): void;
 }
 
 export interface ConnectWorkspaceStreamOptions {
@@ -52,6 +54,14 @@ export function connectWorkspaceStream(
   let socket: WebSocket | null = null;
   let attempt = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const pending: string[] = [];
+
+  const flush = (ws: WebSocket) => {
+    if (ws.readyState !== ws.OPEN) return;
+    while (pending.length > 0) {
+      ws.send(pending.shift()!);
+    }
+  };
 
   const connect = () => {
     if (closed) return;
@@ -71,6 +81,7 @@ export function connectWorkspaceStream(
       opened = true;
       attempt = 0;
       opts.onStatus?.("open");
+      flush(ws);
     });
 
     ws.addEventListener("message", (ev) => {
@@ -117,6 +128,11 @@ export function connectWorkspaceStream(
 
   return {
     cursor: () => cursor,
+    send: (kind, payload) => {
+      if (closed) return;
+      pending.push(JSON.stringify({ kind, payload }));
+      if (socket) flush(socket);
+    },
     close: () => {
       closed = true;
       if (timer) clearTimeout(timer);
