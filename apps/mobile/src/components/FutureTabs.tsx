@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { connectWorkspaceStream, eventText, type WorkspaceStream } from '../api/tkCloud';
+import { diffFromEvent } from '@tk/diff-view';
 import { colors, fontSans } from '../theme';
 
 const FUTURE_TABS = ['Status', 'Steer', 'Diffs', 'Approvals'] as const;
@@ -16,6 +17,7 @@ export function FutureTabs({ workspaceId, baseUrl }: Props) {
   const [steer, setSteer] = useState('');
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
   const [lastEvent, setLastEvent] = useState<string | null>(null);
+  const [diff, setDiff] = useState<string | null>(null);
   const streamRef = useRef<WorkspaceStream | null>(null);
 
   useEffect(() => {
@@ -32,6 +34,8 @@ export function FutureTabs({ workspaceId, baseUrl }: Props) {
         const last = events.at(-1);
         if (!last) return;
         setLastEvent(eventText(last) ?? last.kind);
+        const patch = diffFromEvent(last);
+        if (patch) setDiff(patch);
         if (last.kind === 'approval_requested') {
           const payload = last.payload;
           const id =
@@ -131,6 +135,11 @@ export function FutureTabs({ workspaceId, baseUrl }: Props) {
             <Text style={styles.steerButtonText}>Deny</Text>
           </Pressable>
         </View>
+      ) : null}
+      {diff ? (
+        <Text style={styles.hint} accessibilityLabel="Latest workspace diff">
+          {diff}
+        </Text>
       ) : null}
     </View>
   );

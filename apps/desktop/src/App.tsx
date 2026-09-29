@@ -20,6 +20,7 @@ import {
   listWorkspaces,
 } from "./lib/cloudApi";
 import type { HealthResponse, HostMode, SpawnResult, Workspace } from "./lib/types";
+import { diffFromEvent } from "@tk/diff-view";
 import "./App.css";
 
 function healthBadgeStatus(
@@ -53,6 +54,7 @@ function App() {
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [steer, setSteer] = useState("");
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
+  const [diff, setDiff] = useState<string | null>(null);
   const streamRef = useRef<ReturnType<typeof connectWorkspaceStream> | null>(null);
 
   const refreshHealth = useCallback(async () => {
@@ -114,6 +116,8 @@ function App() {
           if (seen.has(event.id)) return null;
           seen.add(event.id);
           const text = eventText(event);
+          const patch = diffFromEvent(event);
+          if (patch) setDiff(patch);
           if (event.kind === "approval_requested") {
             const payload = event.payload;
             const id =
@@ -448,7 +452,13 @@ function App() {
 
         <div className="tk-placeholder-grid">
           <div className="tk-placeholder">Terminal pane stub</div>
-          <div className="tk-placeholder">Diff review stub</div>
+          <div className="tk-log" role="region" aria-label="Workspace diff">
+            {diff ? (
+              <pre className="tk-log__body">{diff}</pre>
+            ) : (
+              <div className="tk-log__empty">No diff in the session yet.</div>
+            )}
+          </div>
           <div className="tk-placeholder">In-app browser stub</div>
         </div>
       </Panel>

@@ -11,6 +11,7 @@ export default defineConfig(() => ({
     alias: {
       "@tk/workspace-stream": new URL("../stream/workspaceStream.ts", import.meta.url)
         .pathname,
+      "@tk/diff-view": new URL("../stream/diffView.ts", import.meta.url).pathname,
     },
   },
 

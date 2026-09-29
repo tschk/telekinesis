@@ -13,6 +13,7 @@ import type { WorkspaceMeta } from "./api/types";
 import { AppShell } from "./components/AppShell";
 import { Button } from "./components/Button";
 import { DiffPane } from "./components/DiffPane";
+import { diffFromEvent } from "@tk/diff-view";
 import { Input } from "./components/Input";
 import { LogPane, type LogLine } from "./components/LogPane";
 import { Panel } from "./components/Panel";
@@ -54,6 +55,7 @@ export default function App() {
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [steer, setSteer] = useState("");
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
+  const [diff, setDiff] = useState<string | null>(null);
   const streamRef = useRef<ReturnType<typeof connectWorkspaceStream> | null>(null);
 
   const appendLog = useCallback((text: string, tone?: LogLine["tone"]) => {
@@ -130,6 +132,8 @@ export default function App() {
           if (seen.has(event.id)) continue;
           seen.add(event.id);
           const text = eventText(event);
+          const patch = diffFromEvent(event);
+          if (patch) setDiff(patch);
           if (event.kind === "approval_requested") {
             const id = isRecord(event.payload) && typeof event.payload.id === "string"
               ? event.payload.id
@@ -328,7 +332,7 @@ export default function App() {
           </Panel>
 
           <Panel title="Diff">
-            <DiffPane />
+            <DiffPane diff={diff} />
           </Panel>
         </section>
       </div>

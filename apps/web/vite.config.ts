@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@tk/workspace-stream": path.resolve(__dirname, "../stream/workspaceStream.ts"),
+      "@tk/diff-view": path.resolve(__dirname, "../stream/diffView.ts"),
     },
   },
 });

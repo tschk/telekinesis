@@ -16,7 +16,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "@tk/workspace-stream": ["../stream/workspaceStream.ts"]
+      "@tk/workspace-stream": ["../stream/workspaceStream.ts"],
+      "@tk/diff-view": ["../stream/diffView.ts"]
     }
   },
   "include": ["src", "../stream/workspaceStream.ts"]
