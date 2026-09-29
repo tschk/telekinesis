@@ -50,6 +50,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Paint loading first. Cloud helpers resolve only after native fetch and
+  // off-thread parse/validation; the setters below apply that finished result.
   const refresh = useCallback(async (opts?: { pull?: boolean; signal?: AbortSignal }) => {
     setBusy(true);
     if (opts?.pull) setRefreshing(true);
