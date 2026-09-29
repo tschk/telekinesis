@@ -1,5 +1,14 @@
 /** tk-cloud HTTP client + protocol types (mirrored; no package dep). */
 
+export {
+  connectWorkspaceStream,
+  eventText,
+} from "@tk/workspace-stream";
+export type {
+  WorkspaceEvent,
+  WorkspaceStream,
+} from "@tk/workspace-stream";
+
 export type WorkspaceTier = "free" | "pro" | "team";
 
 export type ComputerBackend = "isolate-shell" | "container" | "isolate-js";

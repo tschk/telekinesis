@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  connectWorkspaceStream,
   createWorkspace,
+  eventText,
   getHealth,
   getWorkspace,
   listWorkspaces,
@@ -11,6 +13,7 @@ import type { WorkspaceMeta } from "./api/types";
 import { AppShell } from "./components/AppShell";
 import { Button } from "./components/Button";
 import { DiffPane } from "./components/DiffPane";
+import { diffFromEvent } from "@tk/diff-view";
 import { Input } from "./components/Input";
 import { LogPane, type LogLine } from "./components/LogPane";
 import { Panel } from "./components/Panel";
@@ -31,6 +34,10 @@ function nowTs(): string {
   return new Date().toLocaleTimeString();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function makeId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -45,6 +52,11 @@ export default function App() {
   const [listSource, setListSource] = useState<"api" | "local" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<LogLine[]>([]);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [steer, setSteer] = useState("");
+  const [pendingApproval, setPendingApproval] = useState<string | null>(null);
+  const [diff, setDiff] = useState<string | null>(null);
+  const streamRef = useRef<ReturnType<typeof connectWorkspaceStream> | null>(null);
 
   const appendLog = useCallback((text: string, tone?: LogLine["tone"]) => {
     setLines((prev) => [
@@ -102,6 +114,45 @@ export default function App() {
       cancelled = true;
     };
   }, [refreshWorkspaces]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setStreamStatus(null);
+      return;
+    }
+    const seen = new Set<number>();
+    const stream = connectWorkspaceStream({
+      baseUrl: (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim()
+        || "http://127.0.0.1:8787",
+      workspaceId: selectedId,
+      onStatus: setStreamStatus,
+      onUnavailable: () => setStreamStatus("unavailable"),
+      onEvents: (events) => {
+        for (const event of events) {
+          if (seen.has(event.id)) continue;
+          seen.add(event.id);
+          const text = eventText(event);
+          const patch = diffFromEvent(event);
+          if (patch) setDiff(patch);
+          if (event.kind === "approval_requested") {
+            const id = isRecord(event.payload) && typeof event.payload.id === "string"
+              ? event.payload.id
+              : String(event.id);
+            setPendingApproval(id);
+          }
+          appendLog(
+            text ? `${event.kind} #${event.id} ${text}` : `${event.kind} #${event.id}`,
+            event.kind === "steer" || event.kind === "approval_requested" ? "warn" : "muted",
+          );
+        }
+      },
+    });
+    streamRef.current = stream;
+    return () => {
+      stream.close();
+      streamRef.current = null;
+    };
+  }, [selectedId, appendLog]);
 
   const selected = useMemo(
     () => workspaces.find((w) => w.id === selectedId) ?? null,
@@ -224,15 +275,64 @@ export default function App() {
                 onRun={handleRun}
               />
             )}
+            {selected ? (
+              <form
+                className="tk-prompt"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const text = steer.trim();
+                  if (!text) return;
+                  streamRef.current?.send("steer", { text });
+                  appendLog(`steer ${text}`, "warn");
+                  setSteer("");
+                }}
+              >
+                <input
+                  className="tk-input"
+                  value={steer}
+                  placeholder="Steer the running session…"
+                  onChange={(e) => setSteer(e.target.value)}
+                />
+              </form>
+            ) : null}
+            {pendingApproval ? (
+              <div className="tk-prompt__footer">
+                <Button
+                  onClick={() => {
+                    streamRef.current?.send("approval_response", {
+                      id: pendingApproval,
+                      approved: true,
+                    });
+                    appendLog(`approved ${pendingApproval}`, "ok");
+                    setPendingApproval(null);
+                  }}
+                >
+                  Approve
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    streamRef.current?.send("approval_response", {
+                      id: pendingApproval,
+                      approved: false,
+                    });
+                    appendLog(`denied ${pendingApproval}`, "danger");
+                    setPendingApproval(null);
+                  }}
+                >
+                  Deny
+                </Button>
+              </div>
+            ) : null}
             {error ? <p className="tk-error">{error}</p> : null}
           </Panel>
 
-          <Panel title="Log">
+          <Panel title={streamStatus ? `Log · ${streamStatus}` : "Log"}>
             <LogPane lines={lines} />
           </Panel>
 
           <Panel title="Diff">
-            <DiffPane />
+            <DiffPane diff={diff} />
           </Panel>
         </section>
       </div>

@@ -225,6 +225,7 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
     );
 
     sync_prewalk_model(&mut agent);
+    let tail_from = session_jsonl_len(&workspace);
     let mut result = rt.block_on(agent.prompt(&prompt));
     if let Err(error) = &result {
         if is_transient_provider_error(&error.to_string()) {
@@ -254,6 +255,71 @@ pub fn run_exec(parsed: ExecArgs) -> anyhow::Result<()> {
         );
     } else {
         println!("{text}");
+    }
+    if let Err(error) = post_session_tail(&workspace, tail_from) {
+        eprintln!("· session tail not posted: {error}");
+    }
+    Ok(())
+}
+
+fn session_jsonl_len(workspace: &std::path::Path) -> u64 {
+    newest_session(workspace)
+        .and_then(|path| std::fs::metadata(path).ok())
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+}
+
+fn newest_session(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = crate::pi::pi_sessions_dir(workspace);
+    let mut sessions: Vec<_> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    sessions.sort();
+    sessions.pop()
+}
+
+/// POST bytes appended during this exec when `TK_CLOUD_URL` and
+/// `TK_WORKSPACE_ID` are set. Missing env is a no-op. A failed post does
+/// not fail the exec. `from` is the file length before the prompt, so a
+/// reconnect does not re-append earlier rows.
+fn post_session_tail(workspace: &std::path::Path, from: u64) -> anyhow::Result<()> {
+    let Some(base) = std::env::var("TK_CLOUD_URL").ok().filter(|v| !v.trim().is_empty()) else {
+        return Ok(());
+    };
+    let Some(id) = std::env::var("TK_WORKSPACE_ID").ok().filter(|v| !v.trim().is_empty()) else {
+        return Ok(());
+    };
+    let Some(path) = newest_session(workspace) else {
+        return Ok(());
+    };
+    let file = std::fs::File::open(&path)?;
+    let mut reader = std::io::BufReader::new(file);
+    use std::io::{Read, Seek};
+    reader.seek(std::io::SeekFrom::Start(from))?;
+    let mut body = String::new();
+    reader.read_to_string(&mut body)?;
+    if body.trim().is_empty() {
+        return Ok(());
+    }
+    let url = format!(
+        "{}/v1/workspaces/{}/session-tail",
+        base.trim_end_matches('/'),
+        id.trim()
+    );
+    let mut child = std::process::Command::new("curl")
+        .args(["-sS", "-X", "POST", &url, "-H", "content-type: text/plain", "--data-binary", "@-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin.write_all(body.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("curl exited {status}");
     }
     Ok(())
 }

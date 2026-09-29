@@ -56,7 +56,10 @@ Env:
    `(via exec fallback: POST /prompt not implemented yet)`).
    The tk-cloud Worker itself is not implemented here.
 
-Agent text is buffered (streaming/SSE is a future enhancement) and rendered
+Agent text is buffered. The log also attaches
+`GET /v1/workspaces/:id/stream?after=<id>` and replays from the last event
+id. Steer, approval, and pi JSONL entries share that log. Streaming of a
+single model token is still buffered. Rendered
 in `LogPane` via `promptText()`, which accepts `text`/`output`/`stdout`/
 `message` while the server shape lands. If the API is down, the page keeps
 the localStorage workspace-id fallback and shows a clear
