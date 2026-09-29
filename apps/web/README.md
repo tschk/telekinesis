@@ -62,6 +62,15 @@ in `LogPane` via `promptText()`, which accepts `text`/`output`/`stdout`/
 the localStorage workspace-id fallback and shows a clear
 `Cannot reach tk-cloud at <base> …` error in the log.
 
+## Off-thread IO
+
+All network IO and JSON (de)serialization run in a module Web Worker
+(`src/api/io.worker.ts`); the page only posts requests and applies finished
+results, so the main thread never blocks on parsing, requests, or config
+blobs. `localStorage.getItem`/`setItem` stay on the page — Web Storage is
+main-thread only — so raw strings cross the boundary and are parsed or
+serialized by the worker.
+
 ## Build / Pages
 
 ```bash

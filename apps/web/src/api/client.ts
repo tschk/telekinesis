@@ -6,6 +6,8 @@ import type {
   PromptResult,
   WorkspaceMeta,
 } from "./types";
+import type { IoReply, IoRequest } from "./ioProtocol";
+import { buildPromptExecFallback } from "./promptFallback";
 
 const DEFAULT_BASE = "http://127.0.0.1:8787";
 
@@ -29,84 +31,156 @@ export class ApiHttpError extends Error {
   }
 }
 
-async function request<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const method = (init?.method ?? "GET").toUpperCase();
-  let res: Response;
-  try {
-    res = await fetch(`${baseUrl()}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(init?.headers ?? {}),
-      },
-    });
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `Cannot reach tk-cloud at ${baseUrl()} (${method} ${path}). ${detail}`,
+/**
+ * All IO and JSON run in a module worker; this module is only a promise
+ * proxy on the page. The base URL is read here (workers do not see
+ * import.meta.env the same way) and handed to the worker in the first
+ * message; later calls queue until init is acknowledged.
+ */
+const worker = new Worker(new URL("./io.worker.ts", import.meta.url), {
+  type: "module",
+});
+
+let nextId = 1;
+const pending = new Map<
+  number,
+  { resolve: (value: unknown) => void; reject: (err: unknown) => void }
+>();
+
+let acknowledgeInit: () => void;
+const initAcknowledged = new Promise<void>((resolve) => {
+  acknowledgeInit = resolve;
+});
+
+worker.onmessage = (event: MessageEvent<IoReply>) => {
+  const reply = event.data;
+  const entry = pending.get(reply.id);
+  if (!entry) return;
+  pending.delete(reply.id);
+  if (reply.ok) {
+    entry.resolve(reply.result);
+    return;
+  }
+  if (reply.error.name === "ApiHttpError") {
+    entry.reject(
+      new ApiHttpError({
+        status: reply.error.status,
+        method: reply.error.method,
+        path: reply.error.path,
+        message: reply.error.message,
+      }),
     );
+    return;
   }
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new ApiHttpError({
-      status: res.status,
-      method,
-      path,
-      message: `API ${method} ${path} → ${res.status}${text ? `: ${text}` : ""}`,
-    });
-  }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  entry.reject(new Error(reply.error.message));
+};
+
+function freshId(): number {
+  const id = nextId;
+  nextId += 1;
+  return id;
 }
 
+function request<T>(message: IoRequest): Promise<T> {
+  return initAcknowledged.then(
+    () =>
+      new Promise<T>((resolve, reject) => {
+        pending.set(message.id, {
+          resolve: resolve as (value: unknown) => void,
+          reject: reject as (err: unknown) => void,
+        });
+        worker.postMessage(message);
+      }),
+  );
+}
+
+const initId = freshId();
+pending.set(initId, {
+  resolve: () => acknowledgeInit(),
+  reject: () => acknowledgeInit(),
+});
+worker.postMessage({ id: initId, type: "init", baseUrl: baseUrl() });
+
 export async function getHealth(): Promise<{ ok?: boolean; status?: string } | unknown> {
-  return request("/health");
+  return request({ id: freshId(), type: "http", method: "GET", path: "/health" });
 }
 
 export async function listWorkspaces(): Promise<WorkspaceMeta[]> {
-  return request<WorkspaceMeta[]>("/v1/workspaces");
+  return request<WorkspaceMeta[]>({
+    id: freshId(),
+    type: "http",
+    method: "GET",
+    path: "/v1/workspaces",
+  });
 }
 
 export async function createWorkspace(
   body?: CreateWorkspaceRequest,
 ): Promise<WorkspaceMeta> {
-  return request<WorkspaceMeta>("/v1/workspaces", {
+  return request<WorkspaceMeta>({
+    id: freshId(),
+    type: "http",
     method: "POST",
-    body: JSON.stringify(body ?? {}),
+    path: "/v1/workspaces",
+    body: body ?? {},
   });
 }
 
 export async function getWorkspace(id: string): Promise<WorkspaceMeta> {
-  return request<WorkspaceMeta>(`/v1/workspaces/${encodeURIComponent(id)}`);
+  return request<WorkspaceMeta>({
+    id: freshId(),
+    type: "http",
+    method: "GET",
+    path: `/v1/workspaces/${encodeURIComponent(id)}`,
+  });
 }
 
 export async function exec(
   id: string,
   req: ExecRequest,
 ): Promise<ExecResult> {
-  return request<ExecResult>(`/v1/workspaces/${encodeURIComponent(id)}/exec`, {
+  return request<ExecResult>({
+    id: freshId(),
+    type: "http",
     method: "POST",
-    body: JSON.stringify(req),
+    path: `/v1/workspaces/${encodeURIComponent(id)}/exec`,
+    body: req,
   });
 }
 
 /**
- * Fallback when `POST /v1/workspaces/:id/prompt` is not implemented yet:
- * the server-side `tk exec` agent loop runs the prompt instead.
- * Documented in `apps/web/README.md`; the Worker is not implemented here.
+ * Send an agent prompt to a workspace. The 404/405/501 → exec fallback
+ * runs inside the worker, so the page sends one request and receives the
+ * finished result (including `fallback: "exec"` markers).
  */
-export function buildPromptExecFallback(prompt: string): ExecRequest {
-  return { source: `tk exec ${quoteForShell(prompt)}` };
+export async function promptWorkspace(
+  id: string,
+  req: PromptRequest,
+): Promise<PromptResult> {
+  return request<PromptResult>({
+    id: freshId(),
+    type: "prompt",
+    workspaceId: id,
+    req,
+  });
 }
 
-function quoteForShell(s: string): string {
-  if (s === "") return "''";
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
-  return `'${s.replace(/'/g, "'\\''")}'`;
+/** Parse the stored workspace-id blob in the worker; failures yield []. */
+export async function parseWorkspaceIds(raw: string): Promise<string[]> {
+  return request<string[]>({ id: freshId(), type: "parseWorkspaceIds", raw });
 }
+
+/** Serialize the workspace-id list in the worker. */
+export async function serializeWorkspaceIds(ids: string[]): Promise<string> {
+  return request<string>({ id: freshId(), type: "stringifyWorkspaceIds", ids });
+}
+
+/** Off-thread serialization for display fallbacks (e.g. log lines). */
+export async function serializeValue(value: unknown): Promise<string> {
+  return request<string>({ id: freshId(), type: "stringify", value });
+}
+
+export { buildPromptExecFallback };
 
 /** True when the prompt endpoint itself is missing (not a prompt failure). */
 export function isPromptEndpointMissing(err: unknown): boolean {
@@ -114,40 +188,6 @@ export function isPromptEndpointMissing(err: unknown): boolean {
     err instanceof ApiHttpError &&
     (err.status === 404 || err.status === 405 || err.status === 501)
   );
-}
-
-/**
- * Send an agent prompt to a workspace.
- *
- * Tries `POST /v1/workspaces/:id/prompt` first; when the server does not
- * implement it yet (404/405/501), falls back to `POST .../exec` with a
- * `tk exec <prompt>` command string and marks the result `fallback: "exec"`.
- */
-export async function promptWorkspace(
-  id: string,
-  req: PromptRequest,
-): Promise<PromptResult> {
-  const path = `/v1/workspaces/${encodeURIComponent(id)}/prompt`;
-  try {
-    return await request<PromptResult>(path, {
-      method: "POST",
-      body: JSON.stringify(req),
-    });
-  } catch (err) {
-    if (!isPromptEndpointMissing(err)) throw err;
-    const fallback = await exec(id, buildPromptExecFallback(req.prompt));
-    return {
-      ok: fallback.ok,
-      text: fallback.stdout ?? fallback.message,
-      stdout: fallback.stdout,
-      stderr: fallback.stderr,
-      message: fallback.message,
-      exitCode: fallback.exitCode,
-      backend: fallback.backend,
-      stub: fallback.stub,
-      fallback: "exec",
-    };
-  }
 }
 
 /**
