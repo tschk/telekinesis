@@ -1,4 +1,9 @@
 import { MOCK_WORKSPACES } from "./mockWorkspaces";
+export {
+  connectWorkspaceStream,
+  eventText,
+} from "@tk/workspace-stream";
+export type { WorkspaceEvent, WorkspaceStream } from "@tk/workspace-stream";
 import type {
   ExecRequest,
   ExecResult,

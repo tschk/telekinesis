@@ -20,7 +20,10 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@tk/workspace-stream": ["../stream/workspaceStream.ts"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "../stream/workspaceStream.ts"]
 }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  connectWorkspaceStream,
   createWorkspace,
+  eventText,
   getHealth,
   getWorkspace,
   listWorkspaces,
@@ -45,6 +47,7 @@ export default function App() {
   const [listSource, setListSource] = useState<"api" | "local" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<LogLine[]>([]);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
 
   const appendLog = useCallback((text: string, tone?: LogLine["tone"]) => {
     setLines((prev) => [
@@ -102,6 +105,33 @@ export default function App() {
       cancelled = true;
     };
   }, [refreshWorkspaces]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setStreamStatus(null);
+      return;
+    }
+    const seen = new Set<number>();
+    const stream = connectWorkspaceStream({
+      baseUrl: (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim()
+        || "http://127.0.0.1:8787",
+      workspaceId: selectedId,
+      onStatus: setStreamStatus,
+      onUnavailable: () => setStreamStatus("unavailable"),
+      onEvents: (events) => {
+        for (const event of events) {
+          if (seen.has(event.id)) continue;
+          seen.add(event.id);
+          const text = eventText(event);
+          appendLog(
+            text ? `${event.kind} #${event.id} ${text}` : `${event.kind} #${event.id}`,
+            event.kind === "steer" || event.kind === "approval_requested" ? "warn" : "muted",
+          );
+        }
+      },
+    });
+    return () => stream.close();
+  }, [selectedId, appendLog]);
 
   const selected = useMemo(
     () => workspaces.find((w) => w.id === selectedId) ?? null,
@@ -227,7 +257,7 @@ export default function App() {
             {error ? <p className="tk-error">{error}</p> : null}
           </Panel>
 
-          <Panel title="Log">
+          <Panel title={streamStatus ? `Log · ${streamStatus}` : "Log"}>
             <LogPane lines={lines} />
           </Panel>
 

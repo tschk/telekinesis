@@ -49,6 +49,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const refresh = useCallback(async (opts?: { pull?: boolean; signal?: AbortSignal }) => {
     setBusy(true);
@@ -82,6 +83,7 @@ export default function App() {
         if (result.note && result.workspaces.length === 0) return prev;
         return result.workspaces;
       });
+      setSelectedId((cur) => cur ?? result.workspaces[0]?.id ?? null);
     } else if (!isAbortError(listResult.reason)) {
       setListNote(null);
       setError(formatTkCloudError(listResult.reason));
@@ -108,6 +110,7 @@ export default function App() {
       );
       setCreateName('');
       setWorkspaces((prev) => [meta, ...prev.filter((w) => w.id !== meta.id)]);
+      setSelectedId(meta.id);
       await refresh();
     } catch (err) {
       if (!isAbortError(err)) setError(formatTkCloudError(err));
@@ -160,7 +163,7 @@ export default function App() {
           <StatusBadge tone={apiTone} label={apiLabel} />
         </View>
 
-        <FutureTabs />
+        <FutureTabs workspaceId={selectedId} baseUrl={baseUrl()} />
 
         {error ? (
           <ErrorBanner message={error} onRetry={() => void refresh()} />

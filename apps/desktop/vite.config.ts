@@ -7,6 +7,12 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react()],
+  resolve: {
+    alias: {
+      "@tk/workspace-stream": new URL("../stream/workspaceStream.ts", import.meta.url)
+        .pathname,
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

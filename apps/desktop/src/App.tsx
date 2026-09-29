@@ -12,7 +12,9 @@ import {
 } from "./components";
 import {
   cloudApiBase,
+  connectWorkspaceStream,
   createWorkspace,
+  eventText,
   execInWorkspace,
   getHealth,
   listWorkspaces,
@@ -48,6 +50,7 @@ function App() {
   const [logLines, setLogLines] = useState<string[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
 
   const refreshHealth = useCallback(async () => {
     const result = await getHealth();
@@ -91,6 +94,33 @@ function App() {
     void refreshLocalStatus();
     return undefined;
   }, [mode, refreshCloud, refreshHealth, refreshLocalStatus]);
+
+  useEffect(() => {
+    if (mode !== "cloud" || !selectedId) {
+      setStreamStatus(null);
+      return;
+    }
+    const seen = new Set<number>();
+    const stream = connectWorkspaceStream({
+      baseUrl: cloudApiBase(),
+      workspaceId: selectedId,
+      onStatus: setStreamStatus,
+      onUnavailable: () => setStreamStatus("unavailable"),
+      onEvents: (events) => {
+        const rows = events.map((event) => {
+          if (seen.has(event.id)) return null;
+          seen.add(event.id);
+          const text = eventText(event);
+          return text
+            ? `${event.kind} #${event.id} ${text}`
+            : `${event.kind} #${event.id}`;
+        }).filter((row): row is string => row != null);
+        if (rows.length === 0) return;
+        setLogLines((prev) => [...prev, ...rows]);
+      },
+    });
+    return () => stream.close();
+  }, [mode, selectedId]);
 
   async function onSpawn() {
     setSpawnBusy(true);
@@ -262,7 +292,9 @@ function App() {
         </div>
         <h2 className="tk-nav-section-title">Sessions</h2>
         <p className="tk-hint tk-hint--empty">
-          Session list stub — wire to tk-cloud WS later.
+          {streamStatus
+            ? `Event stream ${streamStatus}. Replay continues from the last id.`
+            : "Select a workspace to attach the event stream."}
         </p>
       </>
     ) : (
@@ -340,7 +372,9 @@ function App() {
               onSubmit={() => void onExec()}
               disabled={execBusy || !selected}
             />
-            <h3 className="tk-section-label">Log</h3>
+            <h3 className="tk-section-label">
+              Log{streamStatus ? ` · ${streamStatus}` : ""}
+            </h3>
             <LogPane lines={logLines} />
           </>
         )}
