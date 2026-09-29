@@ -100,6 +100,30 @@ describe("connectWorkspaceStream", () => {
     vi.useRealTimers();
   });
 
+  it("reconnects immediately when a page is full so the rest of the log is not skipped", () => {
+    vi.useFakeTimers();
+    FakeSocket.instances = [];
+    connectWorkspaceStream({
+      baseUrl: "http://127.0.0.1:8787",
+      workspaceId: "abc",
+      WebSocket: FakeSocket as unknown as typeof WebSocket,
+      onEvents: () => {},
+    });
+    const first = FakeSocket.instances[0]!;
+    const events = Array.from({ length: 500 }, (_, i) => ({
+      id: i + 1,
+      ts: "t",
+      kind: "message",
+      payload: { content: String(i + 1) },
+    }));
+    first.emit("open");
+    first.emit("message", JSON.stringify({ events, latest: 500 }));
+    expect(first.closed).toBe(true);
+    vi.advanceTimersByTime(500);
+    expect(FakeSocket.instances[1]?.url).toContain("after=500");
+    vi.useRealTimers();
+  });
+
   it("does not apply an out-of-order live frame ahead of a gap", () => {
     FakeSocket.instances = [];
     const seen: number[] = [];

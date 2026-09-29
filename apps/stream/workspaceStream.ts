@@ -40,6 +40,8 @@ export interface ConnectWorkspaceStreamOptions {
 }
 
 const MAX_BACKOFF_MS = 15_000;
+/** Matches tk-cloud MAX_EVENT_PAGE. A full page is not the end of the log. */
+const MAX_EVENT_PAGE = 500;
 
 export function connectWorkspaceStream(
   opts: ConnectWorkspaceStreamOptions,
@@ -82,6 +84,11 @@ export function connectWorkspaceStream(
       fresh.sort((a, b) => a.id - b.id);
       cursor = fresh[fresh.length - 1]!.id;
       opts.onEvents(fresh);
+      // The server sends one page per socket. A full page means older rows
+      // remain; reconnect from the new cursor instead of waiting for live frames.
+      if (fresh.length >= MAX_EVENT_PAGE) {
+        ws.close();
+      }
     });
 
     ws.addEventListener("close", () => {
