@@ -6,6 +6,7 @@ import {
   listWorkspaces,
   promptText,
   promptWorkspace,
+  serializeValue,
 } from "./api/client";
 import type { WorkspaceMeta } from "./api/types";
 import { AppShell } from "./components/AppShell";
@@ -58,7 +59,7 @@ export default function App() {
     try {
       const listed = await listWorkspaces();
       setWorkspaces(listed);
-      syncWorkspaceIds(listed.map((w) => w.id));
+      await syncWorkspaceIds(listed.map((w) => w.id));
       setListSource("api");
       setSelectedId((cur) => cur ?? listed[0]?.id ?? null);
       return;
@@ -66,7 +67,7 @@ export default function App() {
       // list not ready / offline — fall back to localStorage ids
     }
 
-    const ids = loadWorkspaceIds();
+    const ids = await loadWorkspaceIds();
     const metas: WorkspaceMeta[] = [];
     for (const id of ids) {
       try {
@@ -115,7 +116,7 @@ export default function App() {
       const meta = await createWorkspace(
         createName.trim() ? { name: createName.trim() } : undefined,
       );
-      addWorkspaceId(meta.id);
+      await addWorkspaceId(meta.id);
       setCreateName("");
       setWorkspaces((prev) => {
         const without = prev.filter((w) => w.id !== meta.id);
@@ -151,7 +152,8 @@ export default function App() {
       if (result.fallback === "exec") {
         bits.push("(via exec fallback: POST /prompt not implemented yet)");
       }
-      const body = bits.join("\n") || JSON.stringify(result);
+      let body = bits.join("\n");
+      if (!body) body = await serializeValue(result);
       appendLog(body, result.ok ? "ok" : "danger");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
