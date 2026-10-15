@@ -27,9 +27,10 @@ fn which_ok(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+// PATH lookup and process spawn must not run on the UI thread.
 /// Spawn local telekinesis CLI (`tk` or `telekinesis` on PATH).
 /// Safe when missing: returns ok=false with a clear message (build does not require the binary).
-#[tauri::command]
+#[tauri::command(async)]
 fn spawn_telekinesis() -> SpawnResult {
     let Some(binary) = find_telekinesis_binary() else {
         return SpawnResult {
@@ -53,7 +54,7 @@ fn spawn_telekinesis() -> SpawnResult {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn telekinesis_status() -> SpawnResult {
     match find_telekinesis_binary() {
         Some(binary) => SpawnResult {
