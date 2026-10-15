@@ -38,7 +38,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to 1.98.1: rustc 1.99.0's PGO lane is broken on the macos-15
+      # runner images — the instrumented binary segfaults during training and
+      # every .profraw comes out unreadable ("too much profile data" /
+      # "truncated profile data" -> llvm-profdata "no profile can be merged").
+      # 1.98.1 built v0.6.25 green on the same images; 1.99.0 is fine on
+      # linux and in local macOS builds. Revisit when a stable release fixes
+      # macOS profile generation (checked 2026-10-15).
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.target }}
           components: llvm-tools-preview
