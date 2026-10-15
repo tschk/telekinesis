@@ -286,10 +286,16 @@ fn newest_session(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
 /// not fail the exec. `from` is the file length before the prompt, so a
 /// reconnect does not re-append earlier rows.
 fn post_session_tail(workspace: &std::path::Path, from: u64) -> anyhow::Result<()> {
-    let Some(base) = std::env::var("TK_CLOUD_URL").ok().filter(|v| !v.trim().is_empty()) else {
+    let Some(base) = std::env::var("TK_CLOUD_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    else {
         return Ok(());
     };
-    let Some(id) = std::env::var("TK_WORKSPACE_ID").ok().filter(|v| !v.trim().is_empty()) else {
+    let Some(id) = std::env::var("TK_WORKSPACE_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    else {
         return Ok(());
     };
     let Some(path) = newest_session(workspace) else {
@@ -310,7 +316,16 @@ fn post_session_tail(workspace: &std::path::Path, from: u64) -> anyhow::Result<(
         id.trim()
     );
     let mut child = std::process::Command::new("curl")
-        .args(["-sS", "-X", "POST", &url, "-H", "content-type: text/plain", "--data-binary", "@-"])
+        .args([
+            "-sS",
+            "-X",
+            "POST",
+            &url,
+            "-H",
+            "content-type: text/plain",
+            "--data-binary",
+            "@-",
+        ])
         .stdin(std::process::Stdio::piped())
         .spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
