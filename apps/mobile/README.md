@@ -48,4 +48,4 @@ Any other non-OK status is an error. Workspaces created in this session are kept
 
 ## API client
 
-`src/api/tkCloud.ts` — protocol types mirrored from tk-cloud (`WorkspaceMeta`, `WorkspaceTier`, …). No package dependency on the private repo.
+`src/api/tkCloud.ts` — protocol types mirrored from tk-cloud (`WorkspaceMeta`, `WorkspaceTier`, …). No package dependency on the private repo. `JSON.parse`, `JSON.stringify`, and response validation run on a background `react-native-worklets` runtime (`src/runtime/offThread.ts`); the screen only applies the finished value or typed error.
