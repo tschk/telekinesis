@@ -113,6 +113,9 @@ local function encode_number(val)
   if val ~= val or val <= -math.huge or val >= math.huge then
     error("unexpected number value '" .. tostring(val) .. "'")
   end
+  if math.floor(val) == val and math.abs(val) <= 1e16 then
+    return string.format("%.0f", val)
+  end
   for precision = 1, 17 do
     local encoded = string.format("%." .. precision .. "g", val)
     if tonumber(encoded) == val then return encoded end

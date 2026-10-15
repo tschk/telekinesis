@@ -36,6 +36,12 @@ if grep -nE 'python3?' "$root/scripts/avo"/*.sh "$root/scripts/adapters/score-ex
   fail "AVO runtime scripts must not depend on Python"
 fi
 
+encoded=$("$lua" "$avo_helper" json-object \
+  n:positive=10 n:negative=-1000 n:upper=10000000000000000 \
+  n:lower=-10000000000000000 n:large=1e17 f:decimal=1.5)
+expected='{"positive":10,"negative":-1000,"upper":10000000000000000,"lower":-10000000000000000,"large":1e+17,"decimal":1.5}'
+test "$encoded" = "$expected" || fail "JSON numbers must match Python integer and float formatting"
+
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
 
