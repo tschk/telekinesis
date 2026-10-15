@@ -56,44 +56,57 @@ pub fn apply_os_sandbox(agent: &mut Agent) {
 mod tests {
     use super::os_sandbox_requested;
     use rx4::OsSandbox;
+    use std::sync::Mutex;
+
+    static TK_OS_SANDBOX_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard(Option<std::ffi::OsString>);
+
+    impl EnvGuard {
+        fn set(value: Option<&str>) -> Self {
+            let previous = std::env::var_os("TK_OS_SANDBOX");
+            match value {
+                Some(value) => std::env::set_var("TK_OS_SANDBOX", value),
+                None => std::env::remove_var("TK_OS_SANDBOX"),
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TK_OS_SANDBOX", value),
+                None => std::env::remove_var("TK_OS_SANDBOX"),
+            }
+        }
+    }
 
     #[test]
     fn os_sandbox_env_on_forces_requested() {
-        let previous = std::env::var("TK_OS_SANDBOX").ok();
-        std::env::set_var("TK_OS_SANDBOX", "1");
+        let _lock = TK_OS_SANDBOX_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(Some("1"));
         assert!(os_sandbox_requested());
         std::env::set_var("TK_OS_SANDBOX", "0");
         assert!(!os_sandbox_requested());
-        match previous {
-            Some(value) => std::env::set_var("TK_OS_SANDBOX", value),
-            None => std::env::remove_var("TK_OS_SANDBOX"),
-        }
     }
 
     #[test]
     fn os_sandbox_default_follows_backend() {
-        let previous = std::env::var("TK_OS_SANDBOX").ok();
-        std::env::remove_var("TK_OS_SANDBOX");
+        let _lock = TK_OS_SANDBOX_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(None);
         let expected = !matches!(rx4::detect_sandbox(), OsSandbox::UserspaceOnly);
         assert_eq!(os_sandbox_requested(), expected);
-        match previous {
-            Some(value) => std::env::set_var("TK_OS_SANDBOX", value),
-            None => std::env::remove_var("TK_OS_SANDBOX"),
-        }
     }
 
     #[test]
     fn apply_os_sandbox_clears_requirement_when_disabled() {
-        let previous = std::env::var("TK_OS_SANDBOX").ok();
-        std::env::set_var("TK_OS_SANDBOX", "0");
+        let _lock = TK_OS_SANDBOX_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(Some("0"));
         let mut agent = rx4::agent::Agent::new();
         agent.policy.enable_os_sandbox = true;
         super::apply_os_sandbox(&mut agent);
         assert!(!agent.policy.enable_os_sandbox);
         assert!(agent.os_sandbox.is_none());
-        match previous {
-            Some(value) => std::env::set_var("TK_OS_SANDBOX", value),
-            None => std::env::remove_var("TK_OS_SANDBOX"),
-        }
     }
 }
