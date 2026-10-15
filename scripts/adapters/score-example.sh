@@ -2,6 +2,10 @@
 set -euo pipefail
 
 dir="${1:?usage: score-example.sh <candidate-dir>}"
+avo_dir=$(cd "$(dirname "$0")/../avo" && pwd)
+# shellcheck source=../avo/lib.sh
+. "$avo_dir/lib.sh"
+
 cd "$dir" || {
   echo "score-example: not a directory: $dir" >&2
   exit 3
@@ -15,12 +19,12 @@ correct_cmd="${AVO_CORRECT_CMD:-}"
 
 if [ -n "$test_cmd" ]; then
   ran_test=true
-  start=$(python3 -c 'import time; print(time.time())')
+  start=$(avo_lua monotonic-time)
   if ! sh -c "$test_cmd" >/dev/null 2>&1; then
     correct=false
   fi
-  end=$(python3 -c 'import time; print(time.time())')
-  elapsed=$(python3 -c 'import sys; print(max(float(sys.argv[2]) - float(sys.argv[1]), 1e-6))' "$start" "$end")
+  end=$(avo_lua monotonic-time)
+  elapsed=$(avo_lua elapsed "$start" "$end")
 elif [ -n "$correct_cmd" ]; then
   if ! sh -c "$correct_cmd" >/dev/null 2>&1; then
     correct=false
@@ -38,7 +42,7 @@ elif [ -n "${AVO_OBJECTIVE:-}" ]; then
   objective="$AVO_OBJECTIVE"
   note="${AVO_NOTE:-tests passed}"
 elif [ "$ran_test" = true ]; then
-  objective=$(python3 -c 'import sys; print(1.0 / float(sys.argv[1]))' "$elapsed")
+  objective=$(avo_lua reciprocal "$elapsed")
   note="${AVO_NOTE:-tests passed}"
 else
   objective="${AVO_OBJECTIVE:-0}"
@@ -50,16 +54,4 @@ export SCORE_OBJECTIVE="$objective"
 export SCORE_NOTE="$note"
 export SCORE_ELAPSED="$elapsed"
 export SCORE_RAN_TEST="$ran_test"
-python3 - <<'PY'
-import json, os
-metrics = {}
-if os.environ["SCORE_RAN_TEST"] == "true":
-    metrics["elapsed_s"] = float(os.environ["SCORE_ELAPSED"])
-print(json.dumps({
-    "correct": os.environ["SCORE_CORRECT"] == "true",
-    "objective": float(os.environ["SCORE_OBJECTIVE"]),
-    "metrics": metrics,
-    "note": os.environ["SCORE_NOTE"],
-    "artifacts": [],
-}))
-PY
+avo_lua score-output "$SCORE_CORRECT" "$SCORE_OBJECTIVE" "$SCORE_NOTE" "$SCORE_ELAPSED" "$SCORE_RAN_TEST"

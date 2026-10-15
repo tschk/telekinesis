@@ -93,6 +93,7 @@ Methods: `initialize`, `session/new`, `session/list`, `session/prompt`,
 ## 7. AVO loop (scripts only)
 
 Optional NVIDIA Agentic Variation Operator loop; no `tk avo` subcommand.
+The scripts require LuaJIT 2.1 on `PATH`.
 
 ```bash
 scripts/avo/tick.sh --init speedup \

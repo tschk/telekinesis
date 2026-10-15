@@ -7,6 +7,11 @@ run="$root/scripts/avo/run.sh"
 status="$root/scripts/avo/status.sh"
 agent_tk="$root/scripts/adapters/agent-tk.sh"
 score_ex="$root/scripts/adapters/score-example.sh"
+lua=${AVO_LUA:-luajit}
+assertions="$root/scripts/avo/assert.lua"
+avo_helper="$root/scripts/avo/avo.lua"
+export AVO_LUA="$lua"
+export AVO_JSON_HELPER="$avo_helper"
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -17,15 +22,25 @@ test -x "$tick" || fail "tick.sh must be executable"
 test -x "$run" || fail "run.sh must be executable"
 test -x "$status" || fail "status.sh must be executable"
 
-if grep -nE 'git[[:space:]]+push' "$root/scripts/avo"/* >/tmp/avo-push-hits 2>/dev/null; then
+if grep -nE 'git[[:space:]]+push' "$root/scripts/avo"/*.sh "$root/scripts/avo"/*.lua >/tmp/avo-push-hits 2>/dev/null; then
   cat /tmp/avo-push-hits >&2
   fail "scripts/avo must never invoke git push"
 fi
 
-if grep -nE 'avo-lite' "$root/scripts/avo"/* >/tmp/avo-lite-hits 2>/dev/null; then
+if grep -nE 'avo-lite' "$root/scripts/avo"/*.sh "$root/scripts/avo"/*.lua >/tmp/avo-lite-hits 2>/dev/null; then
   cat /tmp/avo-lite-hits >&2
   fail "do not vendor or call avo-lite from scripts/avo"
 fi
+
+if grep -nE 'python3?' "$root/scripts/avo"/*.sh "$root/scripts/adapters/score-example.sh"; then
+  fail "AVO runtime scripts must not depend on Python"
+fi
+
+encoded=$("$lua" "$avo_helper" json-object \
+  n:positive=10 n:negative=-1000 n:upper=10000000000000000 \
+  n:lower=-10000000000000000 n:large=1e17 f:decimal=1.5)
+expected='{"positive":10,"negative":-1000,"upper":10000000000000000,"lower":-10000000000000000,"large":1e+17,"decimal":1.5}'
+test "$encoded" = "$expected" || fail "JSON numbers must match Python integer and float formatting"
 
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
@@ -75,7 +90,7 @@ note="value=$value"
 case "$value" in
   bad|fail|'') correct=false; note="incorrect candidate" ;;
 esac
-if ! python3 -c 'import sys; float(sys.argv[1])' "$value" >/dev/null 2>&1; then
+if ! "$AVO_LUA" "$AVO_JSON_HELPER" is-number "$value" >/dev/null 2>&1; then
   correct=false
   note="incorrect candidate"
 fi
@@ -89,16 +104,7 @@ export SCORE_CORRECT="$correct"
 export SCORE_OBJECTIVE="$objective"
 export SCORE_NOTE="$note"
 export SCORE_STDDEV="$stddev"
-python3 - <<'PY'
-import json, os
-print(json.dumps({
-    "correct": os.environ["SCORE_CORRECT"] == "true",
-    "objective": float(os.environ["SCORE_OBJECTIVE"]),
-    "metrics": {"stddev": float(os.environ["SCORE_STDDEV"])},
-    "note": os.environ["SCORE_NOTE"],
-    "artifacts": [],
-}))
-PY
+"$AVO_LUA" "$AVO_JSON_HELPER" test-score "$SCORE_CORRECT" "$SCORE_OBJECTIVE" "$SCORE_NOTE" "$SCORE_STDDEV"
 EOF
   chmod +x "$path"
 }
@@ -161,19 +167,33 @@ old_head=$(git -C "$repo" rev-parse HEAD)
 test "$(git -C "$repo" rev-parse HEAD)" = "$old_head" || fail "incorrect candidate must not commit"
 test "$(cat "$repo/value.txt")" = "3" || fail "incorrect reject must restore"
 ledger="$repo/.avo/demo/ledger.jsonl"
-python3 - "$ledger" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-bad = [row for row in rows if row.get("note") == "incorrect candidate"]
-assert bad, rows
-assert bad[-1]["correct"] is False
-assert float(bad[-1]["objective"]) == 0
-assert bad[-1]["kind"] == "reject"
-PY
+"$lua" "$assertions" ledger has "$ledger" kind=reject correct=false objective=0 'note=incorrect candidate'
 
 old_head=$(git -C "$repo" rev-parse HEAD)
 (cd "$repo" && FAKE_VALUE=3 AVO_STDDEV=0.2 "$tick") >/tmp/avo-noise 2>&1
 test "$(git -C "$repo" rev-parse HEAD)" != "$old_head" || fail "equal/within noise margin should commit"
+
+# An explicitly empty stddev suppresses the legacy sigma fallback, matching the Python JSON lookup.
+repo_sigma="$workdir/repo_sigma"
+git_init "$repo_sigma"
+write_agent "$workdir/agent_sigma.sh"
+cat >"$workdir/score_sigma.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+value=$(tr -d '[:space:]' <"$1/value.txt")
+if [ "$value" = seed ]; then
+  printf '%s\n' '{"correct":true,"objective":10,"metrics":{"stddev":0},"note":"baseline"}'
+else
+  printf '%s\n' '{"correct":true,"objective":9,"metrics":{"stddev":"","sigma":100},"note":"worse"}'
+fi
+EOF
+chmod +x "$workdir/score_sigma.sh"
+(cd "$repo_sigma" && "$tick" --init sigma --goal "g" --score "$workdir/score_sigma.sh" --agent "$workdir/agent_sigma.sh") >/tmp/avo-sigma-init 2>&1
+sigma_head=$(git -C "$repo_sigma" rev-parse HEAD)
+(cd "$repo_sigma" && FAKE_VALUE=9 "$tick") >/tmp/avo-sigma 2>&1
+test "$(git -C "$repo_sigma" rev-parse HEAD)" = "$sigma_head" || fail "empty stddev must not fall back to sigma"
+test "$(cat "$repo_sigma/value.txt")" = "seed" || fail "empty stddev reject must restore"
+"$lua" "$assertions" ledger last "$repo_sigma/.avo/sigma/ledger.jsonl" kind=reject objective=9
 
 repo2="$workdir/repo2"
 git_init "$repo2"
@@ -187,12 +207,7 @@ export AVO_SUPERVISOR_MODEL=supervisor-strong
 test -f "$repo2/.avo/stall/supervisor.md" || fail "stall detector must run a supervisor pass"
 grep -qi 'direction' "$repo2/.avo/stall/supervisor.md" || true
 grep -q 'supervisor-strong' "$repo2/.last-prompt" || grep -q 'supervisor' "$repo2/.avo/stall/ledger.jsonl" || fail "supervisor must be recorded"
-python3 - "$repo2/.avo/stall/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-kinds = [row.get("kind") for row in rows]
-assert "supervisor" in kinds, kinds
-PY
+"$lua" "$assertions" ledger has "$repo2/.avo/stall/ledger.jsonl" kind=supervisor
 unset AVO_STALL_AFTER AVO_SUPERVISOR_MODEL
 
 repo3="$workdir/repo3"
@@ -200,12 +215,7 @@ git_init "$repo3"
 write_agent "$workdir/agent3.sh"
 write_scorer "$workdir/score3.sh"
 (cd "$repo3" && "$run" --init bounded --goal "g" --score "$workdir/score3.sh" --agent "$workdir/agent3.sh" --max-ticks 3) >/tmp/avo-run 2>&1
-python3 - "$repo3/.avo/bounded/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-scored = [row for row in rows if row.get("kind") in ("accept", "reject", "error")]
-assert len(scored) == 3, rows
-PY
+"$lua" "$assertions" ledger count "$repo3/.avo/bounded/ledger.jsonl" 3 'kind=accept|reject|error'
 
 lockrepo="$workdir/lockrepo"
 git_init "$lockrepo"
@@ -229,21 +239,9 @@ printf '#!/bin/sh\nexit 0\n' >"$workdir/pass-test.sh"
 printf '#!/bin/sh\nexit 1\n' >"$workdir/fail-test.sh"
 chmod +x "$workdir/pass-test.sh" "$workdir/fail-test.sh"
 pass_json=$(AVO_TEST_CMD="$workdir/pass-test.sh" "$score_ex" "$repo")
-printf '%s\n' "$pass_json" | python3 -c '
-import json, sys
-obj = json.load(sys.stdin)
-assert obj["correct"] is True, obj
-assert float(obj["objective"]) > 0, obj
-assert "elapsed_s" in obj["metrics"], obj
-'
+printf '%s\n' "$pass_json" | "$lua" "$assertions" score timed-valid
 fail_json=$(AVO_TEST_CMD="$workdir/fail-test.sh" "$score_ex" "$repo")
-printf '%s\n' "$fail_json" | python3 -c '
-import json, sys
-obj = json.load(sys.stdin)
-assert obj["correct"] is False, obj
-assert obj["objective"] == 0, obj
-assert obj["note"] == "tests failed", obj
-'
+printf '%s\n' "$fail_json" | "$lua" "$assertions" score timed-incorrect
 
 printf 'improve\n' >"$workdir/prompt.txt"
 cat >"$workdir/tk" <<'EOF'
@@ -270,24 +268,12 @@ git -C "$repo_base" add value.txt
 git -C "$repo_base" commit -q -m 'strong baseline'
 (cd "$repo_base" && FAKE_VALUE=1 "$tick") >/tmp/avo-base-worse 2>&1
 test "$(tr -d '[:space:]' <"$repo_base/value.txt")" = "10" || fail "first candidate below baseline must restore"
-python3 - "$repo_base/.avo/ratchet/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-kinds = [row.get("kind") for row in rows]
-assert "baseline" in kinds, kinds
-assert any(row.get("kind") == "reject" for row in rows), kinds
-assert not any(row.get("kind") == "accept" for row in rows), kinds
-PY
+"$lua" "$assertions" ledger has "$repo_base/.avo/ratchet/ledger.jsonl" kind=baseline
+"$lua" "$assertions" ledger has "$repo_base/.avo/ratchet/ledger.jsonl" kind=reject
+"$lua" "$assertions" ledger none "$repo_base/.avo/ratchet/ledger.jsonl" kind=accept
 
 # persist rejected candidate as immutable ref + patch
-python3 - "$repo/.avo/demo/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-rej = [row for row in rows if row.get("kind") == "reject"]
-assert rej, rows
-assert any(row.get("candidate") for row in rej), rej
-assert any(row.get("patch") for row in rej), rej
-PY
+"$lua" "$assertions" ledger has "$repo/.avo/demo/ledger.jsonl" kind=reject candidate=present patch=present
 test -f "$repo/.avo/demo/rejected/tick-3.patch" || test -n "$(ls "$repo/.avo/demo/rejected" 2>/dev/null)" || fail "rejected patch must be persisted"
 git -C "$repo" show-ref | grep -q 'refs/avo/demo/reject/' || fail "rejected candidate ref must be persisted"
 
@@ -332,15 +318,16 @@ dir=${1:?}
 printf 'side-effect\n' >"$dir/scorer-artifact.txt"
 printf 'mutated\n' >"$dir/notes.md"
 value=$(tr -d '[:space:]' <"$dir/value.txt")
-python3 - "$value" <<'PY'
-import json, sys
-raw=sys.argv[1]
-try:
-    obj=float(raw); correct=True; note="ok"
-except ValueError:
-    obj=0.0; correct=False; note="incorrect candidate"
-print(json.dumps({"correct": correct, "objective": obj, "metrics": {}, "note": note, "artifacts": []}))
-PY
+if "$AVO_LUA" "$AVO_JSON_HELPER" is-number "$value" >/dev/null 2>&1; then
+  correct=true
+  objective=$value
+  note=ok
+else
+  correct=false
+  objective=0
+  note="incorrect candidate"
+fi
+"$AVO_LUA" "$AVO_JSON_HELPER" test-score "$correct" "$objective" "$note" 0
 EOF
 chmod +x "$workdir/score_side.sh"
 repo_side="$workdir/repo_side"
@@ -409,11 +396,7 @@ test "$(tr -d '[:space:]' <"$repo_br/.avo/current")" = "task-b"
 git -C "$repo_br" checkout -q avo/task-a
 (cd "$repo_br" && FAKE_VALUE=2 "$tick") >/tmp/avo-bra-tick 2>&1
 test -f "$repo_br/.avo/task-a/ledger.jsonl" || fail "tick must use avo/task-a"
-python3 - "$repo_br/.avo/task-a/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-assert any(row.get("kind") in ("accept", "reject", "baseline") for row in rows), rows
-PY
+"$lua" "$assertions" ledger has "$repo_br/.avo/task-a/ledger.jsonl" 'kind=accept|reject|baseline'
 
 # worktree exclude path
 repo_wt="$workdir/repo_wt"
@@ -434,12 +417,7 @@ write_agent "$workdir/agent_run.sh"
 write_scorer "$workdir/score_run.sh"
 (cd "$repo_run" && "$tick" --init rungoal --goal "g" --score "$workdir/score_run.sh" --agent "$workdir/agent_run.sh") >/tmp/avo-rg-init 2>&1
 (cd "$repo_run" && "$run" --goal "g2" --max-ticks 2) >/tmp/avo-rg 2>&1
-python3 - "$repo_run/.avo/rungoal/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-scored = [row for row in rows if row.get("kind") in ("accept", "reject", "error")]
-assert len(scored) == 2, rows
-PY
+"$lua" "$assertions" ledger count "$repo_run/.avo/rungoal/ledger.jsonl" 2 'kind=accept|reject|error'
 
 # supervisor failure must not record a success row
 cat >"$workdir/agent_supfail.sh" <<'EOF'
@@ -461,13 +439,8 @@ write_scorer "$workdir/score_sup.sh"
 export AVO_STALL_AFTER=1
 export AVO_SUPERVISOR_MODEL=supervisor-strong
 (cd "$repo_sup" && FAKE_VALUE=bad "$tick") >/tmp/avo-sup1 2>&1
-python3 - "$repo_sup/.avo/supfail/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-kinds = [row.get("kind") for row in rows]
-assert "supervisor_error" in kinds, kinds
-assert "supervisor" not in kinds, kinds
-PY
+"$lua" "$assertions" ledger has "$repo_sup/.avo/supfail/ledger.jsonl" kind=supervisor_error
+"$lua" "$assertions" ledger none "$repo_sup/.avo/supfail/ledger.jsonl" kind=supervisor
 unset AVO_STALL_AFTER AVO_SUPERVISOR_MODEL
 
 # stale lock reclaim is atomic (mkdir after rename, no rm of a live lock path)
@@ -484,11 +457,7 @@ stale_status=$?
 set -e
 test "$stale_status" -eq 0 || fail "unsignalable lock pid must be reclaimed"
 test ! -d "$repo_stale/.avo/stale/lock" || fail "successful tick must release lock"
-python3 - "$repo_stale/.avo/stale/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-assert any(row.get("kind") in ("accept", "reject") for row in rows), rows
-PY
+"$lua" "$assertions" ledger has "$repo_stale/.avo/stale/ledger.jsonl" 'kind=accept|reject'
 
 
 # pinned scorer survives agent rewrite
@@ -524,14 +493,7 @@ EOF
 chmod +x "$workdir/agent_rewrite_score.sh"
 (cd "$repo_pin" && "$tick" --init pin --goal "g" --score "$repo_pin/score.sh" --agent "$workdir/agent_rewrite_score.sh") >/tmp/avo-pin-init 2>&1
 (cd "$repo_pin" && "$tick") >/tmp/avo-pin 2>&1
-python3 - "$repo_pin/.avo/pin/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-scored = [row for row in rows if row.get("kind") in ("accept", "reject")]
-assert scored, rows
-assert scored[-1]["kind"] == "reject", scored
-assert scored[-1].get("objective") == 0, scored
-PY
+"$lua" "$assertions" ledger last "$repo_pin/.avo/pin/ledger.jsonl" kind=reject objective=0
 
 # allow-dirty user edits must not mix into the accepted commit
 repo_mix="$workdir/repo_mix"
@@ -563,13 +525,8 @@ export AVO_SUPERVISOR_MODEL=supervisor-strong
 set +e
 (cd "$repo_err" && "$tick") >/tmp/avo-err 2>&1
 set -e
-python3 - "$repo_err/.avo/errsup/ledger.jsonl" <<'PY'
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-kinds = [row.get("kind") for row in rows]
-assert "error" in kinds, kinds
-assert "supervisor_error" in kinds or "supervisor" in kinds, kinds
-PY
+"$lua" "$assertions" ledger has "$repo_err/.avo/errsup/ledger.jsonl" kind=error
+"$lua" "$assertions" ledger has "$repo_err/.avo/errsup/ledger.jsonl" 'kind=supervisor|supervisor_error'
 unset AVO_STALL_AFTER AVO_SUPERVISOR_MODEL
 
 echo "avo loop checks passed"
