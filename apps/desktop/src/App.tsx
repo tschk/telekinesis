@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AppShell,
@@ -12,12 +12,15 @@ import {
 } from "./components";
 import {
   cloudApiBase,
+  connectWorkspaceStream,
   createWorkspace,
+  eventText,
   execInWorkspace,
   getHealth,
   listWorkspaces,
 } from "./lib/cloudApi";
 import type { HealthResponse, HostMode, SpawnResult, Workspace } from "./lib/types";
+import { diffFromEvent } from "@tk/diff-view";
 import "./App.css";
 
 function healthBadgeStatus(
@@ -48,6 +51,11 @@ function App() {
   const [logLines, setLogLines] = useState<string[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [steer, setSteer] = useState("");
+  const [pendingApproval, setPendingApproval] = useState<string | null>(null);
+  const [diff, setDiff] = useState<string | null>(null);
+  const streamRef = useRef<ReturnType<typeof connectWorkspaceStream> | null>(null);
 
   const refreshHealth = useCallback(async () => {
     const result = await getHealth();
@@ -91,6 +99,48 @@ function App() {
     void refreshLocalStatus();
     return undefined;
   }, [mode, refreshCloud, refreshHealth, refreshLocalStatus]);
+
+  useEffect(() => {
+    if (mode !== "cloud" || !selectedId) {
+      setStreamStatus(null);
+      return;
+    }
+    const seen = new Set<number>();
+    const stream = connectWorkspaceStream({
+      baseUrl: cloudApiBase(),
+      workspaceId: selectedId,
+      onStatus: setStreamStatus,
+      onUnavailable: () => setStreamStatus("unavailable"),
+      onEvents: (events) => {
+        const rows = events.map((event) => {
+          if (seen.has(event.id)) return null;
+          seen.add(event.id);
+          const text = eventText(event);
+          const patch = diffFromEvent(event);
+          if (patch) setDiff(patch);
+          if (event.kind === "approval_requested") {
+            const payload = event.payload;
+            const id =
+              payload && typeof payload === "object" && "id" in payload
+              && typeof payload.id === "string"
+                ? payload.id
+                : String(event.id);
+            setPendingApproval(id);
+          }
+          return text
+            ? `${event.kind} #${event.id} ${text}`
+            : `${event.kind} #${event.id}`;
+        }).filter((row): row is string => row != null);
+        if (rows.length === 0) return;
+        setLogLines((prev) => [...prev, ...rows]);
+      },
+    });
+    streamRef.current = stream;
+    return () => {
+      stream.close();
+      streamRef.current = null;
+    };
+  }, [mode, selectedId]);
 
   async function onSpawn() {
     setSpawnBusy(true);
@@ -262,7 +312,9 @@ function App() {
         </div>
         <h2 className="tk-nav-section-title">Sessions</h2>
         <p className="tk-hint tk-hint--empty">
-          Session list stub — wire to tk-cloud WS later.
+          {streamStatus
+            ? `Event stream ${streamStatus}. Replay continues from the last id.`
+            : "Select a workspace to attach the event stream."}
         </p>
       </>
     ) : (
@@ -340,14 +392,73 @@ function App() {
               onSubmit={() => void onExec()}
               disabled={execBusy || !selected}
             />
-            <h3 className="tk-section-label">Log</h3>
+            <form
+              className="tk-create-ws"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const text = steer.trim();
+                if (!text) return;
+                streamRef.current?.send("steer", { text });
+                setLogLines((prev) => [...prev, `steer ${text}`]);
+                setSteer("");
+              }}
+            >
+              <input
+                className="tk-create-ws__input"
+                value={steer}
+                onChange={(e) => setSteer(e.target.value)}
+                placeholder="Steer the running session"
+                disabled={!selected}
+              />
+              <Button type="submit" disabled={!selected || !steer.trim()}>
+                Steer
+              </Button>
+            </form>
+            {pendingApproval ? (
+              <div className="tk-prompt__actions">
+                <Button
+                  onClick={() => {
+                    streamRef.current?.send("approval_response", {
+                      id: pendingApproval,
+                      approved: true,
+                    });
+                    setLogLines((prev) => [...prev, `approved ${pendingApproval}`]);
+                    setPendingApproval(null);
+                  }}
+                >
+                  Approve
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    streamRef.current?.send("approval_response", {
+                      id: pendingApproval,
+                      approved: false,
+                    });
+                    setLogLines((prev) => [...prev, `denied ${pendingApproval}`]);
+                    setPendingApproval(null);
+                  }}
+                >
+                  Deny
+                </Button>
+              </div>
+            ) : null}
+            <h3 className="tk-section-label">
+              Log{streamStatus ? ` · ${streamStatus}` : ""}
+            </h3>
             <LogPane lines={logLines} />
           </>
         )}
 
         <div className="tk-placeholder-grid">
           <div className="tk-placeholder">Terminal pane stub</div>
-          <div className="tk-placeholder">Diff review stub</div>
+          <div className="tk-log" role="region" aria-label="Workspace diff">
+            {diff ? (
+              <pre className="tk-log__body">{diff}</pre>
+            ) : (
+              <div className="tk-log__empty">No diff in the session yet.</div>
+            )}
+          </div>
           <div className="tk-placeholder">In-app browser stub</div>
         </div>
       </Panel>

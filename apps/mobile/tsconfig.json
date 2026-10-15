@@ -1,6 +1,10 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    "paths": {
+      "@tk/workspace-stream": ["../stream/workspaceStream.ts"],
+      "@tk/diff-view": ["../stream/diffView.ts"]
+    }
   }
 }

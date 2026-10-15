@@ -20,7 +20,11 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@tk/workspace-stream": ["../stream/workspaceStream.ts"],
+      "@tk/diff-view": ["../stream/diffView.ts"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "../stream/workspaceStream.ts", "../stream/diffView.ts"]
 }

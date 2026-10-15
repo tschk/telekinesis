@@ -9,6 +9,12 @@ import type {
 import type { IoReply, IoRequest } from "./ioProtocol";
 import { buildPromptExecFallback } from "./promptFallback";
 
+export {
+  connectWorkspaceStream,
+  eventText,
+} from "@tk/workspace-stream";
+export type { WorkspaceEvent, WorkspaceStream } from "@tk/workspace-stream";
+
 const DEFAULT_BASE = "http://127.0.0.1:8787";
 
 function baseUrl(): string {

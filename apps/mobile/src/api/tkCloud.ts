@@ -2,6 +2,14 @@
 
 import { readHttpResponse, runOffThread } from "../runtime/offThread";
 
+export {
+  connectWorkspaceStream,
+  eventText,
+} from "@tk/workspace-stream";
+export type {
+  WorkspaceEvent,
+  WorkspaceStream,
+} from "@tk/workspace-stream";
 
 export type WorkspaceTier = "free" | "pro" | "team";
 
