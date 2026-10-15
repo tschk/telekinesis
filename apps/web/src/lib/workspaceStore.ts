@@ -1,28 +1,37 @@
+import {
+  parseWorkspaceIds,
+  serializeWorkspaceIds,
+} from "../api/client";
+
 const KEY = "tk.workspaceIds";
 
-export function loadWorkspaceIds(): string[] {
+/**
+ * Web Storage is main-thread only, so getItem/setItem stay here; the raw
+ * blob crosses to the worker for parsing and serialization.
+ */
+export async function loadWorkspaceIds(): Promise<string[]> {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((x): x is string => typeof x === "string");
+    raw = localStorage.getItem(KEY);
   } catch {
     return [];
   }
+  if (!raw) return [];
+  return parseWorkspaceIds(raw);
 }
 
-export function saveWorkspaceIds(ids: string[]): void {
+export async function saveWorkspaceIds(ids: string[]): Promise<void> {
   const unique = [...new Set(ids.filter(Boolean))];
-  localStorage.setItem(KEY, JSON.stringify(unique));
+  const raw = await serializeWorkspaceIds(unique);
+  localStorage.setItem(KEY, raw);
 }
 
-export function addWorkspaceId(id: string): string[] {
-  const next = [...new Set([...loadWorkspaceIds(), id])];
-  saveWorkspaceIds(next);
+export async function addWorkspaceId(id: string): Promise<string[]> {
+  const next = [...new Set([...(await loadWorkspaceIds()), id])];
+  await saveWorkspaceIds(next);
   return next;
 }
 
-export function syncWorkspaceIds(ids: string[]): void {
-  saveWorkspaceIds(ids);
+export async function syncWorkspaceIds(ids: string[]): Promise<void> {
+  await saveWorkspaceIds(ids);
 }
