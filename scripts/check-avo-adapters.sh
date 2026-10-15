@@ -4,6 +4,8 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 agent="$root/scripts/adapters/agent-tk.sh"
 score="$root/scripts/adapters/score-example.sh"
+lua=${AVO_LUA:-luajit}
+assertions="$root/scripts/avo/assert.lua"
 
 test -x "$agent"
 test -x "$score"
@@ -15,24 +17,9 @@ set -e
 test "$agent_status" -eq 2
 grep -q usage /tmp/agent-tk-usage
 
-"$score" "$root" | python3 -c '
-import json, sys
-obj = json.load(sys.stdin)
-assert obj["correct"] is True
-assert isinstance(obj["objective"], (int, float))
-assert isinstance(obj["metrics"], dict)
-assert isinstance(obj["note"], str) and obj["note"]
-assert isinstance(obj["artifacts"], list)
-'
+"$score" "$root" | "$lua" "$assertions" score valid
 
-AVO_CORRECT_CMD="false" AVO_NOTE="unused" "$score" "$root" | python3 -c '
-import json, sys
-obj = json.load(sys.stdin)
-assert obj["correct"] is False
-assert obj["objective"] == 0
-assert obj["note"] == "correctness command failed"
-assert obj["artifacts"] == []
-'
+AVO_CORRECT_CMD="false" AVO_NOTE="unused" "$score" "$root" | "$lua" "$assertions" score incorrect
 
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
@@ -64,17 +51,5 @@ passdir="$workdir/passdir"
 mkdir -p "$passdir"
 printf '#!/bin/sh\nexit 0\n' >"$passdir/t.sh"
 chmod +x "$passdir/t.sh"
-AVO_TEST_CMD="$passdir/t.sh" "$score" "$passdir" | python3 -c '
-import json, sys
-obj = json.load(sys.stdin)
-assert obj["correct"] is True
-assert float(obj["objective"]) > 0
-assert "elapsed_s" in obj["metrics"]
-'
-AVO_TEST_CMD="false" "$score" "$passdir" | python3 -c '
-import json, sys
-obj = json.load(sys.stdin)
-assert obj["correct"] is False
-assert obj["objective"] == 0
-assert obj["note"] == "tests failed"
-'
+AVO_TEST_CMD="$passdir/t.sh" "$score" "$passdir" | "$lua" "$assertions" score timed-valid
+AVO_TEST_CMD="false" "$score" "$passdir" | "$lua" "$assertions" score timed-incorrect

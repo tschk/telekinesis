@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 
+AVO_LUA_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/avo.lua"
+
+avo_lua() {
+  "${AVO_LUA:-luajit}" "$AVO_LUA_SCRIPT" "$@"
+}
+
+avo_json_get() {
+  avo_lua json-get "$1" "$2" "${3:-}"
+}
+
 avo_die() {
   printf '%s\n' "$*" >&2
   exit 2
@@ -51,12 +61,8 @@ avo_exclude_path() {
 
 avo_read_json_file() {
   local file=$1
-  local expr=$2
-  python3 - "$file" "$expr" <<'PY'
-import json, sys
-obj = json.load(open(sys.argv[1]))
-print(obj.get(sys.argv[2], "") if sys.argv[2] != "*" else json.dumps(obj))
-PY
+  local key=$2
+  avo_lua config-get "$file" "$key"
 }
 
 avo_load_current() {
@@ -94,18 +100,7 @@ avo_write_config() {
   dir=$(avo_task_dir)
   mkdir -p "$dir"
   cfg=$(avo_config_path)
-  python3 - "$cfg" "$AVO_TASK" "$AVO_GOAL" "$AVO_SCORE" "$AVO_AGENT" "$(avo_branch_name)" <<'PY'
-import json, sys
-path, task, goal, score, agent, branch = sys.argv[1:]
-json.dump({
-    "task": task,
-    "goal": goal,
-    "score": score,
-    "agent": agent,
-    "branch": branch,
-}, open(path, "w"), indent=2)
-open(path, "a").write("\n")
-PY
+  avo_lua config-write "$AVO_TASK" "$AVO_GOAL" "$AVO_SCORE" "$AVO_AGENT" "$(avo_branch_name)" >"$cfg"
   printf '%s\n' "$AVO_TASK" >"$AVO_ROOT/.avo/current"
   if [ ! -f "$dir/notes.md" ]; then
     printf '%s\n' "$AVO_GOAL" >"$dir/notes.md"
@@ -298,10 +293,11 @@ avo_isolate_agent_tree() {
     git read-tree "$start"
     while IFS=$'\t' read -r status path; do
       [ -n "${path:-}" ] || continue
-      case "$status" in
-        D*) git rm -q --cached --ignore-unmatch -- "$path" ;;
-        *) git restore --source="$cand" --staged -- "$path" ;;
-      esac
+      if [[ "$status" == D* ]]; then
+        git rm -q --cached --ignore-unmatch -- "$path"
+      else
+        git restore --source="$cand" --staged -- "$path"
+      fi
     done < <(git diff --name-status --no-renames "$pre" "$cand")
     git write-tree
   )
@@ -310,23 +306,15 @@ avo_isolate_agent_tree() {
 
 avo_reapply_user_dirty() {
   [ -n "${AVO_START_HEAD:-}" ] && [ -n "${AVO_PRE_TREE:-}" ] && [ -n "${AVO_CAND_TREE:-}" ] || return 0
+  local work path
   work=${AVO_WORK_TREE:-$AVO_CAND_TREE}
-  python3 - "$AVO_ROOT" "$AVO_START_HEAD" "$AVO_PRE_TREE" "$work" <<'ENDPY'
-import subprocess, sys
-root, start, pre, cand = sys.argv[1:]
-
-def names(a, b):
-    out = subprocess.check_output(
-        ["git", "-C", root, "diff", "--name-only", "--no-renames", a, b],
-        text=True,
-    )
-    return {p for p in out.splitlines() if p}
-
-for path in sorted(names(start, pre) - names(pre, cand)):
-    subprocess.check_call(
-        ["git", "-C", root, "restore", "--source", pre, "--worktree", "--", path]
-    )
-ENDPY
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if ! avo_git diff --quiet "$AVO_PRE_TREE" "$work" -- "$path"; then
+      continue
+    fi
+    avo_git restore --source="$AVO_PRE_TREE" --worktree -- "$path"
+  done < <(avo_git diff --name-only --no-renames "$AVO_START_HEAD" "$AVO_PRE_TREE")
 }
 
 avo_pin_score() {
@@ -443,131 +431,33 @@ avo_persist_candidate() {
 avo_ledger_append() {
   local kind=$1
   local payload=$2
-  python3 - "$(avo_ledger_path)" "$kind" "$payload" <<'PY'
-import json, sys, time
-path, kind, payload = sys.argv[1], sys.argv[2], sys.argv[3]
-row = json.loads(payload)
-row["kind"] = kind
-row.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-with open(path, "a") as fh:
-    fh.write(json.dumps(row, separators=(",", ":")) + "\n")
-PY
+  avo_lua ledger-append "$(avo_ledger_path)" "$kind" "$payload"
 }
 
 avo_ledger_rows() {
-  python3 - "$(avo_ledger_path)" <<'PY'
-import json, sys
-path = sys.argv[1]
-try:
-    rows = [json.loads(line) for line in open(path) if line.strip()]
-except FileNotFoundError:
-    rows = []
-print(json.dumps(rows))
-PY
+  avo_lua ledger-rows "$(avo_ledger_path)"
 }
 
 avo_best_objective() {
-  python3 - "$(avo_ledger_path)" <<'PY'
-import json, sys
-path = sys.argv[1]
-best = None
-try:
-    rows = [json.loads(line) for line in open(path) if line.strip()]
-except FileNotFoundError:
-    rows = []
-for row in rows:
-    if row.get("kind") not in ("accept", "baseline"):
-        continue
-    obj = float(row.get("objective", 0))
-    if best is None or obj > best:
-        best = obj
-print("" if best is None else best)
-PY
+  avo_lua best-objective "$(avo_ledger_path)"
 }
 
 avo_has_baseline() {
-  python3 - "$(avo_ledger_path)" <<'PY'
-import json, sys
-path = sys.argv[1]
-try:
-    rows = [json.loads(line) for line in open(path) if line.strip()]
-except FileNotFoundError:
-    rows = []
-print("yes" if any(row.get("kind") in ("baseline", "accept") for row in rows) else "no")
-PY
+  avo_lua has-baseline "$(avo_ledger_path)"
 }
 
 avo_tick_number() {
-  python3 - "$(avo_ledger_path)" <<'PY'
-import json, sys
-path = sys.argv[1]
-n = 0
-try:
-    for line in open(path):
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        if row.get("kind") in ("accept", "reject", "error"):
-            n += 1
-except FileNotFoundError:
-    pass
-print(n + 1)
-PY
+  avo_lua tick-number "$(avo_ledger_path)"
 }
 
 avo_should_supervise() {
   local stall_after=${AVO_STALL_AFTER:-3}
-  python3 - "$(avo_ledger_path)" "$stall_after" <<'PY'
-import json, sys
-path, stall_after = sys.argv[1], int(sys.argv[2])
-try:
-    rows = [json.loads(line) for line in open(path) if line.strip()]
-except FileNotFoundError:
-    rows = []
-best = None
-since_best = 0
-since_supervisor = 0
-for row in rows:
-    kind = row.get("kind")
-    if kind == "supervisor":
-        since_supervisor = 0
-        continue
-    if kind not in ("accept", "reject", "error"):
-        continue
-    since_supervisor += 1
-    obj = float(row.get("objective", 0))
-    improved = kind == "accept" and (best is None or obj > best)
-    if improved:
-        best = obj
-        since_best = 0
-    else:
-        since_best += 1
-print("yes" if since_best >= stall_after and since_supervisor >= stall_after else "no")
-PY
+  avo_lua should-supervise "$(avo_ledger_path)" "$stall_after"
 }
 
 avo_parse_score() {
   local raw=$1
-  python3 - "$raw" <<'PY'
-import json, sys
-raw = sys.argv[1]
-obj = json.loads(raw)
-if "correct" not in obj or "objective" not in obj or "note" not in obj:
-    raise SystemExit("score JSON must include correct, objective, note")
-if not isinstance(obj["correct"], bool):
-    raise SystemExit('score JSON "correct" must be a JSON boolean')
-correct = obj["correct"]
-objective = 0.0 if not correct else float(obj["objective"])
-metrics = obj.get("metrics") or {}
-stddev = float(metrics.get("stddev", metrics.get("sigma", 0)) or 0)
-print(json.dumps({
-    "correct": correct,
-    "objective": objective,
-    "note": str(obj["note"]),
-    "stddev": stddev,
-    "raw": obj,
-}))
-PY
+  avo_lua parse-score "$raw"
 }
 
 avo_should_commit() {
@@ -575,49 +465,12 @@ avo_should_commit() {
   local objective=$2
   local stddev=$3
   local best=$4
-  python3 - "$correct" "$objective" "$stddev" "$best" "${AVO_MIN_IMPROVEMENT:-0}" "${AVO_NOISE_K:-1}" <<'PY'
-import sys
-correct, objective, stddev, best, min_imp, noise_k = sys.argv[1:7]
-if correct != "true":
-    print("no")
-    raise SystemExit
-objective = float(objective)
-stddev = float(stddev or 0)
-min_imp = float(min_imp or 0)
-noise_k = float(noise_k or 1)
-margin = noise_k * stddev
-if best == "":
-    print("no")
-    raise SystemExit
-print("yes" if objective + margin >= float(best) + min_imp else "no")
-PY
+  avo_lua should-commit "$correct" "$objective" "$stddev" "$best" "${AVO_MIN_IMPROVEMENT:-0}" "${AVO_NOISE_K:-1}"
 }
 
 avo_lineage_text() {
   local n=${AVO_LINEAGE_N:-8}
-  python3 - "$(avo_ledger_path)" "$n" <<'PY'
-import json, sys
-path, n = sys.argv[1], int(sys.argv[2])
-try:
-    rows = [json.loads(line) for line in open(path) if line.strip()]
-except FileNotFoundError:
-    rows = []
-rows = [row for row in rows if row.get("kind") in ("accept", "reject", "baseline")]
-rows = rows[-n:]
-if not rows:
-    print("(empty — this is the first variation)")
-    raise SystemExit
-for row in rows:
-    cand = row.get("candidate") or row.get("commit") or "-"
-    patch = row.get("patch") or ""
-    extra = f" candidate={cand}"
-    if patch:
-        extra += f" patch={patch}"
-    print(
-        f"tick {row.get('tick')} kind={row.get('kind')} correct={row.get('correct')} "
-        f"objective={row.get('objective')} note={row.get('note')}{extra}"
-    )
-PY
+  avo_lua lineage "$(avo_ledger_path)" "$n"
 }
 
 avo_knowledge_list() {
@@ -700,20 +553,14 @@ avo_ensure_baseline() {
     avo_restore_tree
     avo_fail "baseline score failed"
   fi
-  correct=$(python3 -c 'import json,sys; print("true" if json.loads(sys.argv[1])["correct"] else "false")' "$score_json")
-  objective=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["objective"])' "$score_json")
-  note=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["note"])' "$score_json")
-  avo_ledger_append baseline "$(python3 - "$correct" "$objective" "$note" "$AVO_START_HEAD" <<'PY'
-import json, sys
-print(json.dumps({
-    "tick": 0,
-    "correct": sys.argv[1] == "true",
-    "objective": float(sys.argv[2]),
-    "note": "baseline " + sys.argv[3],
-    "commit": sys.argv[4],
-}))
-PY
-)"
+  correct=$(avo_json_get "$score_json" correct)
+  objective=$(avo_json_get "$score_json" objective float)
+  note=$(avo_json_get "$score_json" note)
+  local payload
+  payload=$(avo_lua json-object \
+    "n:tick=0" "b:correct=$correct" "f:objective=$objective" \
+    "s:note=baseline $note" "s:commit=$AVO_START_HEAD")
+  avo_ledger_append baseline "$payload"
   avo_restore_tree
 }
 
@@ -742,11 +589,7 @@ avo_run_supervisor() {
       printf '%s\n' "No AVO_SUPERVISOR_MODEL or AVO_MODEL set; host-only stall note."
     } >"$dir/supervisor.md"
     avo_restore_tree
-    avo_ledger_append supervisor "$(python3 - "$AVO_TASK" <<'PY'
-import json, sys
-print(json.dumps({"task": sys.argv[1], "model": "", "note": "supervisor skipped"}))
-PY
-)"
+    avo_ledger_append supervisor "$(avo_lua json-object "s:task=$AVO_TASK" "s:model=" "s:note=supervisor skipped")"
     return 0
   fi
   set +e
@@ -756,11 +599,7 @@ PY
   if [ "$st" -ne 0 ]; then
     rm -f "$dir/supervisor.md.tmp"
     avo_restore_tree
-    avo_ledger_append supervisor_error "$(python3 - "$AVO_TASK" "$model" <<'PY'
-import json, sys
-print(json.dumps({"task": sys.argv[1], "model": sys.argv[2], "note": "supervisor failed"}))
-PY
-)"
+    avo_ledger_append supervisor_error "$(avo_lua json-object "s:task=$AVO_TASK" "s:model=$model" "s:note=supervisor failed")"
     return 0
   fi
   {
@@ -771,9 +610,5 @@ PY
   } >"$dir/supervisor.md"
   rm -f "$dir/supervisor.md.tmp"
   avo_restore_tree
-  avo_ledger_append supervisor "$(python3 - "$AVO_TASK" "$model" <<'PY'
-import json, sys
-print(json.dumps({"task": sys.argv[1], "model": sys.argv[2], "note": "supervisor redirect"}))
-PY
-)"
+  avo_ledger_append supervisor "$(avo_lua json-object "s:task=$AVO_TASK" "s:model=$model" "s:note=supervisor redirect")"
 }

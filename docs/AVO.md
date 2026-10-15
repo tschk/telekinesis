@@ -3,7 +3,8 @@
 Source of truth: NVIDIA, *AVO: Agentic Variation Operators*
 ([arXiv:2603.24517](https://arxiv.org/abs/2603.24517)). The loop lives in
 `scripts/avo/`. Do not vendor [avo-lite](https://github.com/Git-on-my-level/avo-lite).
-There is no `tk avo` subcommand; the default binary stays slim.
+There is no `tk avo` subcommand; the default binary stays slim. The optional
+scripts require LuaJIT 2.1 on `PATH` and do not require Python.
 
 ## NVIDIA loop
 
