@@ -4,8 +4,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use telekinesis::local_runtime::{
-    CreateThread, LocalRuntime, Project, Receipt, RuntimeEvent, Submit, Thread, ThreadConfig,
-    ThreadSnapshot,
+    CreateThread, Handoff, LocalRuntime, Project, Receipt, RuntimeEvent, Submit, Thread,
+    ThreadConfig, ThreadSnapshot,
 };
 
 #[derive(Debug, Serialize)]
@@ -165,6 +165,16 @@ async fn local_submit(host: tauri::State<'_, Host>, request: Submit) -> Result<R
     with_runtime(host.inner().clone(), move |runtime| runtime.submit(request)).await
 }
 #[tauri::command]
+async fn local_handoff(
+    host: tauri::State<'_, Host>,
+    request: Handoff,
+) -> Result<ThreadSnapshot, String> {
+    with_runtime(host.inner().clone(), move |runtime| {
+        runtime.handoff(request)
+    })
+    .await
+}
+#[tauri::command]
 async fn local_cancel(
     host: tauri::State<'_, Host>,
     thread_id: String,
@@ -212,6 +222,7 @@ pub fn run() {
             local_load_thread,
             local_update_thread,
             local_submit,
+            local_handoff,
             local_cancel,
             local_runtime_options
         ])

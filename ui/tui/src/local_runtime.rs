@@ -84,6 +84,20 @@ pub struct CreateThread {
     pub parent_thread_id: Option<String>,
     pub request_id: Option<String>,
 }
+/// A reviewed continuation, atomically linked and accepted before execution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Handoff {
+    pub source_thread_id: String,
+    pub source_run_id: Option<String>,
+    pub request_id: String,
+    pub text: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct SavedHandoff {
+    request: Handoff,
+    thread_id: String,
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendMode {
@@ -175,6 +189,8 @@ struct SavedThread {
 struct Store {
     projects: Vec<Project>,
     threads: Vec<SavedThread>,
+    #[serde(default)]
+    handoffs: Vec<SavedHandoff>,
 }
 struct Active {
     run_id: String,
@@ -481,6 +497,104 @@ impl LocalRuntime {
             Ok(thread)
         })
     }
+    /// Reject active sources rather than treating cancellation as settlement.
+    /// The durable child receipt also reserves the continuation during startup.
+    pub fn handoff(self: &Arc<Self>, request: Handoff) -> Result<ThreadSnapshot> {
+        if request.request_id.is_empty()
+            || request.text.trim().is_empty()
+            || request.text.len() > 128_000
+        {
+            return Err("Handoff requires a request ID and a prompt within 128 KB.".into());
+        }
+        let mut state = self.state.lock();
+        let child_id = if let Some(existing) = state
+            .store
+            .handoffs
+            .iter()
+            .find(|h| h.request.request_id == request.request_id)
+        {
+            if existing.request != request {
+                return Err("Handoff ID already used for a different request.".into());
+            }
+            existing.thread_id.clone()
+        } else {
+            let source = state
+                .store
+                .threads
+                .iter()
+                .find(|s| s.thread.id == request.source_thread_id)
+                .ok_or("Unknown source thread.")?;
+            if source.receipts.last().map(|r| &r.run_id) != request.source_run_id.as_ref() {
+                return Err("Source changed; review the handoff again.".into());
+            }
+            if family_busy(&state, &source.thread.id, false) {
+                return Err(
+                    "Stop the source or continuation and wait for all pending work to settle."
+                        .into(),
+                );
+            }
+            if state
+                .store
+                .threads
+                .iter()
+                .any(|s| s.thread.request_id.as_ref() == Some(&request.request_id))
+            {
+                return Err("Handoff ID already used for a different request.".into());
+            }
+            let thread = Thread {
+                id: id(),
+                session_id: id(),
+                project_id: source.thread.project_id.clone(),
+                title: format!("Continue: {}", source.thread.title)
+                    .chars()
+                    .take(120)
+                    .collect(),
+                config: source.thread.config.clone(),
+                parent_thread_id: Some(source.thread.id.clone()),
+                request_id: Some(request.request_id.clone()),
+            };
+            validate_config(&thread.config)?;
+            let receipt = Receipt {
+                client_message_id: format!("handoff-{}", request.request_id),
+                thread_id: thread.id.clone(),
+                run_id: id(),
+                state: ReceiptState::Accepted,
+                mode: SendMode::Steer,
+                text: request.text.clone(),
+                error: None,
+                reference_context: None,
+            };
+            let mut next = state.store.clone();
+            next.threads.push(SavedThread {
+                session: Session::new(&thread.session_id, &thread.title),
+                thread: thread.clone(),
+                receipts: vec![receipt],
+                sequence: 0,
+            });
+            next.handoffs.push(SavedHandoff {
+                request,
+                thread_id: thread.id.clone(),
+            });
+            self.persist(&next)?;
+            state.store = next;
+            thread.id
+        };
+        drop(state);
+        // A startup failure is a persisted Failed receipt, visible and recoverable
+        // in the child. Retrying this handoff never creates or launches another run.
+        if let Err(error) = self.start(&child_id) {
+            let snapshot = self.load_thread(&child_id)?;
+            if snapshot
+                .receipts
+                .iter()
+                .any(|r| r.state == ReceiptState::Failed)
+            {
+                return Ok(snapshot);
+            }
+            return Err(error);
+        }
+        self.load_thread(&child_id)
+    }
     pub fn update_thread(&self, thread_id: &str, config: ThreadConfig) -> Result<Thread> {
         validate_config(&config)?;
         let mut state = self.state.lock();
@@ -561,6 +675,9 @@ impl LocalRuntime {
                 return Err("Message ID already used for a different request.".into());
             }
             return Ok(receipt.clone());
+        }
+        if family_busy(&state, &request.thread_id, true) {
+            return Err("A linked continuation is still running or settling.".into());
         }
         let active = state.active.get(&request.thread_id);
         if active.is_some_and(|a| a.stopped) {
@@ -874,6 +991,28 @@ impl LocalRuntime {
         self.persist(&state.store)?;
         Ok(true)
     }
+}
+// Handoff links form a tree. Serialize writers across its source and all
+// continuations while preserving ordinary steering/queueing on the same thread.
+fn family_root<'a>(store: &'a Store, mut thread_id: &'a str) -> &'a str {
+    while let Some(parent) = store
+        .threads
+        .iter()
+        .find(|s| s.thread.id == thread_id)
+        .and_then(|s| s.thread.parent_thread_id.as_deref())
+    {
+        thread_id = parent;
+    }
+    thread_id
+}
+fn family_busy(state: &State, thread_id: &str, exclude_self: bool) -> bool {
+    let root = family_root(&state.store, thread_id);
+    state.store.threads.iter().any(|saved| {
+        (!exclude_self || saved.thread.id != thread_id)
+            && family_root(&state.store, &saved.thread.id) == root
+            && (state.active.contains_key(&saved.thread.id)
+                || saved.receipts.iter().any(|r| r.state.pending()))
+    })
 }
 fn saved_mut<'a>(store: &'a mut Store, thread_id: &str) -> Result<&'a mut SavedThread> {
     store
@@ -1510,6 +1649,306 @@ mod tests {
             authorize(&agent.policy, "write", "{}", agent.approver.as_deref()),
             Decision::Deny
         );
+    }
+    fn handoff_request(source: &Thread, key: &str, run_id: Option<&str>) -> Handoff {
+        Handoff {
+            source_thread_id: source.id.clone(),
+            source_run_id: run_id.map(str::to_string),
+            request_id: key.into(),
+            text: "hold".into(),
+        }
+    }
+    fn race_handoffs(
+        host: &Arc<LocalRuntime>,
+        requests: [Handoff; 2],
+    ) -> Vec<Result<ThreadSnapshot>> {
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = requests
+                .into_iter()
+                .map(|request| {
+                    let barrier = barrier.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        host.handoff(request)
+                    })
+                })
+                .collect();
+            barrier.wait();
+            tasks.into_iter().map(|task| task.join().unwrap()).collect()
+        })
+    }
+    #[test]
+    fn handoff_rejects_active_source_then_serializes_retries_and_competing_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(vec![]));
+        let (tx, rx) = mpsc::channel();
+        let host = fixture(dir.path().join("state"), calls.clone(), tx.clone());
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let mut source = thread(&host, &project, "source");
+        let mut config = source.config.clone();
+        config.permission = Permission::Restrictive;
+        config.role = AgentRole::Review;
+        source = host.update_thread(&source.id, config).unwrap();
+        let run = host
+            .submit(request(&source, "source-1", "hold", SendMode::Steer))
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let first = handoff_request(&source, "first", Some(&run.run_id));
+        let second = handoff_request(&source, "second", Some(&run.run_id));
+        assert!(race_handoffs(&host, [first.clone(), second.clone()])
+            .iter()
+            .all(Result::is_err));
+        assert_eq!(host.threads(&project.id).len(), 1);
+        assert_eq!(calls.lock().len(), 1);
+        host.cancel(&source.id, &run.run_id).unwrap();
+        // Cancellation is only a request: if the engine has not settled yet,
+        // even matching handoff retries must still be rejected.
+        {
+            let state = host.state.lock();
+            if state.active.contains_key(&source.id) {
+                assert!(family_busy(&state, &source.id, false));
+            }
+        }
+        settled(&host, &source);
+        let results = race_handoffs(&host, [first.clone(), second.clone()]);
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        let child = &results.iter().find_map(|r| r.as_ref().ok()).unwrap().thread;
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let winning = if child.request_id.as_deref() == Some("first") {
+            first
+        } else {
+            second
+        };
+        let receipt = host.load_thread(&child.id).unwrap().receipts[0].clone();
+        assert_eq!(child.parent_thread_id.as_deref(), Some(source.id.as_str()));
+        assert_eq!(child.project_id, source.project_id);
+        assert_eq!(child.config.permission, Permission::Restrictive);
+        assert_eq!(child.config.role, AgentRole::Review);
+        let retries = race_handoffs(&host, [winning.clone(), winning.clone()]);
+        for retry in retries {
+            let retry = retry.unwrap();
+            assert_eq!(retry.thread.id, child.id);
+            assert_eq!(retry.receipts[0].run_id, receipt.run_id);
+        }
+        assert!(host
+            .handoff(Handoff {
+                text: "different".into(),
+                ..winning.clone()
+            })
+            .is_err());
+        assert!(host
+            .handoff(handoff_request(&source, "third", Some(&run.run_id)))
+            .is_err());
+        assert!(host
+            .submit(request(&source, "source-2", "hold", SendMode::Steer))
+            .is_err());
+        let queued = host
+            .submit(request(child, "child-2", "never run", SendMode::Queue))
+            .unwrap();
+        assert_eq!(queued.state, ReceiptState::Queued);
+        assert_eq!(calls.lock().len(), 2);
+        host.cancel(&child.id, &receipt.run_id).unwrap();
+        let finished = settled(&host, child);
+        assert_eq!(finished.receipts[0].state, ReceiptState::Cancelled);
+        assert_eq!(finished.receipts[1].state, ReceiptState::Cancelled);
+        assert!(finished.messages.iter().all(|m| m.role != "assistant"));
+        wait_idle(&host);
+        drop(host);
+        let host = fixture(dir.path().join("state"), calls.clone(), tx);
+        let retry = host.handoff(winning).unwrap();
+        assert_eq!(retry.thread.id, child.id);
+        assert_eq!(retry.receipts[0].run_id, receipt.run_id);
+        assert_eq!(retry.receipts[0].state, ReceiptState::Cancelled);
+        assert_eq!(host.threads(&project.id).len(), 2);
+        assert_eq!(calls.lock().len(), 2);
+    }
+    #[test]
+    fn handoff_waits_for_host_settlement_even_after_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(vec![]));
+        let (started_tx, started_rx) = mpsc::channel();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let provider = Arc::new(Fixture {
+            calls: calls.clone(),
+            started: started_tx,
+            gate: gate.clone(),
+        });
+        let (settling_tx, settling_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let host = LocalRuntime::open_with(
+            dir.path().join("state"),
+            Arc::new(move |event| {
+                if event.kind == "engine" && event.payload["type"] == "MessageDelta" {
+                    settling_tx.send(()).unwrap();
+                    release_rx
+                        .lock()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }
+            }),
+            local_executor().unwrap(),
+            vec![],
+            Arc::new(move |thread, _| {
+                let mut agent = Agent::new();
+                agent.set_provider(provider.clone());
+                agent.set_model("fixture");
+                configure_agent(&mut agent, &thread.config);
+                Ok(agent)
+            }),
+        )
+        .unwrap();
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let source = thread(&host, &project, "source");
+        let run = host
+            .submit(request(&source, "source", "gate", SendMode::Steer))
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        gate.notify_one();
+        // Pause the actual host event consumer before finish removes Active.
+        settling_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        host.cancel(&source.id, &run.run_id).unwrap();
+        let results = race_handoffs(
+            &host,
+            [
+                handoff_request(&source, "one", Some(&run.run_id)),
+                handoff_request(&source, "two", Some(&run.run_id)),
+            ],
+        );
+        assert!(results.iter().all(Result::is_err));
+        assert_eq!(host.threads(&project.id).len(), 1);
+        assert_eq!(calls.lock().len(), 1);
+        assert!(host
+            .load_thread(&source.id)
+            .unwrap()
+            .active_run_id
+            .is_some());
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            settled(&host, &source).receipts[0].state,
+            ReceiptState::Cancelled
+        );
+        wait_idle(&host);
+    }
+    #[test]
+    fn concurrent_identical_handoffs_and_failed_save_keep_one_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(vec![]));
+        let (tx, rx) = mpsc::channel();
+        let host = fixture(dir.path().join("state"), calls.clone(), tx);
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let source = thread(&host, &project, "source");
+        let request = handoff_request(&source, "same", None);
+        let tmp = dir.path().join("state/threads.json.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        assert!(host.handoff(request.clone()).is_err());
+        assert_eq!(host.threads(&project.id).len(), 1);
+        assert!(calls.lock().is_empty());
+        std::fs::remove_dir(&tmp).unwrap();
+        let results = race_handoffs(&host, [request.clone(), request]);
+        let first = results[0].as_ref().unwrap();
+        let second = results[1].as_ref().unwrap();
+        assert_eq!(first.thread.id, second.thread.id);
+        assert_eq!(first.receipts[0].run_id, second.receipts[0].run_id);
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(calls.lock().len(), 1);
+        assert_eq!(host.threads(&project.id).len(), 2);
+        host.cancel(&first.thread.id, &first.receipts[0].run_id)
+            .unwrap();
+        settled(&host, &first.thread);
+        wait_idle(&host);
+    }
+    #[test]
+    fn handoff_also_excludes_preexisting_linked_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let host = fixture(dir.path().join("state"), Arc::new(Mutex::new(vec![])), tx);
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let source = thread(&host, &project, "source");
+        let legacy = host
+            .create_thread(CreateThread {
+                project_id: project.id,
+                title: "legacy continuation".into(),
+                config: None,
+                parent_thread_id: Some(source.id.clone()),
+                request_id: Some("legacy".into()),
+            })
+            .unwrap();
+        let run = host
+            .submit(request(&legacy, "legacy-run", "hold", SendMode::Steer))
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(host.handoff(handoff_request(&source, "new", None)).is_err());
+        assert!(host
+            .submit(request(&source, "source-run", "hold", SendMode::Steer))
+            .is_err());
+        host.cancel(&legacy.id, &run.run_id).unwrap();
+        settled(&host, &legacy);
+        wait_idle(&host);
+    }
+    #[test]
+    fn handoff_and_new_source_submit_have_one_winner() {
+        for _ in 0..8 {
+            let dir = tempfile::tempdir().unwrap();
+            let calls = Arc::new(Mutex::new(vec![]));
+            let (tx, rx) = mpsc::channel();
+            let host = fixture(dir.path().join("state"), calls.clone(), tx);
+            let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+            let source = thread(&host, &project, "source");
+            let barrier = std::sync::Barrier::new(3);
+            let (handoff, submit) = std::thread::scope(|scope| {
+                let a = scope.spawn(|| {
+                    barrier.wait();
+                    host.handoff(handoff_request(&source, "transfer", None))
+                });
+                let b = scope.spawn(|| {
+                    barrier.wait();
+                    host.submit(request(&source, "new-source", "hold", SendMode::Steer))
+                });
+                barrier.wait();
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert_ne!(handoff.is_ok(), submit.is_ok());
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(calls.lock().len(), 1);
+            let (thread, run_id) = match handoff {
+                Ok(child) => (child.thread, child.receipts[0].run_id.clone()),
+                Err(_) => (source.clone(), submit.unwrap().run_id),
+            };
+            host.cancel(&thread.id, &run_id).unwrap();
+            settled(&host, &thread);
+            assert!(host
+                .handoff(handoff_request(&source, "stale", Some("wrong-run")))
+                .is_err());
+            wait_idle(&host);
+        }
+    }
+    #[test]
+    fn handoff_start_failure_is_durable_and_retry_does_not_orphan_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = LocalRuntime::open_with(
+            dir.path().join("state"),
+            Arc::new(|_| {}),
+            local_executor().unwrap(),
+            vec![],
+            Arc::new(|_, _| Err("Fixture provider unavailable".into())),
+        )
+        .unwrap();
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let source = thread(&host, &project, "source");
+        let request = handoff_request(&source, "failed-start", None);
+        let child = host.handoff(request.clone()).unwrap();
+        assert_eq!(child.receipts[0].state, ReceiptState::Failed);
+        assert_eq!(
+            child.receipts[0].error.as_deref(),
+            Some("Fixture provider unavailable")
+        );
+        assert!(child.active_run_id.is_none());
+        let retry = host.handoff(request).unwrap();
+        assert_eq!(retry.thread.id, child.thread.id);
+        assert_eq!(retry.receipts[0].run_id, child.receipts[0].run_id);
+        assert_eq!(host.threads(&project.id).len(), 2);
     }
     #[test]
     fn linked_creation_is_idempotent_and_cross_project_parent_is_rejected() {

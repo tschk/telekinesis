@@ -82,6 +82,12 @@ export const localApi = {
     mode: "steer" | "queue";
     referenceContext?: string;
   }) => invoke<Receipt>("local_submit", { request }),
+  handoff: (request: {
+    sourceThreadId: string;
+    sourceRunId: string | null;
+    requestId: string;
+    text: string;
+  }) => invoke<ThreadSnapshot>("local_handoff", { request }),
   cancel: (threadId: string, runId: string) =>
     invoke<boolean>("local_cancel", { threadId, runId }),
 };
