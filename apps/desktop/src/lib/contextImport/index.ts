@@ -74,6 +74,7 @@ export function parseChatExport(text: string, options: { fileName: string }): Im
     parsed = undefined;
   }
   const fileName = label(options.fileName, 'selected export');
+  const importId = crypto.randomUUID();
   if (Array.isArray(parsed) || Array.isArray(record(parsed).chat_messages)) {
     const chats = Array.isArray(parsed) ? parsed : [parsed];
     if (chats.length > MAX_CONVERSATIONS) throw new ContextImportError('limit', 'Choose at most 1,000 conversations per export.');
@@ -83,7 +84,7 @@ export function parseChatExport(text: string, options: { fileName: string }): Im
       const c = record(chat);
       if (!Array.isArray(c.chat_messages)) throw new ContextImportError('unsupported', 'Expected Claude chat_messages in every conversation.');
       if ((count += c.chat_messages.length) > MAX_ENTRIES) throw new ContextImportError('limit', 'Choose an export with at most 10,000 messages.');
-      const id = `claude:${ci}`;
+      const id = `${importId}:claude:${ci}`;
       const entries = c.chat_messages.flatMap((message, mi): ImportEntry[] => {
         const m = record(message);
         const role = m.sender === 'human' ? 'user' : m.sender === 'assistant' ? 'assistant' : undefined;
@@ -120,17 +121,26 @@ export function parseChatExport(text: string, options: { fileName: string }): Im
     if (role !== 'user' && role !== 'assistant') continue;
     const body = isEvent ? string(p.message) : textContent(p.content);
     if (!body.trim()) continue;
-    (isEvent ? events : messages).push({ id: `codex:0:${line}`, role, text: body,
+    (isEvent ? events : messages).push({ id: `${importId}:codex:0:${line}`, role, text: body,
       sourceId: sourceId(p.id), timestamp: string(v.timestamp) || undefined });
     if (messages.length + events.length > MAX_ENTRIES) throw new ContextImportError('limit', 'Choose an export with at most 10,000 messages.');
   }
-  // Modern rollouts repeat response messages in event_msg; use events only for legacy files.
-  const entries = messages.length ? messages : events;
+  // Pair mirrored event/response occurrences one for one; retain legitimate repeated messages.
+  const mirrored = new Map<string, number>();
+  const key = (entry: ImportEntry) => JSON.stringify([entry.role, entry.text]);
+  for (const entry of messages) mirrored.set(key(entry), (mirrored.get(key(entry)) || 0) + 1);
+  const unmatchedEvents = events.filter(entry => {
+    const remaining = mirrored.get(key(entry)) || 0;
+    if (!remaining) return true;
+    mirrored.set(key(entry), remaining - 1);
+    return false;
+  });
+  const entries = [...messages, ...unmatchedEvents].sort((a, b) => Number(a.id.split(':').pop()) - Number(b.id.split(':').pop()));
   if (!entries.length) throw new ContextImportError('unsupported', 'No supported user or assistant text messages were found.');
   return { source: { provider: 'codex', format: 'codex-rollout-jsonl', fileName },
-    conversations: [{ id: 'codex:0', title: label(meta.name, label(meta.id, fileName)), entries }],
+    conversations: [{ id: `${importId}:codex:0`, title: label(meta.name, label(meta.id, fileName)), entries }],
     warnings: ['Text only; tools, reasoning and session environment data are excluded. Review selected messages for sensitive information.',
-      ...(messages.length && events.length ? ['Used response messages only to avoid duplicates; event-only text in mixed files is excluded.'] : [])] };
+      ...(unmatchedEvents.length < events.length ? ['Excluded duplicate mirrored event messages; repeated source messages are retained.'] : [])] };
 }
 
 /** Extractive excerpts, not a model-generated summary. Budget includes labels and JSON escaping.
