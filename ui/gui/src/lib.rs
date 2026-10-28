@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod codex_provider;
+pub mod desktop_host;
 pub mod host;
 #[path = "../../tui/src/host_events.rs"]
 pub mod host_events;

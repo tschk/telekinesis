@@ -6,10 +6,12 @@ pub mod channel_approver;
 pub mod cli;
 pub mod codex_provider;
 pub mod config_menu;
+pub mod context_import;
 pub mod exec;
 pub mod harness;
 pub mod host;
 pub mod host_events;
+pub mod local_runtime;
 pub mod login_menu;
 pub mod markdown;
 #[cfg(feature = "mcp")]

@@ -243,6 +243,32 @@ pub(crate) fn openai_base_url() -> String {
 }
 
 pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredProvider, String)> {
+    setup_providers_inner(rt, false)
+}
+
+/// The local workspace never activates excluded providers, even to refresh credentials.
+pub(crate) fn setup_local_providers(
+    rt: &tokio::runtime::Runtime,
+) -> Vec<(ConfiguredProvider, String)> {
+    setup_providers_inner(rt, true)
+        .into_iter()
+        .map(|(provider, model)| {
+            // The workspace excludes GLM 5.3; its supported Flash sibling is already
+            // present in the host's curated Z.ai model catalog.
+            let model = if provider.id == "zai" && model == ZAI_DEFAULT_MODEL {
+                ZAI_MODELS[1].to_string()
+            } else {
+                model
+            };
+            (provider, model)
+        })
+        .collect()
+}
+
+fn setup_providers_inner(
+    rt: &tokio::runtime::Runtime,
+    local_workspace: bool,
+) -> Vec<(ConfiguredProvider, String)> {
     let mut configured = Vec::new();
 
     if let Some(token) = saved_token("openai", rt) {
@@ -352,26 +378,29 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
             "gemini-2.0-flash",
         ),
     ];
-    configured.extend(oauth_providers.iter().filter_map(
-        |(env, login, base_url, id, name, model)| {
-            std::env::var(env)
-                .ok()
-                .filter(|key| !key.is_empty())
-                .or_else(|| saved_token(login, rt))
-                .map(|key| {
-                    (
-                        ConfiguredProvider {
-                            id: (*id).to_string(),
-                            name: (*name).to_string(),
-                            client: Arc::new(OpenAIProvider::with_base_url(
-                                *base_url, key, *id, *name,
-                            )),
-                        },
-                        (*model).to_string(),
-                    )
-                })
-        },
-    ));
+    configured.extend(
+        oauth_providers
+            .iter()
+            .filter(|(_, _, _, id, _, _)| !local_workspace || *id != "xai")
+            .filter_map(|(env, login, base_url, id, name, model)| {
+                std::env::var(env)
+                    .ok()
+                    .filter(|key| !key.is_empty())
+                    .or_else(|| saved_token(login, rt))
+                    .map(|key| {
+                        (
+                            ConfiguredProvider {
+                                id: (*id).to_string(),
+                                name: (*name).to_string(),
+                                client: Arc::new(OpenAIProvider::with_base_url(
+                                    *base_url, key, *id, *name,
+                                )),
+                            },
+                            (*model).to_string(),
+                        )
+                    })
+            }),
+    );
     configured.extend(
         provider_catalog::API_KEY_PROVIDERS
             .iter()
@@ -381,6 +410,23 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
             .filter(|spec| !matches!(spec.id, "openai" | "xai" | "google" | "zai" | "opencode-go"))
             .filter_map(|spec| {
                 let key = provider_catalog::env_key(spec)?;
+                if local_workspace && spec.id == "zai-coding-plan" {
+                    // Use the same GLM SSE adapter as the explicit Z.ai path:
+                    // it handles bundled usage/finish chunks and guards idle streams.
+                    return Some((
+                        ConfiguredProvider {
+                            id: spec.id.to_string(),
+                            name: spec.name.to_string(),
+                            client: Arc::new(crate::openai_chat::OpenAiChatProvider::new(
+                                key,
+                                spec.id,
+                                spec.name,
+                                ZAI_CHAT_URL,
+                            )),
+                        },
+                        ZAI_MODELS[1].to_string(),
+                    ));
+                }
                 let client: Arc<dyn Provider> = match spec.api {
                     provider_catalog::ProviderApi::OpenAiCompatible => Arc::new(
                         OpenAIProvider::with_base_url(spec.base_url, key, spec.id, spec.name),
