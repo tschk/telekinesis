@@ -4,10 +4,10 @@ import {
   MAX_CONTEXT_CHARACTERS,
   MAX_SOURCE_BYTES,
   parseChatExport,
-  prepareContext,
   type ImportPreview,
   type PreparedContext,
 } from "../lib/contextImport";
+import { prepareEditableContext } from "../lib/contextImport/budget";
 import { errorMessage } from "../lib/localApi";
 
 export function ContextImport({
@@ -19,12 +19,14 @@ export function ContextImport({
 }) {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
-  const [budget, setBudget] = useState(12000);
+  const [budget, setBudget] = useState("12000");
   const [error, setError] = useState<string | null>(null);
   const [attached, setAttached] = useState(false);
-  const prepared = preview
-    ? prepareContext(preview, selected, { maxCharacters: budget })
-    : null;
+  const { prepared, error: budgetError } = prepareEditableContext(
+    preview,
+    selected,
+    budget,
+  );
   async function readFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -146,26 +148,25 @@ export function ContextImport({
               type="number"
               min={1000}
               max={MAX_CONTEXT_CHARACTERS}
-              step={1000}
+              step={1}
               value={budget}
               disabled={locked}
+              aria-invalid={!!budgetError}
+              aria-describedby={budgetError ? "context-budget-error" : undefined}
               onChange={(e) => {
-                setBudget(
-                  Math.max(
-                    1000,
-                    Math.min(
-                      MAX_CONTEXT_CHARACTERS,
-                      Number(e.target.value) || 1000,
-                    ),
-                  ),
-                );
+                setBudget(e.target.value);
                 clearAttachment();
               }}
             />
           </label>
+          {budgetError && (
+            <p id="context-budget-error" className="notice error" role="alert">
+              {budgetError}
+            </p>
+          )}
           <p className="muted">
             {selected.length} selected · {prepared?.characters.toLocaleString()}{" "}
-            / {budget.toLocaleString()} characters · ≈
+            / {budget || "—"} characters · ≈
             {prepared?.estimatedTokens.toLocaleString()} tokens (estimate)
           </p>
           {prepared?.truncated && (
