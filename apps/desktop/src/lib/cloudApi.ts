@@ -1,4 +1,3 @@
-import { MOCK_WORKSPACES } from "./mockWorkspaces";
 import type {
   ExecRequest,
   ExecResult,
@@ -62,11 +61,11 @@ export async function getHealth(): Promise<{
 /**
  * List cloud workspaces from tk-cloud M1 API.
  * Empty array from a successful response is valid (source: "api").
- * Mock fallback only on network / HTTP failure.
+ * Connection failures stay empty; example data is never live data.
  */
 export async function listWorkspaces(): Promise<{
   workspaces: Workspace[];
-  source: "api" | "mock";
+  source: "api" | "unavailable";
   error?: string;
 }> {
   const url = `${baseUrl()}/v1/workspaces`;
@@ -89,9 +88,9 @@ export async function listWorkspaces(): Promise<{
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
-      workspaces: MOCK_WORKSPACES,
-      source: "mock",
-      error: `Using mock data (${message}). API: ${url}`,
+      workspaces: [],
+      source: "unavailable",
+      error: `Cloud unavailable (${message}). API: ${url}`,
     };
   }
 }

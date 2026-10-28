@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Composer interaction fixture</title>
+    <link rel="stylesheet" href="/src/App.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import React, { useState } from "react";
+      import { createRoot } from "react-dom/client";
+      import { ThreadComposer } from "/src/components/ThreadComposer.tsx";
+      function Harness() {
+        const [value, setValue] = useState("");
+        const [running, setRunning] = useState(false);
+        const [fail, setFail] = useState(true);
+        const [result, setResult] = useState("");
+        return React.createElement(
+          "main",
+          { style: { maxWidth: 800, margin: "60px auto" } },
+          React.createElement(
+            "p",
+            null,
+            "Composer interaction fixture — no agent runtime",
+          ),
+          React.createElement(
+            "button",
+            { onClick: () => setFail(!fail) },
+            fail ? "Failure mode" : "Success mode",
+          ),
+          React.createElement(
+            "button",
+            { onClick: () => setRunning(true) },
+            "Start fixture turn",
+          ),
+          React.createElement(
+            "output",
+            { "aria-label": "Fixture result" },
+            result,
+          ),
+          React.createElement(ThreadComposer, {
+            value,
+            onChange: setValue,
+            running,
+            onSend: async (text, mode) => {
+              if (fail) throw Error("Fixture send failed. Draft preserved.");
+              setResult(mode + ": " + text);
+            },
+            onStop: async () => {
+              setRunning(false);
+              setResult("Fixture stopped");
+            },
+          }),
+        );
+      }
+      createRoot(document.getElementById("root")).render(
+        React.createElement(Harness),
+      );
+    </script>
+  </body>
+</html>

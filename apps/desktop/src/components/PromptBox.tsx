@@ -42,7 +42,7 @@ export function PromptBox({
       />
       <div className="tk-prompt__actions">
         <p className="tk-prompt__hint">
-          Ctrl/⌘+Enter · POST /v1/workspaces/:id/exec
+          Ctrl/⌘+Enter to run
         </p>
         <Button type="submit" disabled={disabled || !value.trim()}>
           Exec

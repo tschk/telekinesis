@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Workspace fixture — no runtime</title>
+  </head>
+  <body>
+    <div
+      style="
+        position: fixed;
+        z-index: 9999;
+        bottom: 0;
+        left: 0;
+        font: 10px monospace;
+        color: #ffd98a;
+        pointer-events: none;
+      "
+    >
+      TEST FIXTURE · no agent/runtime
+    </div>
+    <div id="root"></div>
+    <script type="module">
+      import React from "react";
+      import { createRoot } from "react-dom/client";
+      import { mockIPC } from "@tauri-apps/api/mocks";
+      import App from "../src/App.tsx";
+      const config = {
+        provider: "fixture",
+        model: "fixture-model",
+        effort: "default",
+        permission: "yolo",
+        role: "general",
+      };
+      const projects = [
+        {
+          id: "fixture-project",
+          name: "Fixture project",
+          path: "/fixture/project",
+        },
+      ];
+      const threads = ["First thread", "Second thread"].map((title, i) => ({
+        id: `fixture-${i}`,
+        projectId: projects[0].id,
+        title,
+        sessionId: `session-${i}`,
+        config: { ...config },
+      }));
+      const histories = Object.fromEntries(
+        threads.map((t) => [
+          t.id,
+          {
+            thread: t,
+            messages: [
+              {
+                id: `message-${t.id}`,
+                role: "assistant",
+                text: `History for ${t.title}`,
+              },
+            ],
+            receipts: [],
+            activeRunId: null,
+          },
+        ]),
+      );
+      mockIPC(
+        (cmd, args) => {
+          switch (cmd) {
+            case "local_projects":
+              return projects;
+            case "local_runtime_options":
+              return [{ provider: config.provider, model: config.model }];
+            case "local_threads":
+              return threads;
+            case "local_load_thread":
+              return structuredClone(histories[args.threadId]);
+            case "local_submit": {
+              const r = args.request;
+              const s = histories[r.threadId];
+              s.messages.push({
+                id: r.clientMessageId,
+                role: "user",
+                text: r.text,
+              });
+              s.activeRunId = "fixture-run";
+              const receipt = { ...r, runId: s.activeRunId, state: "accepted" };
+              s.receipts.push(receipt);
+              return receipt;
+            }
+            case "local_cancel": {
+              const s = histories[args.threadId];
+              s.activeRunId = null;
+              s.receipts.forEach((r) => (r.state = "cancelled"));
+              return true;
+            }
+            case "local_update_thread":
+              histories[args.threadId].thread.config = args.config;
+              return histories[args.threadId].thread;
+            default:
+              throw Error(`Unsupported fixture call ${cmd}`);
+          }
+        },
+        { shouldMockEvents: true },
+      );
+      localStorage.setItem("tk.react.project", projects[0].id);
+      localStorage.setItem("tk.react.thread.fixture-project", threads[0].id);
+      createRoot(document.getElementById("root")).render(
+        React.createElement(App),
+      );
+    </script>
+  </body>
+</html>
