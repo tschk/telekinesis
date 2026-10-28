@@ -304,13 +304,7 @@ impl LocalRuntime {
                     rx4::ModelRegistry::new(),
                     &[],
                 );
-                // Worker control/inheritance is not yet a supported local-thread capability.
-                agent.set_tools(crate::tools::build_tool_registry_with_profile(
-                    &manager,
-                    &[],
-                    crate::tools::ToolProfile::Minimal,
-                ));
-                configure_agent(&mut agent, &thread.config);
+                configure_local_agent(&mut agent, &thread.config, &manager);
                 Ok(agent)
             }),
         )
@@ -1050,6 +1044,20 @@ fn validate_config(config: &ThreadConfig) -> Result<()> {
     }
     Ok(())
 }
+fn configure_local_agent(
+    agent: &mut Agent,
+    config: &ThreadConfig,
+    manager: &Arc<Mutex<rx4::subagent::SubagentManager>>,
+) {
+    // Minimal filters the builtin fallback as well as omitting managed worker tools.
+    agent.set_tools(crate::tools::build_tool_registry_with_profile(
+        manager,
+        &[],
+        crate::tools::ToolProfile::Minimal,
+    ));
+    configure_agent(agent, config);
+}
+
 fn configure_agent(agent: &mut Agent, config: &ThreadConfig) {
     let scope = match config.role {
         AgentRole::General => rx4::mode::Scope::Coding,
@@ -1080,6 +1088,44 @@ mod tests {
         sync::mpsc,
         time::{Duration, Instant},
     };
+
+    #[tokio::test]
+    async fn local_agent_construction_excludes_worker_inventory_and_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut agent, manager) = crate::host::build_agent(
+            None,
+            "fixture",
+            "low",
+            dir.path().to_path_buf(),
+            rx4::ModelRegistry::new(),
+            &[],
+        );
+        configure_local_agent(&mut agent, &ThreadConfig::default(), &manager);
+        let context = Arc::new(rx4::ToolContext::new(dir.path()));
+        for name in ["spawn_agent", "agent", "list_subagents", "cancel_subagent"] {
+            assert!(!agent
+                .tools
+                .names()
+                .iter()
+                .any(|registered| registered == name));
+            assert!(agent
+                .tools
+                .execute(
+                    rx4::agent::normalize_tool_name(name),
+                    &context,
+                    r#"{"prompt":"unsupported","isolate":false}"#,
+                )
+                .await
+                .is_none());
+        }
+        assert!(agent.tools.names().iter().any(|name| name == "read"));
+        assert!(agent
+            .tools
+            .names()
+            .iter()
+            .any(|name| name == "hashline_edit"));
+        assert!(manager.lock().list().is_empty());
+    }
 
     struct Fixture {
         calls: Arc<Mutex<Vec<Vec<Message>>>>,

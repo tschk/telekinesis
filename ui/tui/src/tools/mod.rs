@@ -84,6 +84,43 @@ pub(crate) fn build_tool_registry_with_profile(
     register_mcp_tools(&mut tools, mcp);
     if profile.spawn() {
         register_spawn_agent_tool(&tools, Arc::clone(subagent_manager));
+    } else {
+        // rx4's builtins include an unmanaged spawn fallback; Minimal must omit it too.
+        let builtins = Arc::new(tools);
+        tools = ToolRegistry::new();
+        for definition in builtins.definitions() {
+            let Some(name) = definition["name"].as_str() else {
+                continue;
+            };
+            if matches!(
+                name,
+                "spawn_agent" | "agent" | "list_subagents" | "cancel_subagent"
+            ) {
+                continue;
+            }
+            let source = Arc::clone(&builtins);
+            let tool_name = name.to_string();
+            tools.register(
+                rx4::ToolDefinition::new_boxed(
+                    name,
+                    definition["description"].as_str().unwrap_or_default(),
+                    definition["parameters"].to_string(),
+                    Box::new(move |context, arguments| {
+                        let source = Arc::clone(&source);
+                        let name = tool_name.clone();
+                        Box::pin(async move {
+                            source
+                                .execute(&name, &context, &arguments)
+                                .await
+                                .unwrap_or_else(|| {
+                                    rx4::ToolResult::err(&name, "Tool is unavailable")
+                                })
+                        })
+                    }),
+                )
+                .with_effect(builtins.effect_of(name)),
+            );
+        }
     }
     tools
 }
@@ -91,6 +128,67 @@ pub(crate) fn build_tool_registry_with_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn minimal_omits_worker_tools_from_inventory_and_dispatch() {
+        let manager = Arc::new(parking_lot::Mutex::new(SubagentManager::new()));
+        let tools = build_tool_registry_with_profile(&manager, &[], ToolProfile::Minimal);
+        let names = registered_tool_names(&tools);
+        let dir = tempfile::tempdir().unwrap();
+        let context = Arc::new(rx4::ToolContext::new(dir.path()));
+        for name in ["spawn_agent", "agent", "list_subagents", "cancel_subagent"] {
+            assert!(!names.iter().any(|registered| registered == name));
+            assert!(tools
+                .execute(
+                    name,
+                    &context,
+                    r#"{"prompt":"do not spawn","isolate":false}"#
+                )
+                .await
+                .is_none());
+        }
+        let builtins = ToolRegistry::new();
+        register_builtin_tools(&builtins);
+        assert!(registered_tool_names(&builtins).contains(&"spawn_agent".to_string()));
+        for definition in builtins.definitions() {
+            let name = definition["name"].as_str().unwrap();
+            if name != "spawn_agent" {
+                assert!(tools.definitions().contains(&definition), "missing {name}");
+                assert_eq!(tools.effect_of(name), builtins.effect_of(name));
+            }
+        }
+        for (name, args) in [
+            ("write", r#"{"path":"example.txt","content":"hello"}"#),
+            ("read", r#"{"path":"example.txt"}"#),
+        ] {
+            let result = tools.execute(name, &context, args).await.unwrap();
+            assert!(!result.is_error, "{name}: {}", result.content);
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("example.txt")).unwrap(),
+            "hello"
+        );
+        assert!(manager.lock().list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn coding_and_full_keep_managed_worker_controls() {
+        let manager = Arc::new(parking_lot::Mutex::new(SubagentManager::new()));
+        let context = Arc::new(rx4::ToolContext::new(std::env::temp_dir()));
+        for profile in [ToolProfile::Coding, ToolProfile::Full] {
+            let tools = build_tool_registry_with_profile(&manager, &[], profile);
+            let names = registered_tool_names(&tools);
+            for name in ["spawn_agent", "list_subagents", "cancel_subagent"] {
+                assert!(names.iter().any(|registered| registered == name));
+            }
+            let result = tools
+                .execute("list_subagents", &context, "{}")
+                .await
+                .unwrap();
+            assert!(!result.is_error);
+            assert_eq!(result.content, "[]");
+        }
+    }
 
     fn registered_tool_names(tools: &rx4::ToolRegistry) -> Vec<String> {
         tools
