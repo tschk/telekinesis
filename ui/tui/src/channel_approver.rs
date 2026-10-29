@@ -57,6 +57,12 @@ pub struct ApprovalAuthorizer {
 }
 
 impl Authorizer for ApprovalAuthorizer {
+    // Model-issued plan-mode changes also reset scope inside rx4's loop.
+    // This gate evaluates the supplied policy/root, not a stale snapshot.
+    fn uses_live_policy(&self) -> bool {
+        true
+    }
+
     fn authorize(
         &self,
         policy: &Policy,
@@ -374,6 +380,116 @@ mod tests {
             Some("on"),
         ] {
             assert!(!bypass_requested(value), "{value:?}");
+        }
+    }
+
+    /// Security regression: the model must not remove its own approval gate
+    /// through plan-mode tools inside the public engine loop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn model_plan_mode_round_trip_cannot_bypass_tui_approval_prompt() {
+        use rx4::provider::{Provider, StreamEvent, StreamResult};
+        use std::collections::VecDeque;
+        use std::sync::{atomic::AtomicUsize, Mutex};
+
+        struct Script(Mutex<VecDeque<ToolCall>>);
+        #[async_trait::async_trait]
+        impl Provider for Script {
+            fn id(&self) -> &str {
+                "approval-test"
+            }
+            fn name(&self) -> &str {
+                "approval-test"
+            }
+            async fn stream(
+                &self,
+                _: &[rx4::provider::Message],
+                _: &Option<String>,
+                _: &str,
+                _: &[serde_json::Value],
+                _: Option<&str>,
+            ) -> Result<StreamResult, rx4::provider::ProviderError> {
+                let mut events = Vec::new();
+                if let Some(call) = self.0.lock().unwrap().pop_front() {
+                    events.push(Ok(StreamEvent::ToolCall(call)));
+                }
+                events.push(Ok(StreamEvent::Done));
+                Ok(Box::new(futures::stream::iter(events)))
+            }
+        }
+
+        for change_scope in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let runs = Arc::new(AtomicUsize::new(0));
+            let tools = ToolRegistry::new();
+            rx4::register_builtin_tools(&tools);
+            // Harmless executors retain real tool names and policy decisions.
+            for tool in ["write", "bash"] {
+                let runs = runs.clone();
+                tools.register(
+                    ToolDefinition::new_boxed(
+                        tool,
+                        "",
+                        "{}",
+                        Box::new(move |_, _| {
+                            runs.fetch_add(1, Ordering::SeqCst);
+                            Box::pin(async { ToolResult::ok("", "executed") })
+                        }),
+                    )
+                    .with_effect(rx4::agent::ToolEffect::Write),
+                );
+            }
+            let mut calls = VecDeque::new();
+            if change_scope {
+                for name in ["enter_plan_mode", "exit_plan_mode"] {
+                    calls.push_back(ToolCall {
+                        id: name.into(),
+                        name: name.into(),
+                        arguments: "{}".into(),
+                    });
+                }
+            }
+            for (name, arguments) in [
+                ("write", r#"{"path":"approval.txt","content":"x"}"#),
+                ("bash", r#"{"command":"git status"}"#),
+                ("write", r#"{"path":"/etc/tk-approval-test","content":"x"}"#),
+                ("bash", r#"{"command":"sudo true"}"#),
+            ] {
+                calls.push_back(ToolCall {
+                    id: format!("call-{}", calls.len()),
+                    name: name.into(),
+                    arguments: arguments.into(),
+                });
+            }
+            let (approver, pending) = ChannelApprover::pair();
+            let responder = std::thread::spawn(move || {
+                let mut prompted = Vec::new();
+                while let Ok(request) = pending.recv_timeout(std::time::Duration::from_secs(10)) {
+                    prompted.push(request.tool_name);
+                    request.respond.send(Decision::Deny).unwrap();
+                }
+                prompted
+            });
+            let mut agent = rx4::agent::Agent::new();
+            agent.set_workspace_root(root.path());
+            agent.set_tools(tools);
+            agent.set_policy(
+                rx4::Policy::workspace_write()
+                    .with_os_sandbox(false)
+                    .with_shell_allow(["git *"])
+                    .with_shell_deny(["sudo *"]),
+            );
+            agent.set_provider(Arc::new(Script(Mutex::new(calls))));
+            agent.set_authorizer(approver.authorizer());
+            agent.set_approver(Arc::new(approver));
+            agent.prompt("exercise approvals").await.unwrap();
+            drop(agent);
+            let prompted = responder.join().unwrap();
+            assert_eq!(
+                prompted,
+                ["write", "bash"],
+                "scope transitions: {change_scope}"
+            );
+            assert_eq!(runs.load(Ordering::SeqCst), 0, "denied tools executed");
         }
     }
 }

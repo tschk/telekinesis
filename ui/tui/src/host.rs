@@ -112,9 +112,6 @@ pub fn cycle_scopes() -> &'static [&'static str] {
 }
 
 pub fn apply_scope(agent: &mut Agent, scope: Scope) {
-    // `set_policy` and the sandbox rebuild drop any custom authorizer; keep
-    // the host's (the TUI approval gate reads the live policy it is given).
-    let authorizer = agent.authorizer.clone();
     agent.scope = scope;
     let profile = mode::profile(scope);
     agent.policy.apply_scope(&profile.policy);
@@ -126,9 +123,6 @@ pub fn apply_scope(agent: &mut Agent, scope: Scope) {
     apply_prewalk_model(agent, &prewalk.lock());
     install_host_hooks(agent, scope, prewalk);
     product_policy::apply_os_sandbox(agent);
-    if let Some(authorizer) = authorizer {
-        agent.set_authorizer(authorizer);
-    }
 }
 
 pub fn host_tool_allowed(scope: Scope, tool_name: &str) -> bool {
