@@ -53,7 +53,7 @@ pub(crate) const MODELS_REFRESH_HINT: std::time::Duration = std::time::Duration:
 
 /// (command, description) — pi-style autocomplete shows the description next
 /// to each command name.
-pub(crate) const SLASH_COMMANDS: [(&str, &str); 26] = [
+pub(crate) const SLASH_COMMANDS: [(&str, &str); 27] = [
     ("/login", "sign in with a provider"),
     ("/providers", "browse and configure providers"),
     ("/provider", "alias for /providers"),
@@ -74,6 +74,7 @@ pub(crate) const SLASH_COMMANDS: [(&str, &str); 26] = [
     ("/review", "read-only review of the workspace"),
     ("/subagent", "spawn · list · cancel subagents"),
     ("/budget", "set cost, time, or turn limits"),
+    ("/approvals", "ask before tool calls, or bypass"),
     ("/plan-approval", "approve or bypass whole-turn plans"),
     (
         "/mcp",
@@ -1079,11 +1080,30 @@ impl App {
         }
     }
 
-    pub(crate) fn toggle_permission_mode(&mut self) {
+    pub(crate) fn tool_approval_bypassed(&self) -> bool {
+        self.approval_mode
+            .as_ref()
+            .is_some_and(|mode| mode.is_bypass())
+    }
+
+    /// Switch the tool gate between ask and bypass. Only explicit requests
+    /// (`TK_TOOL_APPROVAL=bypass`, `/approvals`) call this; the change is
+    /// announced in the transcript and shown in the status line.
+    pub(crate) fn set_tool_approval_bypass(&mut self, bypass: bool) {
         let Some(mode) = &self.approval_mode else {
+            crate::providers::push_system_message(self, "No tool approval gate in this session.");
             return;
         };
-        if mode.toggle() && self.permission_prompt {
+        mode.set_bypass(bypass);
+        crate::providers::push_system_message(
+            self,
+            if bypass {
+                "Tool approval BYPASSED: every tool call now runs without asking. Use /approvals ask to restore y/n prompts."
+            } else {
+                "Tool approval: ask. Each tool call waits for y (allow) or n (deny)."
+            },
+        );
+        if bypass && self.permission_prompt {
             self.resolve_permission(true);
         }
     }
@@ -1256,15 +1276,18 @@ impl App {
             })
             .collect::<Vec<_>>();
         tpl.set("plan_rows", TemplateValue::List(plan_rows));
+        let bypassed = self.tool_approval_bypassed();
         tpl.set(
             "permission_mode",
-            self.approval_mode.as_ref().map_or("bypass", |mode| {
-                if mode.is_bypass() {
-                    "bypass"
-                } else {
-                    "ask"
-                }
-            }),
+            if bypassed {
+                "BYPASS: tools auto-approved"
+            } else {
+                "approvals: ask"
+            },
+        );
+        tpl.set(
+            "permission_color",
+            if bypassed { "red-400" } else { "zinc-600" },
         );
         tpl.set("project", self.project.clone());
         tpl.set("branch", self.branch.clone());
@@ -2070,11 +2093,7 @@ impl App {
                 // In bypass mode the ask is granted without a gate, so the
                 // message is pure noise on top of the tool row that already
                 // shows the call. Only surface it when a gate is real.
-                let bypass = self
-                    .approval_mode
-                    .as_ref()
-                    .is_none_or(|mode| mode.is_bypass());
-                if !bypass {
+                if !self.tool_approval_bypassed() {
                     let detail = paths.join(" ");
                     let content = if detail.is_empty() {
                         format!("Approval required: {tool}")
@@ -2815,8 +2834,7 @@ mod tests {
     };
     #[cfg(feature = "pi-compat")]
     use crate::tui::restored_chat;
-    use crate::tui::{bounded_plan_preview, is_permission_toggle, tool_result_summary};
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crate::tui::{bounded_plan_preview, tool_result_summary};
     use rx4::permissions::{PlanApprover, PlanDecision, PlanProposal};
     use rx4::provider::OpenAIProvider;
     use rx4::{TodoState, TodoStatus};
@@ -3424,13 +3442,10 @@ mod tests {
             process_id: "pty-9".into(),
             bytes: 4,
         });
-        // Ask mode gates on a real approval, so the notice renders. (The
-        // default bypass mode suppresses it; asserted below.)
+        // Ask mode (the default) gates on a real approval, so the notice
+        // renders. Explicit bypass suppresses it; asserted below.
         let (approver, _approval_rx) = crate::channel_approver::ChannelApprover::pair();
-        let ask_mode = approver.mode();
-        ask_mode.toggle();
-        assert!(!ask_mode.is_bypass());
-        app.approval_mode = Some(ask_mode);
+        app.approval_mode = Some(approver.mode());
         app.render_host_surface(HostSurface::RequestPermissions {
             tool: "write".into(),
             paths: vec!["src/lib.rs".into()],
@@ -3503,10 +3518,10 @@ mod tests {
     #[test]
     fn bypass_mode_suppresses_permission_notices() {
         let mut app = App::new();
-        assert!(app
-            .approval_mode
-            .as_ref()
-            .is_none_or(|mode| mode.is_bypass()));
+        let (approver, _approval_rx) = crate::channel_approver::ChannelApprover::pair();
+        app.approval_mode = Some(approver.mode());
+        app.set_tool_approval_bypass(true);
+        app.messages.clear();
         app.render_host_surface(HostSurface::RequestPermissions {
             tool: "bash".into(),
             paths: Vec::new(),
@@ -3540,19 +3555,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_shortcut_and_bash_failures_are_tidy() {
-        assert!(is_permission_toggle(
-            KeyCode::Char('~'),
-            KeyModifiers::SHIFT
-        ));
-        assert!(is_permission_toggle(
-            KeyCode::Char('`'),
-            KeyModifiers::SHIFT
-        ));
-        assert!(!is_permission_toggle(
-            KeyCode::Char('`'),
-            KeyModifiers::NONE
-        ));
+    fn bash_failures_are_tidy() {
         assert_eq!(
             tool_result_summary("bash", "permission denied\n(exit code: -1)", false),
             "failed · exit -1"
@@ -4008,6 +4011,65 @@ mod tests {
         let text = app.input.trim().to_string();
         handle_slash_command(&mut app, &text, &agent, &tx);
         assert_eq!(app.model, "gpt-5.4");
+    }
+
+    #[test]
+    fn tool_approval_only_bypasses_on_explicit_command_and_shows_it() {
+        use crepuscularity_tui::ratatui::backend::TestBackend;
+        use crepuscularity_tui::ratatui::style::Color;
+        use crepuscularity_tui::ratatui::Terminal;
+
+        /// Rendered screen text plus the foreground colour where `needle` starts.
+        fn status(app: &mut App, needle: &str) -> (String, Option<Color>) {
+            let mut template = load_template(None).unwrap();
+            app.update_template(&mut template);
+            let mut terminal = Terminal::new(TestBackend::new(200, 20)).unwrap();
+            terminal
+                .draw(|frame| template.draw(frame, frame.area()).unwrap())
+                .unwrap();
+            let cells = terminal.backend().buffer().content().to_vec();
+            let symbols = cells.iter().map(|cell| cell.symbol()).collect::<Vec<_>>();
+            let text = symbols.concat();
+            let needle = needle.chars().map(String::from).collect::<Vec<_>>();
+            let start = symbols
+                .windows(needle.len())
+                .position(|window| window.iter().zip(&needle).all(|(a, b)| *a == b));
+            (text, start.map(|index| cells[index].fg))
+        }
+
+        let mut app = App::new();
+        let agent = Arc::new(Mutex::new(rx4::agent::Agent::new()));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (approver, _approval_rx) = crate::channel_approver::ChannelApprover::pair();
+        let mode = approver.mode();
+        app.approval_mode = Some(mode.clone());
+
+        assert!(!mode.is_bypass());
+        let (_, ask_color) = status(&mut app, "approvals: ask");
+        assert!(ask_color.is_some(), "status line shows ask mode");
+
+        handle_slash_command(&mut app, "/approvals bogus", &agent, &tx);
+        assert!(!mode.is_bypass());
+
+        handle_slash_command(&mut app, "/approvals bypass", &agent, &tx);
+        assert!(mode.is_bypass());
+        assert!(app
+            .messages
+            .last()
+            .is_some_and(|message| message.content.starts_with("Tool approval BYPASSED")));
+        let (text, bypass_color) = status(&mut app, "BYPASS: tools auto-approved");
+        assert!(!text.contains("approvals: ask"));
+        let bypass_color = bypass_color.expect("status line shows bypass");
+        assert_ne!(Some(bypass_color), ask_color, "bypass must stand out");
+        assert!(
+            matches!(bypass_color, Color::Red | Color::LightRed)
+                || matches!(bypass_color, Color::Rgb(r, g, b) if r > g && r > b),
+            "{bypass_color:?}"
+        );
+
+        handle_slash_command(&mut app, "/approvals ask", &agent, &tx);
+        assert!(!mode.is_bypass());
+        assert_eq!(status(&mut app, "approvals: ask").1, ask_color);
     }
 
     #[test]

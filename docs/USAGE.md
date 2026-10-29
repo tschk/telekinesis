@@ -101,7 +101,7 @@ tk exec --provider opencode-go --model muse-spark-1.3-contributor "reply with th
 | sidebar (ctrl+b) | session list, tool list, plugin list |
 | slash autocomplete | filtered command list as you type `/` |
 | input history | up/down arrows, persisted to `~/.telekinesis/input_history.json` |
-| permission prompts | y/n/always dialog; shows tool name **and arguments** |
+| permission prompts | every tool call waits for y (allow) / n (deny); shows tool name **and arguments** |
 | plan approval | whole-turn rx4 preview before tool execution; y/n in the TUI |
 | context usage bar | green/amber/red percentage of context window |
 | cost tracking | running cost in status bar, `/cost` for breakdown |
@@ -112,10 +112,15 @@ tk exec --provider opencode-go --model muse-spark-1.3-contributor "reply with th
 | tool call blocks | bordered blocks with tool name and args |
 | diff blocks | green/red line coloring for file edits |
 
-The TUI enables whole-turn plan approval by default when a turn contains tool
-calls. Set `TK_PLAN_APPROVAL=off` for non-interactive compatibility or
-`TK_PLAN_APPROVAL=bypass` for an explicit yolo mode; `/plan-approval` changes
-the setting for the current session.
+Tool approval defaults to **ask**: the TUI stops before each tool call until
+you press `y` or `n`. Bypass (auto-approve every tool call) is only entered
+explicitly, with `TK_TOOL_APPROVAL=bypass` at startup or `/approvals bypass`
+in the session; the transcript announces the switch and the status line shows
+`BYPASS: tools auto-approved` in red until `/approvals ask`.
+
+Whole-turn plan approval is separate and opt-in: set `TK_PLAN_APPROVAL=ask`
+to review each tool-calling turn's plan, or `off` to disable plan handling;
+`/plan-approval` changes the setting for the current session.
 
 Tool exposure can be narrowed at startup with `TK_TOOL_PROFILE=minimal|coding|full`;
 the default remains the host registry compiled into the binary. `minimal` keeps
@@ -139,6 +144,7 @@ Model, scope, and effort are persisted to `~/.telekinesis/prefs.json`.
 | `/plan <task>` | read-only implementation plan with files, risks, and checks |
 | `/review [target]` | read-only findings-only review of a target or workspace |
 | `/budget [<cost>\|cost <usd>\|time <seconds>\|turns <count>\|clear]` | bound cost, duration, or tool iterations |
+| `/approvals ask\|bypass` | prompt before each tool call (default), or auto-approve all tool calls |
 | `/plan-approval ask\|bypass\|off` | review, automatically allow, or disable whole-turn plan gates |
 | `/mcp` | list connected MCP tools + `~/.telekinesis/mcp.json` help (`--features mcp` or `full`; otherwise tells you to rebuild) |
 | `/search` | darash `web_search` status (`--features search` or `full`; otherwise tells you to rebuild) |
