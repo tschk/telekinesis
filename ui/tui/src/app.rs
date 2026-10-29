@@ -1009,7 +1009,13 @@ impl App {
         let Some(rx) = self.approval_rx.as_ref() else {
             return;
         };
-        while let Ok(pending) = rx.try_recv() {
+        // One prompt at a time: later requests wait in the channel (their
+        // tool workers stay blocked) until this one is answered. Replacing
+        // the responder would drop it and silently deny that call.
+        if self.permission_prompt {
+            return;
+        }
+        if let Ok(pending) = rx.try_recv() {
             self.permission_prompt = true;
             let detail = tool_detail(&pending.tool_name, &pending.arguments);
             self.permission_tool = if detail.is_empty() {
@@ -1067,6 +1073,12 @@ impl App {
         }
         if self.permission_prompt {
             self.resolve_permission(false);
+        }
+        // Deny queued tool approvals too, so they do not prompt after cancel.
+        if let Some(rx) = self.approval_rx.as_ref() {
+            while let Ok(pending) = rx.try_recv() {
+                let _ = pending.respond.send(Decision::Deny);
+            }
         }
         if self.plan_prompt {
             self.resolve_plan(false);
@@ -4070,6 +4082,36 @@ mod tests {
         handle_slash_command(&mut app, "/approvals ask", &agent, &tx);
         assert!(!mode.is_bypass());
         assert_eq!(status(&mut app, "approvals: ask").1, ask_color);
+    }
+
+    #[test]
+    fn concurrent_approvals_are_prompted_one_at_a_time() {
+        let mut app = App::new();
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        app.approval_rx = Some(rx);
+        let mut answers = Vec::new();
+        for command in ["first", "second"] {
+            let (respond, answer) = std::sync::mpsc::sync_channel(1);
+            tx.send(crate::channel_approver::PendingApproval {
+                tool_name: "bash".into(),
+                arguments: format!("{{\"command\":\"echo {command}\"}}"),
+                respond,
+            })
+            .unwrap();
+            answers.push(answer);
+        }
+
+        app.poll_pending_approvals();
+        assert!(app.permission_tool.contains("first"));
+        app.poll_pending_approvals();
+        assert!(app.permission_tool.contains("first"), "second must wait");
+        app.resolve_permission(true);
+        assert_eq!(answers[0].try_recv(), Ok(rx4::permissions::Decision::Allow));
+
+        app.poll_pending_approvals();
+        assert!(app.permission_tool.contains("second"));
+        app.resolve_permission(false);
+        assert_eq!(answers[1].try_recv(), Ok(rx4::permissions::Decision::Deny));
     }
 
     #[test]

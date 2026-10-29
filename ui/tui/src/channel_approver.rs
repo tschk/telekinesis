@@ -6,8 +6,10 @@ use std::sync::{
     Arc,
 };
 
-use rx4::agent::ToolCall;
-use rx4::permissions::{Approver, Decision};
+use rx4::agent::{ToolCall, ToolContext, ToolDefinition, ToolExecuteBox, ToolRegistry, ToolResult};
+use rx4::permissions::{
+    is_read_only_tool, Approver, Authorizer, Decision, Policy, PolicyAuthorizer,
+};
 
 pub struct PendingApproval {
     pub tool_name: String,
@@ -44,6 +46,42 @@ pub fn bypass_requested(value: Option<&str>) -> bool {
     )
 }
 
+/// Policy gate that makes ask mode cover every tool call that can change
+/// something. rx4's workspace-write policy auto-allows workspace writes and
+/// allowlisted shell commands without consulting the approver; in ask mode
+/// those become `Ask` so they reach the y/n prompt. Read-only tools and the
+/// in-memory `todo` list still run directly, and a policy `Deny` is never
+/// weakened. Bypass keeps the policy decision unchanged.
+pub struct ApprovalAuthorizer {
+    mode: ApprovalMode,
+}
+
+impl Authorizer for ApprovalAuthorizer {
+    fn authorize(
+        &self,
+        policy: &Policy,
+        tool_name: &str,
+        arguments: &str,
+        approver: Option<&dyn Approver>,
+        workspace_root: Option<&std::path::Path>,
+    ) -> Decision {
+        let decision = PolicyAuthorizer::new().authorize(
+            policy,
+            tool_name,
+            arguments,
+            approver,
+            workspace_root,
+        );
+        let unattended = is_read_only_tool(tool_name) || tool_name == "todo";
+        if decision == Decision::Allow && !unattended && !self.mode.is_bypass() {
+            Decision::Ask
+        } else {
+            decision
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ChannelApprover {
     tx: SyncSender<PendingApproval>,
     mode: ApprovalMode,
@@ -62,13 +100,75 @@ impl ChannelApprover {
     pub fn mode(&self) -> ApprovalMode {
         self.mode.clone()
     }
-}
 
-impl Approver for ChannelApprover {
-    fn approve(&self, tool_call: &ToolCall) -> Decision {
-        if self.mode.is_bypass() {
-            return Decision::Allow;
+    /// Whether a tool call reaches the y/n prompt in the current mode.
+    fn gates(&self, tool_name: &str) -> bool {
+        !self.mode.is_bypass() && !is_read_only_tool(tool_name) && tool_name != "todo"
+    }
+
+    /// Tool registry for subagents. rx4 builds child agents with no approver
+    /// and a workspace-write policy, so their writes would run unprompted.
+    /// Each tool here forwards to `parent` only after the same y/n prompt the
+    /// main agent uses (labelled `subagent <tool>`); a denial returns an
+    /// error result. Child policy still runs first, so its denials hold and
+    /// its Ask-class calls (shell) fail closed for lack of an approver.
+    pub fn gate_subagent_tools(&self, parent: Arc<ToolRegistry>) -> Arc<ToolRegistry> {
+        let gated = ToolRegistry::new();
+        let definitions = parent.definitions();
+        for name in parent.names() {
+            let definition = definitions
+                .iter()
+                .find(|definition| definition["name"] == name.as_str());
+            let field = |key: &str| {
+                definition
+                    .and_then(|definition| definition.get(key))
+                    .map(|value| match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_default()
+            };
+            let (description, parameters) = (field("description"), field("parameters"));
+            let effect = parent.effect_of(&name);
+            let parent = Arc::clone(&parent);
+            let gate = self.clone();
+            let tool = name.clone();
+            let execute: ToolExecuteBox = Box::new(move |ctx: Arc<ToolContext>, args: String| {
+                let parent = Arc::clone(&parent);
+                let gate = gate.clone();
+                let tool = tool.clone();
+                Box::pin(async move {
+                    if gate.gates(&tool) {
+                        let call = ToolCall {
+                            id: String::new(),
+                            name: format!("subagent {tool}"),
+                            arguments: args.clone(),
+                        };
+                        let decision = tokio::task::spawn_blocking(move || {
+                            gate.approve_unconditionally(&call)
+                        })
+                        .await
+                        .unwrap_or(Decision::Deny);
+                        if decision != Decision::Allow {
+                            return ToolResult::err("", "denied by user");
+                        }
+                    }
+                    parent
+                        .execute(&tool, &ctx, &args)
+                        .await
+                        .unwrap_or_else(|| ToolResult::err("", format!("unknown tool: {tool}")))
+                })
+            });
+            gated.register(
+                ToolDefinition::new_boxed(name, description, parameters, execute)
+                    .with_effect(effect),
+            );
         }
+        Arc::new(gated)
+    }
+
+    /// Send the call to the UI and wait for its answer, ignoring the mode.
+    fn approve_unconditionally(&self, tool_call: &ToolCall) -> Decision {
         let (resp_tx, resp_rx) = mpsc::sync_channel(1);
         let pending = PendingApproval {
             tool_name: tool_call.name.clone(),
@@ -79,6 +179,22 @@ impl Approver for ChannelApprover {
             return Decision::Deny;
         }
         resp_rx.recv().unwrap_or(Decision::Deny)
+    }
+
+    /// The authorizer to install next to this approver; see [`ApprovalAuthorizer`].
+    pub fn authorizer(&self) -> Arc<ApprovalAuthorizer> {
+        Arc::new(ApprovalAuthorizer {
+            mode: self.mode.clone(),
+        })
+    }
+}
+
+impl Approver for ChannelApprover {
+    fn approve(&self, tool_call: &ToolCall) -> Decision {
+        if self.mode.is_bypass() {
+            return Decision::Allow;
+        }
+        self.approve_unconditionally(tool_call)
     }
 }
 
@@ -114,6 +230,109 @@ mod tests {
         mode.set_bypass(true);
         assert_eq!(approver.approve(&call()), Decision::Allow);
         assert!(pending.try_recv().is_err(), "bypass must not prompt");
+    }
+
+    #[test]
+    fn ask_mode_gates_policy_allowed_writes_and_shell_but_keeps_denials() {
+        let (approver, _pending) = ChannelApprover::pair();
+        let mode = approver.mode();
+        let authorizer = approver.authorizer();
+        let root = tempfile::tempdir().unwrap();
+        let policy = crate::product_policy::tele_coding_policy();
+        let decide = |tool: &str, args: &str| {
+            authorizer.authorize(&policy, tool, args, None, Some(root.path()))
+        };
+        let inside = format!(
+            "{{\"path\":\"{}\",\"content\":\"x\"}}",
+            root.path().join("a.txt").display()
+        );
+        let outside = r#"{"path":"/etc/tk-approval-test","content":"x"}"#;
+
+        // rx4's workspace-write policy allows these without asking.
+        assert_eq!(
+            PolicyAuthorizer::new().authorize(&policy, "write", &inside, None, Some(root.path())),
+            Decision::Allow
+        );
+        assert_eq!(decide("write", &inside), Decision::Ask);
+        assert_eq!(decide("edit", &inside), Decision::Ask);
+        assert_eq!(decide("bash", r#"{"command":"git status"}"#), Decision::Ask);
+        assert_eq!(decide("read", &inside), Decision::Allow);
+        assert_eq!(decide("todo", "{}"), Decision::Allow);
+        assert_eq!(decide("write", outside), Decision::Deny);
+
+        mode.set_bypass(true);
+        assert_eq!(decide("write", &inside), Decision::Allow);
+        assert_eq!(
+            decide("bash", r#"{"command":"git status"}"#),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide("write", outside),
+            Decision::Deny,
+            "bypass never overrides deny"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn subagent_tools_wait_for_approval_before_running() {
+        use std::sync::atomic::AtomicUsize;
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+        fn write_tool(_ctx: Arc<ToolContext>, _args: String) -> rx4::agent::ToolFuture {
+            RUNS.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { ToolResult::ok("", "written") })
+        }
+        fn read_tool(_ctx: Arc<ToolContext>, _args: String) -> rx4::agent::ToolFuture {
+            Box::pin(async { ToolResult::ok("", "read") })
+        }
+        let parent = ToolRegistry::new();
+        parent.register(
+            ToolDefinition::new_fn("write", "write a file", "{}", write_tool)
+                .with_effect(rx4::agent::ToolEffect::Write),
+        );
+        parent.register(ToolDefinition::new_fn(
+            "read",
+            "read a file",
+            "{}",
+            read_tool,
+        ));
+        let (approver, pending) = ChannelApprover::pair();
+        let gated = approver.gate_subagent_tools(Arc::new(parent));
+        assert_eq!(gated.names(), ["read", "write"]);
+        assert_eq!(gated.effect_of("write"), rx4::agent::ToolEffect::Write);
+        let ctx = Arc::new(ToolContext::new(std::env::temp_dir()));
+
+        let read = gated.execute("read", &ctx, "{}").await.unwrap();
+        assert_eq!(read.content, "read");
+        assert!(pending.try_recv().is_err(), "reads do not prompt");
+
+        let pending = Arc::new(std::sync::Mutex::new(pending));
+        for (decision, runs_after) in [(Decision::Deny, 0), (Decision::Allow, 1)] {
+            let run = tokio::spawn({
+                let gated = Arc::clone(&gated);
+                let ctx = Arc::clone(&ctx);
+                async move { gated.execute("write", &ctx, r#"{"path":"a"}"#).await }
+            });
+            let pending = Arc::clone(&pending);
+            let request = tokio::task::spawn_blocking(move || {
+                let pending = pending.lock().unwrap();
+                pending
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+            assert_eq!(request.tool_name, "subagent write");
+            assert_eq!(request.arguments, r#"{"path":"a"}"#);
+            assert_eq!(RUNS.load(Ordering::SeqCst), 0, "ran before approval");
+            request.respond.send(decision).unwrap();
+            let result = run.await.unwrap().unwrap();
+            assert_eq!(result.is_error, decision == Decision::Deny);
+            assert_eq!(RUNS.load(Ordering::SeqCst), runs_after);
+        }
+
+        approver.mode().set_bypass(true);
+        gated.execute("write", &ctx, "{}").await.unwrap();
+        assert_eq!(RUNS.load(Ordering::SeqCst), 2, "bypass runs without asking");
     }
 
     #[test]

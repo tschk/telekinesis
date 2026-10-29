@@ -112,11 +112,18 @@ tk exec --provider opencode-go --model muse-spark-1.3-contributor "reply with th
 | tool call blocks | bordered blocks with tool name and args |
 | diff blocks | green/red line coloring for file edits |
 
-Tool approval defaults to **ask**: the TUI stops before each tool call until
-you press `y` or `n`. Bypass (auto-approve every tool call) is only entered
+Tool approval defaults to **ask**: the TUI stops before each tool call that
+can change something (writes, edits, shell commands, MCP and other tools) until
+you press `y` or `n`. Read-only tools (`read`, `ls`, `find`, `grep`, web
+search) and the agent's in-memory todo list run without a prompt, and policy
+denials (for example writes outside the workspace) still apply. Bypass (auto-approve every tool call) is only entered
 explicitly, with `TK_TOOL_APPROVAL=bypass` at startup or `/approvals bypass`
 in the session; the transcript announces the switch and the status line shows
 `BYPASS: tools auto-approved` in red until `/approvals ask`.
+
+Subagents use the same gate: each subagent tool call that can change
+something shows as `subagent <tool>` and waits for `y`/`n`. Shell and other
+calls that rx4 marks Ask-class fail closed inside subagents.
 
 Whole-turn plan approval is separate and opt-in: set `TK_PLAN_APPROVAL=ask`
 to review each tool-calling turn's plan, or `off` to disable plan handling;

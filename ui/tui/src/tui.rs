@@ -280,6 +280,10 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     let start_in_bypass = crate::channel_approver::bypass_requested(
         std::env::var("TK_TOOL_APPROVAL").ok().as_deref(),
     );
+    agent.set_authorizer(approver.authorizer());
+    subagent_manager
+        .lock()
+        .set_tools(approver.gate_subagent_tools(agent.tools.clone()));
     agent.set_approver(Arc::new(approver));
 
     // rx4 owns the plan gate and the wait; the TUI only presents the bounded
