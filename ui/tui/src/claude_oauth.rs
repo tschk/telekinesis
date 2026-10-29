@@ -265,22 +265,38 @@ async fn pump_anthropic_sse<S, T, E>(
         while let Some(position) = buffer.find("\n\n") {
             let block = buffer[..position].to_string();
             buffer.drain(..position + 2);
-            for event in anthropic_events(&block, &mut state) {
+            let events = anthropic_events(&block, &mut state);
+            // Cache before `Done` goes out: the agent may run a fast tool and
+            // send the next request before this task reads more bytes.
+            if state.done {
+                commit_thinking(&mut state, &cache);
+            }
+            for event in events {
                 let _ = tx.send(event);
             }
         }
     }
-    for event in anthropic_events(&buffer, &mut state) {
+    let events = anthropic_events(&buffer, &mut state);
+    commit_thinking(&mut state, &cache);
+    for event in events {
         let _ = tx.send(event);
-    }
-    if !state.thinking.is_empty() {
-        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-        for id in &state.tool_ids {
-            cache.insert(id.clone(), state.thinking.clone());
-        }
     }
     if !state.done {
         let _ = tx.send(Ok(StreamEvent::Done));
+    }
+}
+
+/// Move this response's thinking blocks into the cache under each of its
+/// tool-use ids. Drains the state, so a second call does nothing.
+fn commit_thinking(state: &mut AnthropicStreamState, cache: &ThinkingCache) {
+    let thinking = std::mem::take(&mut state.thinking);
+    let ids = std::mem::take(&mut state.tool_ids);
+    if thinking.is_empty() {
+        return;
+    }
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    for id in ids {
+        cache.insert(id, thinking.clone());
     }
 }
 
@@ -516,12 +532,25 @@ mod tests {
         );
         let cache = ThinkingCache::default();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let bytes = futures::stream::iter([Ok::<_, std::io::Error>(sse.as_bytes().to_vec())]);
-        pump_anthropic_sse(bytes, tx, Arc::clone(&cache)).await;
+        // The connection stays open after message_stop; the cache must be
+        // filled by the time `Done` is delivered, not at end of stream.
+        let bytes = futures::stream::iter([Ok::<_, std::io::Error>(sse.as_bytes().to_vec())])
+            .chain(futures::stream::pending());
+        let pump = tokio::spawn(pump_anthropic_sse(bytes, tx, Arc::clone(&cache)));
         let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event.unwrap());
+        while let Some(event) = rx.recv().await {
+            let event = event.unwrap();
+            let done = matches!(event, StreamEvent::Done);
+            events.push(event);
+            if done {
+                break;
+            }
         }
+        assert!(
+            cache.lock().unwrap().contains_key("tu_9"),
+            "cached before Done"
+        );
+        pump.abort();
         assert!(
             !events.iter().any(|e| matches!(e, StreamEvent::Delta(_))),
             "thinking is not shown as reply text"

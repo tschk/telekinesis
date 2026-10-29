@@ -65,13 +65,12 @@ impl Authorizer for ApprovalAuthorizer {
         approver: Option<&dyn Approver>,
         workspace_root: Option<&std::path::Path>,
     ) -> Decision {
-        let decision = PolicyAuthorizer::new().authorize(
-            policy,
-            tool_name,
-            arguments,
-            approver,
-            workspace_root,
-        );
+        // No approver here: the engine asks once on our `Ask`. Passing it
+        // would let a policy `Ask` prompt inside the policy check and again
+        // after it.
+        let _ = approver;
+        let decision =
+            PolicyAuthorizer::new().authorize(policy, tool_name, arguments, None, workspace_root);
         let unattended = is_read_only_tool(tool_name) || tool_name == "todo";
         if decision == Decision::Allow && !unattended && !self.mode.is_bypass() {
             Decision::Ask
@@ -271,6 +270,33 @@ mod tests {
             Decision::Deny,
             "bypass never overrides deny"
         );
+    }
+
+    #[test]
+    fn authorizer_never_prompts_itself() {
+        use std::sync::atomic::AtomicUsize;
+        struct Counting(AtomicUsize);
+        impl Approver for Counting {
+            fn approve(&self, _call: &ToolCall) -> Decision {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Decision::Allow
+            }
+        }
+        let (approver, _pending) = ChannelApprover::pair();
+        let counting = Counting(AtomicUsize::new(0));
+        let root = tempfile::tempdir().unwrap();
+        let policy = crate::product_policy::tele_coding_policy();
+        // Policy Ask (non-allowlisted shell): returned as Ask so the engine
+        // prompts exactly once, not resolved by an extra prompt here.
+        let decision = approver.authorizer().authorize(
+            &policy,
+            "bash",
+            r#"{"command":"make deploy"}"#,
+            Some(&counting),
+            Some(root.path()),
+        );
+        assert_eq!(decision, Decision::Ask);
+        assert_eq!(counting.0.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

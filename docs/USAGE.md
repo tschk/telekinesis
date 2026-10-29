@@ -101,8 +101,8 @@ tk exec --provider opencode-go --model muse-spark-1.3-contributor "reply with th
 | sidebar (ctrl+b) | session list, tool list, plugin list |
 | slash autocomplete | filtered command list as you type `/` |
 | input history | up/down arrows, persisted to `~/.telekinesis/input_history.json` |
-| permission prompts | every tool call waits for y (allow) / n (deny); shows tool name **and arguments** |
-| plan approval | whole-turn rx4 preview before tool execution; y/n in the TUI |
+| permission prompts | every tool call that can change something waits for y (allow) / n (deny); shows tool name **and arguments** |
+| plan approval | opt-in (`TK_PLAN_APPROVAL=ask`) whole-turn rx4 preview before tool execution; y/n in the TUI |
 | context usage bar | green/amber/red percentage of context window |
 | cost tracking | running cost in status bar, `/cost` for breakdown |
 | usage totals | local request/token counts per provider, `/usage` and status line |
