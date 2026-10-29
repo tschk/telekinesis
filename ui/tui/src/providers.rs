@@ -458,19 +458,33 @@ mod tests {
             .expect("test runtime")
     }
 
-    fn with_env(var: &str, value: Option<&str>) -> Option<String> {
-        let previous = std::env::var(var).ok();
-        match value {
-            Some(value) => std::env::set_var(var, value),
-            None => std::env::remove_var(var),
-        }
-        previous
+    /// Every test here that touches process env holds this lock, and env
+    /// changes go through `EnvVar`, which restores on drop (even on panic).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn restore_env(var: &str, previous: Option<String>) {
-        match previous {
-            Some(value) => std::env::set_var(var, value),
-            None => std::env::remove_var(var),
+    struct EnvVar(&'static str, Option<String>);
+
+    impl EnvVar {
+        fn set(var: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var(var).ok();
+            match value {
+                Some(value) => std::env::set_var(var, value),
+                None => std::env::remove_var(var),
+            }
+            Self(var, previous)
+        }
+    }
+
+    impl Drop for EnvVar {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(value) => std::env::set_var(self.0, value),
+                None => std::env::remove_var(self.0),
+            }
         }
     }
 
@@ -489,21 +503,20 @@ mod tests {
 
     #[test]
     fn openai_base_url_defaults_and_honors_override() {
-        let previous = with_env("OPENAI_BASE_URL", None);
+        let _lock = env_lock();
+        let _unset = EnvVar::set("OPENAI_BASE_URL", None);
         assert_eq!(openai_base_url(), "https://api.openai.com/v1");
-        with_env("OPENAI_BASE_URL", Some("https://proxy.local/v1"));
+        let _proxy = EnvVar::set("OPENAI_BASE_URL", Some("https://proxy.local/v1"));
         assert_eq!(openai_base_url(), "https://proxy.local/v1");
-        with_env("OPENAI_BASE_URL", Some("   "));
+        let _blank = EnvVar::set("OPENAI_BASE_URL", Some("   "));
         assert_eq!(openai_base_url(), "https://api.openai.com/v1");
-        restore_env("OPENAI_BASE_URL", previous);
     }
 
     #[test]
     fn setup_providers_wires_zai_coding_plan() {
-        let previous = with_env("ZAI_API_KEY", Some("test-key-not-real"));
-        let rt = test_runtime();
-        let configured = setup_providers(&rt);
-        restore_env("ZAI_API_KEY", previous);
+        let _lock = env_lock();
+        let _key = EnvVar::set("ZAI_API_KEY", Some("test-key-not-real"));
+        let configured = setup_providers(&test_runtime());
         let entry = configured
             .iter()
             .find(|(provider, _)| provider.id == "zai")
@@ -511,9 +524,6 @@ mod tests {
         assert_eq!(entry.0.name, "Z.AI Coding Plan");
         assert_eq!(entry.1, "glm-5.3");
     }
-
-    /// Serializes tests that point process-wide credential paths at temp dirs.
-    static CREDENTIAL_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn find<'a>(
         configured: &'a [(ConfiguredProvider, String)],
@@ -532,21 +542,18 @@ mod tests {
 
     #[test]
     fn setup_providers_uses_stored_openai_xai_and_google_keys() {
-        let _lock = CREDENTIAL_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let dir = tempfile::tempdir().unwrap();
-        let env_vars = ["OPENAI_API_KEY", "XAI_API_KEY"]
+        let _unset = ["OPENAI_API_KEY", "XAI_API_KEY"]
             .into_iter()
             .chain(GOOGLE_KEY_ENV)
+            .map(|var| EnvVar::set(var, None))
             .collect::<Vec<_>>();
-        let saved = env_vars
-            .iter()
-            .map(|var| (*var, with_env(var, None)))
-            .collect::<Vec<_>>();
-        let keys = with_env(
+        let _keys = EnvVar::set(
             "TELEKINESIS_KEYS_PATH",
             Some(dir.path().join("keys.json").to_str().unwrap()),
         );
-        let creds = with_env("RS_AI_CREDENTIALS_DIR", dir.path().to_str());
+        let _creds = EnvVar::set("RS_AI_CREDENTIALS_DIR", dir.path().to_str());
         for id in ["openai", "xai", "google"] {
             provider_catalog::save_provider_key(id, "stored-test-key").unwrap();
         }
@@ -556,11 +563,6 @@ mod tests {
         for id in ["openai", "xai", "google"] {
             let _ = provider_catalog::delete_provider_key(id);
         }
-        restore_env("RS_AI_CREDENTIALS_DIR", creds);
-        restore_env("TELEKINESIS_KEYS_PATH", keys);
-        for (var, previous) in saved {
-            restore_env(var, previous);
-        }
         for id in ["openai", "xai", "google"] {
             assert!(find(&configured, id).is_some(), "stored {id} key ignored");
         }
@@ -568,7 +570,7 @@ mod tests {
 
     #[test]
     fn setup_providers_loads_claude_and_copilot_logins() {
-        let _lock = CREDENTIAL_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let dir = tempfile::tempdir().unwrap();
         for name in ["claude", "copilot"] {
             std::fs::write(
@@ -579,9 +581,8 @@ mod tests {
             )
             .unwrap();
         }
-        let creds = with_env("RS_AI_CREDENTIALS_DIR", dir.path().to_str());
+        let _creds = EnvVar::set("RS_AI_CREDENTIALS_DIR", dir.path().to_str());
         let configured = setup_providers(&test_runtime());
-        restore_env("RS_AI_CREDENTIALS_DIR", creds);
 
         let copilot = find(&configured, "copilot").expect("copilot login loaded");
         assert_eq!(copilot.0.client.id(), "copilot");
@@ -592,10 +593,9 @@ mod tests {
 
     #[test]
     fn setup_providers_wires_opencode_go_with_deepseek_default() {
-        let previous = with_env("OPENCODE_GO_API_KEY", Some("test-key-not-real"));
-        let rt = test_runtime();
-        let configured = setup_providers(&rt);
-        restore_env("OPENCODE_GO_API_KEY", previous);
+        let _lock = env_lock();
+        let _key = EnvVar::set("OPENCODE_GO_API_KEY", Some("test-key-not-real"));
+        let configured = setup_providers(&test_runtime());
         let entry = configured
             .iter()
             .find(|(provider, _)| provider.id == "opencode-go")
