@@ -197,6 +197,7 @@ pub(crate) fn handle_slash_command(
                     /resume <n> — resume a session\n\
                     /subagent spawn|list|cancel — manage subagents\n\
                     /budget [cost|time|turns|clear] — usage limits\n\
+                    /approvals ask|bypass — tool-call y/n prompts\n\
                     /plan-approval ask|bypass|off — plan gating\n\
                     /mcp — MCP tools\n\
                     /search — web search\n\
@@ -561,6 +562,19 @@ pub(crate) fn handle_slash_command(
             };
             push_system_message(app, msg);
         }
+        "/approvals" => match arg.trim() {
+            "ask" => app.set_tool_approval_bypass(false),
+            "bypass" => app.set_tool_approval_bypass(true),
+            "" => push_system_message(
+                app,
+                if app.tool_approval_bypassed() {
+                    "Tool approval: BYPASSED (every tool call runs without asking). Use /approvals ask to restore prompts."
+                } else {
+                    "Tool approval: ask (y allow, n deny). Use /approvals bypass to auto-approve every tool call."
+                },
+            ),
+            _ => push_system_message(app, "Usage: /approvals ask|bypass"),
+        },
         "/plan-approval" => match arg {
             "ask" | "on" => {
                 if app.plan_prompt {

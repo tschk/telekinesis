@@ -15,6 +15,14 @@ use crate::provider_catalog;
 pub(crate) const ZAI_CHAT_URL: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
 pub(crate) const ZAI_DEFAULT_MODEL: &str = "glm-5.3";
 pub(crate) const ZAI_MODELS: [&str; 2] = ["glm-5.3", "glm-5.3-flash"];
+/// Gemini's OpenAI-compatible base; providers append `/chat/completions`.
+pub(crate) const GEMINI_OPENAI_BASE_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/openai";
+const GOOGLE_KEY_ENV: [&str; 3] = [
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+];
 
 pub(crate) fn oauth_provider(name: &str) -> Option<rs_ai_oauth::OAuthProvider> {
     rs_ai_oauth::OAuthProvider::parse(name)
@@ -57,6 +65,9 @@ pub(crate) fn run_login(provider: Option<&str>) -> anyhow::Result<()> {
     // The shared store, so a login here is visible to every rs_ai_oauth tool.
     let path = rs_ai_oauth::credentials::save(&oauth, &tokens)?;
     println!("Token saved to {}", path.display());
+    if oauth == rs_ai_oauth::OAuthProvider::Antigravity {
+        println!("Antigravity is not supported yet: the login is saved, but tk cannot use it.");
+    }
     Ok(())
 }
 
@@ -142,14 +153,15 @@ pub(crate) fn providers_summary(app: &App) -> String {
     ]
     .iter()
     .map(|(name, id)| {
-        format!(
-            "  {name:<25} {}",
-            if provider_is_configured(id) {
-                "configured"
-            } else {
-                "not configured"
-            }
-        )
+        let status = match (provider_is_configured(id), *id) {
+            // Antigravity serves the Cloud Code Assist protocol, which tk
+            // has no client for; do not claim the login is usable.
+            (true, "antigravity") => "not supported yet (login saved, unused)",
+            (false, "antigravity") => "not supported yet",
+            (true, _) => "configured",
+            (false, _) => "not configured",
+        };
+        format!("  {name:<25} {status}")
     })
     .collect::<Vec<_>>()
     .join("\n");
@@ -254,10 +266,10 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
             },
             "gpt-5.5".to_string(),
         ));
-    } else if let Some(key) = std::env::var("OPENAI_API_KEY")
-        .ok()
-        .filter(|key| !key.is_empty())
-    {
+    }
+    // A stored or env API key is its own provider (`openai`), independent of
+    // a ChatGPT Codex login (`openai-codex`).
+    if let Some(key) = api_key(&["OPENAI_API_KEY"], "openai") {
         configured.push((
             ConfiguredProvider {
                 id: "openai".to_string(),
@@ -313,7 +325,9 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
             ConfiguredProvider {
                 id: "anthropic".to_string(),
                 name: "Claude".to_string(),
-                client: Arc::new(OpenAIProvider::anthropic(token)),
+                // Subscription OAuth tokens need Bearer auth and the Claude
+                // Code profile; rx4's Anthropic client sends `x-api-key`.
+                client: Arc::new(crate::claude_oauth::ClaudeOAuthProvider::new(token)),
             },
             "claude-sonnet-4-5".to_string(),
         ));
@@ -334,9 +348,21 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
         ));
     }
 
-    let oauth_providers = [
+    if let Some(token) = saved_token("copilot", rt) {
+        configured.push((
+            ConfiguredProvider {
+                id: crate::copilot::COPILOT_ID.to_string(),
+                name: "GitHub Copilot".to_string(),
+                client: Arc::new(crate::copilot::CopilotProvider::new(token)),
+            },
+            crate::copilot::COPILOT_DEFAULT_MODEL.to_string(),
+        ));
+    }
+
+    // API key (env, then `/apikey` store) first, then the OAuth login.
+    let key_or_login_providers = [
         (
-            "XAI_API_KEY",
+            ["XAI_API_KEY"].as_slice(),
             "grok",
             "https://api.x.ai/v1",
             "xai",
@@ -344,19 +370,17 @@ pub(crate) fn setup_providers(rt: &tokio::runtime::Runtime) -> Vec<(ConfiguredPr
             "grok-4.5",
         ),
         (
-            "GOOGLE_API_KEY",
+            GOOGLE_KEY_ENV.as_slice(),
             "gemini",
-            "https://generativelanguage.googleapis.com/v1beta",
+            GEMINI_OPENAI_BASE_URL,
             "google",
             "Google Gemini",
             "gemini-2.0-flash",
         ),
     ];
-    configured.extend(oauth_providers.iter().filter_map(
-        |(env, login, base_url, id, name, model)| {
-            std::env::var(env)
-                .ok()
-                .filter(|key| !key.is_empty())
+    configured.extend(key_or_login_providers.iter().filter_map(
+        |(env_vars, login, base_url, id, name, model)| {
+            api_key(env_vars, id)
                 .or_else(|| saved_token(login, rt))
                 .map(|key| {
                     (
@@ -434,19 +458,33 @@ mod tests {
             .expect("test runtime")
     }
 
-    fn with_env(var: &str, value: Option<&str>) -> Option<String> {
-        let previous = std::env::var(var).ok();
-        match value {
-            Some(value) => std::env::set_var(var, value),
-            None => std::env::remove_var(var),
-        }
-        previous
+    /// Every test here that touches process env holds this lock, and env
+    /// changes go through `EnvVar`, which restores on drop (even on panic).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn restore_env(var: &str, previous: Option<String>) {
-        match previous {
-            Some(value) => std::env::set_var(var, value),
-            None => std::env::remove_var(var),
+    struct EnvVar(&'static str, Option<String>);
+
+    impl EnvVar {
+        fn set(var: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var(var).ok();
+            match value {
+                Some(value) => std::env::set_var(var, value),
+                None => std::env::remove_var(var),
+            }
+            Self(var, previous)
+        }
+    }
+
+    impl Drop for EnvVar {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(value) => std::env::set_var(self.0, value),
+                None => std::env::remove_var(self.0),
+            }
         }
     }
 
@@ -465,21 +503,20 @@ mod tests {
 
     #[test]
     fn openai_base_url_defaults_and_honors_override() {
-        let previous = with_env("OPENAI_BASE_URL", None);
+        let _lock = env_lock();
+        let _unset = EnvVar::set("OPENAI_BASE_URL", None);
         assert_eq!(openai_base_url(), "https://api.openai.com/v1");
-        with_env("OPENAI_BASE_URL", Some("https://proxy.local/v1"));
+        let _proxy = EnvVar::set("OPENAI_BASE_URL", Some("https://proxy.local/v1"));
         assert_eq!(openai_base_url(), "https://proxy.local/v1");
-        with_env("OPENAI_BASE_URL", Some("   "));
+        let _blank = EnvVar::set("OPENAI_BASE_URL", Some("   "));
         assert_eq!(openai_base_url(), "https://api.openai.com/v1");
-        restore_env("OPENAI_BASE_URL", previous);
     }
 
     #[test]
     fn setup_providers_wires_zai_coding_plan() {
-        let previous = with_env("ZAI_API_KEY", Some("test-key-not-real"));
-        let rt = test_runtime();
-        let configured = setup_providers(&rt);
-        restore_env("ZAI_API_KEY", previous);
+        let _lock = env_lock();
+        let _key = EnvVar::set("ZAI_API_KEY", Some("test-key-not-real"));
+        let configured = setup_providers(&test_runtime());
         let entry = configured
             .iter()
             .find(|(provider, _)| provider.id == "zai")
@@ -488,12 +525,77 @@ mod tests {
         assert_eq!(entry.1, "glm-5.3");
     }
 
+    fn find<'a>(
+        configured: &'a [(ConfiguredProvider, String)],
+        id: &str,
+    ) -> Option<&'a (ConfiguredProvider, String)> {
+        configured.iter().find(|(provider, _)| provider.id == id)
+    }
+
+    #[test]
+    fn gemini_base_url_is_the_openai_compatible_endpoint() {
+        assert_eq!(
+            format!("{GEMINI_OPENAI_BASE_URL}/chat/completions"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        );
+    }
+
+    #[test]
+    fn setup_providers_uses_stored_openai_xai_and_google_keys() {
+        let _lock = env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let _unset = ["OPENAI_API_KEY", "XAI_API_KEY"]
+            .into_iter()
+            .chain(GOOGLE_KEY_ENV)
+            .map(|var| EnvVar::set(var, None))
+            .collect::<Vec<_>>();
+        let _keys = EnvVar::set(
+            "TELEKINESIS_KEYS_PATH",
+            Some(dir.path().join("keys.json").to_str().unwrap()),
+        );
+        let _creds = EnvVar::set("RS_AI_CREDENTIALS_DIR", dir.path().to_str());
+        for id in ["openai", "xai", "google"] {
+            provider_catalog::save_provider_key(id, "stored-test-key").unwrap();
+        }
+
+        let configured = setup_providers(&test_runtime());
+
+        for id in ["openai", "xai", "google"] {
+            let _ = provider_catalog::delete_provider_key(id);
+        }
+        for id in ["openai", "xai", "google"] {
+            assert!(find(&configured, id).is_some(), "stored {id} key ignored");
+        }
+    }
+
+    #[test]
+    fn setup_providers_loads_claude_and_copilot_logins() {
+        let _lock = env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["claude", "copilot"] {
+            std::fs::write(
+                dir.path().join(format!("{name}.json")),
+                format!(
+                    r#"{{"access_token":"{name}-test-token","refresh_token":null,"expires_at":0}}"#
+                ),
+            )
+            .unwrap();
+        }
+        let _creds = EnvVar::set("RS_AI_CREDENTIALS_DIR", dir.path().to_str());
+        let configured = setup_providers(&test_runtime());
+
+        let copilot = find(&configured, "copilot").expect("copilot login loaded");
+        assert_eq!(copilot.0.client.id(), "copilot");
+        assert_eq!(copilot.1, crate::copilot::COPILOT_DEFAULT_MODEL);
+        let claude = find(&configured, "anthropic").expect("claude login loaded");
+        assert_eq!(claude.0.client.name(), "Claude (subscription)");
+    }
+
     #[test]
     fn setup_providers_wires_opencode_go_with_deepseek_default() {
-        let previous = with_env("OPENCODE_GO_API_KEY", Some("test-key-not-real"));
-        let rt = test_runtime();
-        let configured = setup_providers(&rt);
-        restore_env("OPENCODE_GO_API_KEY", previous);
+        let _lock = env_lock();
+        let _key = EnvVar::set("OPENCODE_GO_API_KEY", Some("test-key-not-real"));
+        let configured = setup_providers(&test_runtime());
         let entry = configured
             .iter()
             .find(|(provider, _)| provider.id == "opencode-go")

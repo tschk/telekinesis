@@ -36,7 +36,7 @@ impl LoginMenu {
             rs_ai_oauth::OAuthProvider::Xai => "xAI Grok",
             rs_ai_oauth::OAuthProvider::Claude => "Anthropic Claude",
             rs_ai_oauth::OAuthProvider::Gemini => "Google Gemini",
-            rs_ai_oauth::OAuthProvider::Antigravity => "Antigravity",
+            rs_ai_oauth::OAuthProvider::Antigravity => "Antigravity (not supported yet)",
             rs_ai_oauth::OAuthProvider::Copilot => "GitHub Copilot",
             rs_ai_oauth::OAuthProvider::Kimi => "Kimi",
         }
@@ -53,7 +53,12 @@ impl LoginMenu {
                     let name = oauth.name();
                     row.set("id", name);
                     row.set("display", Self::display_name(*oauth));
-                    row.set("configured", crate::providers::provider_is_configured(name));
+                    // A saved Antigravity login is unusable, so never label it configured.
+                    row.set(
+                        "configured",
+                        *oauth != rs_ai_oauth::OAuthProvider::Antigravity
+                            && crate::providers::provider_is_configured(name),
+                    );
                     row.set("selected", index == self.choice);
                     row
                 })

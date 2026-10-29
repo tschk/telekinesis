@@ -231,6 +231,16 @@ mod tests {
     }
 
     #[test]
+    fn scope_changes_keep_the_host_authorizer() {
+        let (approver, _pending) = crate::channel_approver::ChannelApprover::pair();
+        let mut agent = Agent::new();
+        agent.set_authorizer(approver.authorizer());
+        apply_scope(&mut agent, Scope::Research);
+        apply_scope(&mut agent, Scope::Coding);
+        assert!(agent.authorizer.is_some());
+    }
+
+    #[test]
     fn isolate_agent_leaves_fresh_agent_empty() {
         let mut agent = Agent::new();
         isolate_agent(&mut agent);
