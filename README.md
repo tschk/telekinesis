@@ -32,7 +32,7 @@ cargo install telekinesis
 tk login grok
 ```
 
-Also: `openai`, `claude`, `gemini`, `copilot`, `kimi`, `antigravity`.
+Also: `openai`, `claude`, `gemini`, `copilot`, `kimi`. (`antigravity` logins are saved but not supported for chat yet.)
 
 ### 3. Run
 
