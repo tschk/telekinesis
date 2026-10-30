@@ -8,6 +8,8 @@ actions!(
         NewThread,
         RenameThread,
         HandoffThread,
+        AttachReference,
+        RemoveReference,
         CloseWorkspace,
         ToggleSidebar,
         ToggleContext,
@@ -38,6 +40,22 @@ pub(super) fn install(handle: WindowHandle<Workspace>, cx: &mut App) {
         cx.activate(true);
         cx.defer(move |cx| {
             let _ = handle.update(cx, |_, window, _| window.activate_window());
+        });
+    });
+    // Native menu activation can leave no focused element after a macOS file panel.
+    // Defer the exact window update, as for Close, to avoid a nested WindowHandle borrow.
+    cx.on_action(move |_: &AttachReference, cx| {
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |this, window, cx| {
+                this.attach_context(&ClickEvent::default(), window, cx)
+            });
+        });
+    });
+    cx.on_action(move |_: &RemoveReference, cx| {
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |this, window, cx| {
+                this.remove_context(&ClickEvent::default(), window, cx)
+            });
         });
     });
     cx.bind_keys([
@@ -75,6 +93,8 @@ pub(super) fn install(handle: WindowHandle<Workspace>, cx: &mut App) {
                 MenuItem::action("New Thread", NewThread),
                 MenuItem::action("Rename Thread…", RenameThread),
                 MenuItem::action("Handoff…", HandoffThread),
+                MenuItem::action("Attach Selected Reference", AttachReference),
+                MenuItem::action("Remove Reference", RemoveReference),
                 MenuItem::separator(),
                 MenuItem::action("Close Window", CloseWorkspace),
             ],

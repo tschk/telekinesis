@@ -9,7 +9,7 @@ use telekinesis::context_import::{
     parse_chat_export, prepare_context, ImportPreview, PreparedContext, MAX_SOURCE_BYTES,
 };
 use telekinesis::local_runtime::Handoff;
-use telekinesis_gui::desktop_host::{AgentRole, DesktopHost, Permission, ReceiptState};
+use telekinesis_gui::desktop_host::{AgentRole, DesktopHost, Permission, ReceiptState, Workflow};
 
 pub struct Workspace {
     host: DesktopHost,
@@ -30,12 +30,12 @@ pub struct Workspace {
     close_after_settle: bool,
     sidebar_hidden: bool,
     light: bool,
+    review_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 struct ViewMessage {
     role: String,
     content: String,
-    is_user: bool,
 }
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -76,6 +76,14 @@ impl Workspace {
             if this.handoff.is_none() && !this.renaming {
                 this.host.input = this.composer.read(cx).content.to_string();
             }
+        });
+        let bounds = cx.observe_window_bounds(window, |_, window, cx| {
+            cx.notify();
+            // Native resize arrives asynchronously; invalidate after that effect cycle too.
+            cx.on_next_frame(window, |_, window, cx| {
+                window.refresh();
+                cx.notify();
+            });
         });
         let activation = cx.observe_window_activation(window, |_, _, cx| cx.notify());
         let appearance = cx.observe_window_appearance(window, |_, _, cx| cx.notify());
@@ -121,6 +129,7 @@ impl Workspace {
             budget_changed,
             activation,
             appearance,
+            bounds,
         ];
         Self {
             host: DesktopHost::boot(),
@@ -141,6 +150,7 @@ impl Workspace {
             close_after_settle: false,
             sidebar_hidden: false,
             light: false,
+            review_open: false,
             _subscriptions: subscriptions,
         }
     }
@@ -185,7 +195,7 @@ impl Workspace {
             self.result(result, cx);
         } else {
             self.host.input = self.composer.read(cx).content.to_string();
-            if self.queue {
+            if self.queue && self.host.snapshot().worker.is_none() {
                 self.host.send_queue();
             } else {
                 self.host.send_prompt();
@@ -211,6 +221,15 @@ impl Workspace {
                 self.host.snapshot().threads.len() + 1
             ))
         });
+        if result.is_ok() {
+            self.refresh_editor(window, cx);
+        }
+        self.result(result, cx);
+    }
+    fn select_coordinator(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self
+            .sync_draft(cx)
+            .and_then(|_| self.host.select_coordinator());
         if result.is_ok() {
             self.refresh_editor(window, cx);
         }
@@ -254,15 +273,49 @@ impl Workspace {
     }
     fn toggle_settings(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.show_settings = !self.show_settings;
+        self.show_context = false;
         cx.notify();
     }
     fn toggle_context(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.show_context = !self.show_context;
+        self.show_settings = false;
+        cx.notify();
+    }
+    fn close_inspector(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_context = false;
+        self.show_settings = false;
         cx.notify();
     }
     fn toggle_queue(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.host.snapshot().worker.is_some() {
+            return;
+        }
         self.queue = !self.queue;
         cx.notify();
+    }
+    fn retry_settlement(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let result = self.host.retry_settlement();
+        self.result(result, cx);
+    }
+    fn cycle_workflow(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let snap = self.host.snapshot();
+        if !cfg!(feature = "coordinator-preview")
+            || snap.busy
+            || snap.worker.is_some()
+            || snap
+                .coordinator
+                .as_ref()
+                .is_some_and(|t| Some(&t.id) == snap.active_thread_id.as_ref())
+        {
+            return;
+        }
+        let mut config = snap.config;
+        config.workflow = match config.workflow {
+            Workflow::Direct => Workflow::Coordinator,
+            Workflow::Coordinator => Workflow::Direct,
+        };
+        let result = self.host.update_config(config);
+        self.result(result, cx);
     }
     fn cycle_role(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let snap = self.host.snapshot();
@@ -317,6 +370,11 @@ impl Workspace {
             return;
         }
         let snap = self.host.snapshot();
+        if snap.worker.is_some() {
+            self.error = Some("Handoff is available only from a root thread.".into());
+            cx.notify();
+            return;
+        }
         if snap.busy
             || snap
                 .receipts
@@ -390,20 +448,22 @@ impl Workspace {
         }
         self.result(result, cx);
     }
-    fn remove_context(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn remove_context(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.host.set_reference_context(None);
         self.preview = None;
         self.selected.clear();
+        window.focus(&self.composer.read(cx).focus_handle);
+        window.refresh();
         cx.notify();
     }
-    fn import_chat(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn import_chat(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some("Preview chat export".into()),
         });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = chosen.await {
                 if let Some(path) = paths.into_iter().next() {
                     let result = cx
@@ -426,7 +486,7 @@ impl Workspace {
                             .map_err(|e| e.to_string())
                         })
                         .await;
-                    let _ = this.update(cx, |this, cx| {
+                    let _ = this.update_in(cx, |this, window, cx| {
                         match result {
                             Ok(p) => {
                                 this.preview = Some(p);
@@ -437,6 +497,7 @@ impl Workspace {
                             }
                             Err(e) => this.error = Some(e),
                         };
+                        window.refresh();
                         cx.notify();
                     });
                 }
@@ -453,16 +514,23 @@ impl Workspace {
         )
         .map_err(|e| e.to_string())
     }
-    fn attach_context(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn attach_context(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.host.snapshot().worker.is_some() {
+            self.error = Some("Reference context can only be attached to a root thread.".into());
+            cx.notify();
+            return;
+        }
         match self.prepared(cx) {
             Ok(p) if !p.included_entry_ids.is_empty() => {
                 self.host.set_reference_context(Some(p.text));
                 self.show_context = false;
+                window.focus(&self.composer.read(cx).focus_handle);
                 self.error = None;
             }
             Ok(_) => self.error = Some("Select at least one message.".into()),
             Err(e) => self.error = Some(e),
         }
+        window.refresh();
         cx.notify();
     }
     fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -537,8 +605,8 @@ impl Workspace {
             .rounded_md()
             .text_size(px(12.))
             .text_color(rgb(if self.light { 0x444650 } else { 0xbabac6 }))
-            .bg(rgb(if self.light { 0xededf2 } else { 0x1b1d28 }))
-            .hover(|s| s.bg(rgb(if self.light { 0xe2e2ea } else { 0x292b3a })))
+            .bg(rgb(if self.light { 0xeeeef1 } else { 0x29292c }))
+            .hover(|s| s.bg(rgb(if self.light { 0xe4e4e9 } else { 0x343438 })))
             .cursor_pointer()
             .child(label.into())
     }
@@ -546,159 +614,115 @@ impl Workspace {
 
 impl Workspace {
     fn context_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut panel = div().flex().flex_col().gap_3().child(
-            self.action("choose-export", "Choose chat export…")
-                .on_click(cx.listener(Self::import_chat)),
+        let muted = rgb(if self.light { 0x6b6b73 } else { 0xa2a2aa });
+        let foreground = rgb(if self.light { 0x29292e } else { 0xededf0 });
+        let border = rgb(if self.light { 0xe1e1e5 } else { 0x343438 });
+        let mut panel = div().flex().flex_col().gap_4().child(
+            self.action(
+                "choose-export",
+                if self.preview.is_some() {
+                    "Change export…"
+                } else {
+                    "Choose chat export…"
+                },
+            )
+            .on_click(cx.listener(Self::import_chat)),
         );
         let Some(preview) = &self.preview else {
-            return panel
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(rgb(if self.light { 0x646570 } else { 0x858591 }))
-                        .child("Choose a local export, then select the messages to include."),
-                )
-                .into_any_element();
+            return panel.child(div().text_size(px(13.)).text_color(muted)
+                .child("Select messages from a local chat export to use as reference. Nothing is attached until you review it.")).into_any_element();
         };
         panel = panel
             .child(
                 div()
-                    .text_size(px(12.))
-                    .text_color(rgb(if self.light { 0x5f606c } else { 0xaaaab7 }))
-                    .child(format!(
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(foreground)
+                            .child(preview.source.file_name.clone()),
+                    )
+                    .child(div().text_size(px(12.)).text_color(muted).child(format!(
                         "{} · {}",
-                        preview.source.provider, preview.source.file_name
-                    )),
+                        preview.source.provider, preview.source.format
+                    ))),
             )
-            .children(preview.warnings.iter().map(|w| {
-                div()
-                    .text_size(px(12.))
-                    .text_color(rgb(if self.light { 0x895d18 } else { 0xe6bd81 }))
-                    .child(w.clone())
-            }))
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(rgb(if self.light { 0x62636f } else { 0x9999aa }))
-                    .child("Character budget"),
-            )
-            .child(
-                div()
-                    .rounded_md()
-                    .p_2()
-                    .bg(rgb(if self.light { 0xf5f5f7 } else { 0x191b23 }))
-                    .child(self.budget.clone()),
+            .children(
+                preview
+                    .warnings
+                    .iter()
+                    .map(|w| div().text_size(px(12.)).text_color(muted).child(w.clone())),
             );
-        let prepared = self.prepared(cx);
-        match &prepared {
-            Ok(p) => {
-                panel = panel.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(if self.light { 0x62636f } else { 0x9696a6 }))
-                        .child(format!(
-                            "{} selected · {} characters · ~{} tokens{}",
-                            self.selected.len(),
-                            p.characters,
-                            p.estimated_tokens,
-                            if p.truncated { " · truncated" } else { "" }
-                        )),
-                );
-            }
-            Err(e) => {
-                panel = panel.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(if self.light { 0xa43d50 } else { 0xf1b4bc }))
-                        .child(e.clone()),
-                );
-            }
-        }
-        let mut entries = Vec::new();
-        for chat in &preview.conversations {
-            for entry in &chat.entries {
-                entries.push((chat.title.clone(), entry.clone()));
-            }
-        }
-        let page = self.import_page;
-        panel = panel.child(
-            div()
-                .flex()
-                .gap_2()
-                .child(self.action("previous-context", "←").on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.import_page = this.import_page.saturating_sub(1);
-                        cx.notify();
-                    },
-                )))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(if self.light { 0x62636f } else { 0x858594 }))
-                        .child(format!(
-                            "{} / {}",
-                            page + 1,
-                            entries.len().div_ceil(30).max(1)
-                        )),
-                )
-                .child(
-                    self.action("next-context", "→")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            let count = this
-                                .preview
-                                .as_ref()
-                                .map(|p| {
-                                    p.conversations
-                                        .iter()
-                                        .map(|c| c.entries.len())
-                                        .sum::<usize>()
-                                })
-                                .unwrap_or(0);
-                            if (this.import_page + 1) * 30 < count {
+        let entries = preview
+            .conversations
+            .iter()
+            .flat_map(|chat| chat.entries.iter().map(move |entry| (chat, entry)))
+            .collect::<Vec<_>>();
+        let pages = entries.len().div_ceil(30).max(1);
+        if pages > 1 {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.action("previous-context", "←").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.import_page = this.import_page.saturating_sub(1);
+                            cx.notify();
+                        },
+                    )))
+                    .child(div().text_size(px(12.)).text_color(muted).child(format!(
+                        "{} / {}",
+                        self.import_page + 1,
+                        pages
+                    )))
+                    .child(self.action("next-context", "→").on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            if this.import_page + 1 < pages {
                                 this.import_page += 1;
                             }
                             cx.notify();
-                        })),
-                ),
-        );
-        for (title, entry) in entries.into_iter().skip(page * 30).take(30) {
+                        },
+                    ))),
+            );
+        }
+        let mut list = div().flex().flex_col();
+        for (chat, entry) in entries.into_iter().skip(self.import_page * 30).take(30) {
             let selected = self.selected.contains(&entry.id);
             let id = entry.id.clone();
-            panel = panel.child(
+            list = list.child(
                 div()
                     .id(SharedString::from(format!("entry-{id}")))
-                    .p_3()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(rgb(if selected { 0x8370c0 } else { 0x292b36 }))
+                    .py_3()
+                    .px_2()
+                    .border_b_1()
+                    .border_color(border)
                     .bg(rgb(if self.light {
                         if selected {
                             0xeee8f8
                         } else {
-                            0xf5f5f7
+                            0xf8f8fa
                         }
                     } else if selected {
-                        0x211d35
+                        0x302a3c
                     } else {
-                        0x11131d
+                        0x1c1c1e
                     }))
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgb(if self.light { 0xeae6f5 } else { 0x242334 })))
+                    .hover(|s| s.bg(rgb(if self.light { 0xeceaf2 } else { 0x303034 })))
+                    .child(div().text_size(px(12.)).text_color(muted).child(format!(
+                        "{} {} · {}",
+                        if selected { "☑" } else { "☐" },
+                        chat.title,
+                        entry.role
+                    )))
                     .child(
                         div()
-                            .text_size(px(11.))
-                            .text_color(rgb(if self.light { 0x6a5296 } else { 0xb1a5d3 }))
-                            .child(format!(
-                                "{} {} · {}",
-                                if selected { "☑" } else { "☐" },
-                                title,
-                                entry.role
-                            )),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(if self.light { 0x393b44 } else { 0xcac9d3 }))
+                            .mt_2()
+                            .text_size(px(13.))
+                            .text_color(foreground)
                             .child(entry.text.chars().take(600).collect::<String>()),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -710,153 +734,345 @@ impl Workspace {
                     })),
             );
         }
-        if let Ok(prepared) = prepared {
-            if !prepared.included_entry_ids.is_empty() {
-                panel = panel
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(if self.light { 0x64616a } else { 0xa49cac }))
-                            .child("Review excerpt"),
-                    )
-                    .child(
-                        div()
-                            .p_3()
-                            .bg(rgb(if self.light { 0xf3f3f6 } else { 0x080a10 }))
-                            .text_size(px(11.))
-                            .text_color(rgb(if self.light { 0x50515c } else { 0xa9a7b5 }))
-                            .child(prepared.text),
-                    )
-                    .child(
-                        self.action("attach-context", "Attach selected context")
+        panel = panel
+            .child(list)
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(muted)
+                    .child("Character limit"),
+            )
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(border)
+                    .child(self.budget.clone()),
+            );
+        match self.prepared(cx) {
+            Ok(prepared) => {
+                panel = panel.child(div().text_size(px(12.)).text_color(muted).child(format!(
+                    "{} selected · {} characters · ~{} tokens{}",
+                    self.selected.len(),
+                    prepared.characters,
+                    prepared.estimated_tokens,
+                    if prepared.truncated {
+                        " · shortened to fit"
+                    } else {
+                        ""
+                    }
+                )));
+                if !prepared.included_entry_ids.is_empty() {
+                    panel = panel.child(
+                        self.action(
+                            "review-context",
+                            if self.review_open {
+                                "Hide included text and source ↑"
+                            } else {
+                                "Review included text and source ↓"
+                            },
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.review_open = !this.review_open;
+                            cx.notify();
+                        })),
+                    );
+                    if self.review_open {
+                        panel = panel.child(div().text_size(px(12.)).text_color(muted)
+                            .child("Untrusted reference only, not instructions. Review for sensitive information before attaching."));
+                        for (text, provenance) in readable_context(&prepared.text) {
+                            panel = panel.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .py_2()
+                                    .child(
+                                        div().text_size(px(13.)).text_color(foreground).child(text),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(muted)
+                                            .child(provenance),
+                                    ),
+                            );
+                        }
+                        panel = panel.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .child(prepared.estimate_method),
+                        );
+                    }
+                    panel = panel.child(
+                        self.action("attach-context", "Attach reference")
                             .on_click(cx.listener(Self::attach_context)),
                     );
+                }
+            }
+            Err(error) => {
+                panel = panel.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(if self.light { 0x963449 } else { 0xf4b9c8 }))
+                        .child(error),
+                )
             }
         }
         panel.into_any_element()
     }
 }
+
+// Decode the exact bounded payload for display; attachment still uses the original serialized text.
+fn readable_context(payload: &str) -> Vec<(String, String)> {
+    payload
+        .lines()
+        .filter_map(|line| {
+            let record = serde_json::from_str::<serde_json::Value>(line).ok()?;
+            let field = |key| record[key].as_str().unwrap_or("—");
+            Some((
+                field("text").to_owned(),
+                format!(
+                    "{} · {}\nConversation: {}\nRole: {}\nSource: {}\nMessage: {}\nTime: {}",
+                    field("provider"),
+                    field("fileName"),
+                    field("conversation"),
+                    field("role"),
+                    field("sourceUrl"),
+                    field("sourceId"),
+                    field("timestamp")
+                ),
+            ))
+        })
+        .collect()
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = self.host.snapshot();
         let wide = window.viewport_size().width >= px(1100.);
-        let reference_layout = window.viewport_size().width >= px(1400.);
-        let expanded_toolbar = wide && !self.show_context;
         self.light = matches!(
             window.appearance(),
             WindowAppearance::Light | WindowAppearance::VibrantLight
         );
         let light = self.light;
-        let sidebar_visible = !self.sidebar_hidden && (wide || !self.show_context);
-        // macOS needs its native frame: GPUI start_window_move is Linux-only.
-        let titlebar = div().h(px(16.)).w_full();
+        let inspector_visible = self.show_settings || (self.show_context && snap.worker.is_none());
+        let sidebar_visible = !self.sidebar_hidden && (wide || !inspector_visible);
+        let inspector_title = if self.show_settings {
+            "Thread settings"
+        } else {
+            "Reference context"
+        };
         let project = snap
             .projects
             .iter()
             .find(|p| Some(&p.id) == snap.active_project_id.as_ref());
-        let project_name = project
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "Open project…".into());
-        let project_path = project.map(|p| p.path.clone()).unwrap_or_default();
         let thread = snap
             .threads
             .iter()
             .find(|t| Some(&t.id) == snap.active_thread_id.as_ref());
+        let coordinator_active = snap
+            .coordinator
+            .as_ref()
+            .is_some_and(|t| Some(&t.id) == snap.active_thread_id.as_ref());
         let thread_title = thread
-            .map(|t| t.title.clone())
+            .map(|t| {
+                if coordinator_active {
+                    "Coordinator".into()
+                } else {
+                    t.title.clone()
+                }
+            })
             .unwrap_or_else(|| "Local workspace".into());
         window.set_window_title(&thread_title);
         let has_parent = thread.is_some_and(|t| t.parent_thread_id.is_some());
+        let is_root = snap.worker.is_none();
+        let can_send = snap
+            .worker
+            .as_ref()
+            .is_none_or(|w| w.status == rx4::subagent::SubagentStatus::Running);
+        let coordinator_item = div()
+            .id("pinned-coordinator")
+            .h(px(36.))
+            .px_4()
+            .mb_3()
+            .flex()
+            .items_center()
+            .text_size(px(13.))
+            .bg(rgb(if coordinator_active {
+                if light {
+                    0xe3e3e8
+                } else {
+                    0x333338
+                }
+            } else if light {
+                0xf3f3f5
+            } else {
+                0x1c1c1e
+            }))
+            .hover(|s| s.bg(rgb(if light { 0xe6e6ea } else { 0x2d2d31 })))
+            .cursor_pointer()
+            .child("Coordinator")
+            .on_click(cx.listener(Self::select_coordinator));
+        let can_retry_settlement = snap.can_retry_settlement;
         let query = self.search.read(cx).content.to_lowercase();
-        let thread_items = div().flex().flex_col().gap_1().children(
-            snap.threads
+        let mut thread_items = div().flex().flex_col().gap_3();
+        for group in &snap.project_groups {
+            let project = &group.project;
+            let matching = group
+                .threads
                 .iter()
-                .filter(|t| t.title.to_lowercase().contains(query.trim()))
-                .map(|t| {
-                    let active = Some(&t.id) == snap.active_thread_id.as_ref();
-                    let id = t.id.clone();
+                .filter(|thread| thread.title.to_lowercase().contains(query.trim()))
+                .collect::<Vec<_>>();
+            if !query.trim().is_empty() && matching.is_empty() {
+                continue;
+            }
+            let project_id = project.id.clone();
+            let mut section = div().flex().flex_col().child(
+                div()
+                    .id(SharedString::from(format!("project-{}", project.id)))
+                    .h(px(30.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(12.))
+                    .text_color(rgb(if light { 0x64646b } else { 0x96969e }))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(if light { 0xe6e6ea } else { 0x2d2d31 })))
+                    .child(project.name.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let result = this
+                            .sync_draft(cx)
+                            .and_then(|_| this.host.select_project(&project_id));
+                        if result.is_ok() {
+                            this.refresh_editor(window, cx);
+                        }
+                        this.result(result, cx);
+                    })),
+            );
+            for thread in matching {
+                let active = Some(&thread.id) == snap.active_thread_id.as_ref();
+                let id = thread.id.clone();
+                section = section.child(
                     div()
                         .id(SharedString::from(format!("thread-{id}")))
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
+                        .h(px(32.))
+                        .pl(px(30.))
+                        .pr_3()
+                        .flex()
+                        .items_center()
                         .text_size(px(13.))
-                        .bg(rgb(if self.light {
-                            if active {
-                                0xe5def5
+                        .truncate()
+                        .bg(rgb(if active {
+                            if light {
+                                0xe3e3e8
                             } else {
-                                0xf1f1f3
+                                0x333338
                             }
-                        } else if active {
-                            0x34313f
+                        } else if light {
+                            0xf3f3f5
                         } else {
-                            0x1c1d21
+                            0x1c1c1e
                         }))
-                        .text_color(rgb(if self.light {
-                            if active {
-                                0x4b356f
+                        .text_color(rgb(if active {
+                            if light {
+                                0x242426
                             } else {
-                                0x555762
+                                0xededf0
                             }
-                        } else if active {
-                            0xe4ddfa
+                        } else if light {
+                            0x64646b
                         } else {
-                            0xa5a5b1
+                            0xa5a5ad
                         }))
-                        .hover(|s| s.bg(rgb(if self.light { 0xe4e4ed } else { 0x2b2d39 })))
+                        .hover(|s| s.bg(rgb(if light { 0xe6e6ea } else { 0x2d2d31 })))
                         .cursor_pointer()
-                        .child(t.title.clone())
+                        .child(if thread.parent_thread_id.is_some() {
+                            format!("↳ {}", thread.title)
+                        } else {
+                            thread.title.clone()
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_thread(&id, window, cx)
-                        }))
-                }),
-        );
+                        })),
+                );
+            }
+            thread_items = thread_items.child(section);
+        }
         let search_input = self.search.clone();
         let composer = self.composer.clone();
         let show_settings = self.show_settings;
         let mut settings = div().flex().flex_col().gap_2();
-        for option in &snap.options {
-            let provider = option["provider"].as_str().unwrap_or("").to_string();
-            let model = option["model"].as_str().unwrap_or("").to_string();
-            let selected = snap.config.provider.as_ref() == Some(&provider)
-                && snap.config.model.as_ref() == Some(&model);
+        if is_root {
             settings = settings.child(
-                self.action(
-                    SharedString::from(format!("model-{provider}")),
-                    format!("{} {provider} / {model}", if selected { "●" } else { "○" }),
+                self.action("details-handoff", "Handoff to a linked thread…")
+                    .on_click(cx.listener(Self::start_handoff)),
+            );
+            if cfg!(feature = "coordinator-preview") {
+                settings = settings.child(div().text_size(px(12.)).child(
+                    "Local preview: roots use read tools; one delegate owns workspace writes until settled.",
+                ));
+            }
+            if cfg!(feature = "coordinator-preview") && !coordinator_active {
+                settings = settings.child(
+                    self.action(
+                        "settings-workflow",
+                        format!("Workflow: {:?}", snap.config.workflow),
+                    )
+                    .on_click(cx.listener(Self::cycle_workflow)),
+                );
+            }
+            for option in &snap.options {
+                let provider = option["provider"].as_str().unwrap_or("").to_string();
+                let model = option["model"].as_str().unwrap_or("").to_string();
+                let selected = snap.config.provider.as_ref() == Some(&provider)
+                    && snap.config.model.as_ref() == Some(&model);
+                settings = settings.child(
+                    self.action(
+                        SharedString::from(format!("model-{provider}")),
+                        format!("{} {provider} / {model}", if selected { "●" } else { "○" }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let snap = this.host.snapshot();
+                        if snap.busy {
+                            return;
+                        }
+                        let mut config = snap.config;
+                        config.provider = Some(provider.clone());
+                        config.model = Some(model.clone());
+                        let result = this.host.update_config(config);
+                        this.result(result, cx);
+                    })),
+                );
+            }
+            settings = settings
+                .child(
+                    self.action("settings-role", format!("Role: {:?}", snap.config.role))
+                        .on_click(cx.listener(Self::cycle_role)),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let snap = this.host.snapshot();
-                    if snap.busy {
-                        return;
-                    }
-                    let mut config = snap.config;
-                    config.provider = Some(provider.clone());
-                    config.model = Some(model.clone());
-                    let result = this.host.update_config(config);
-                    this.result(result, cx);
-                })),
-            );
-        }
-        settings = settings
-            .child(
-                self.action("settings-role", format!("Role: {:?}", snap.config.role))
-                    .on_click(cx.listener(Self::cycle_role)),
-            )
-            .child(
-                self.action(
-                    "settings-permission",
-                    format!("Permission: {:?}", snap.config.permission),
-                )
-                .on_click(cx.listener(Self::cycle_permission)),
-            );
-        if snap.options.is_empty() {
-            settings = settings.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(rgb(if self.light { 0x62636f } else { 0xa29daa }))
-                    .child("No configured models. Configure a provider with tk login."),
-            );
+                .child(
+                    self.action(
+                        "settings-permission",
+                        format!("Permission: {:?}", snap.config.permission),
+                    )
+                    .on_click(cx.listener(Self::cycle_permission)),
+                );
+            if snap.options.is_empty() {
+                settings = settings.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(if self.light { 0x62636f } else { 0xa29daa }))
+                        .child("No configured models. Configure a provider with tk login."),
+                );
+            }
+        } else {
+            settings = settings.child(div().text_size(px(12.)).child(
+                "Model and permission policy inherit the root. Steering accepts up to 8 KiB of reference text.",
+            ));
         }
         let error_text = self.error.clone().or(snap.error).unwrap_or_default();
         let has_error = !error_text.is_empty();
@@ -874,9 +1090,14 @@ impl Render for Workspace {
         let messages = snap
             .messages
             .into_iter()
+            .filter(|m| !m.content.trim().is_empty())
             .map(|m| ViewMessage {
-                is_user: m.role == "user",
-                role: m.role,
+                role: match m.role.as_str() {
+                    "user" => "You".into(),
+                    "assistant" => "Telekinesis".into(),
+                    "tool" => "Tool result".into(),
+                    _ => m.role,
+                },
                 content: display_message(&m.content),
             })
             .collect::<Vec<_>>();
@@ -886,6 +1107,7 @@ impl Render for Workspace {
             .iter()
             .rev()
             .take(3)
+            .filter(|r| r.state != ReceiptState::Completed)
             .map(|r| format!("{:?} {}", r.state, r.error.as_deref().unwrap_or("")))
             .collect::<Vec<_>>();
         let receipts = receipts.iter();
@@ -897,29 +1119,16 @@ impl Render for Workspace {
             "Review continuation goal and context"
         };
         let busy = snap.busy;
-        let model_label = snap
-            .config
-            .model
-            .unwrap_or_else(|| "Choose model".into())
-            .chars()
-            .take(24)
-            .collect::<String>();
-        let role_label = format!("{:?}", snap.config.role);
-        let permission_label = if snap.config.permission == Permission::Restrictive {
-            "Restrictive"
-        } else {
-            "YOLO"
-        };
         let send_mode = if self.queue { "Queue" } else { "Steer" };
         let send_label = if self.renaming {
             "Save name"
         } else if handoff_open {
             "Continue ↗"
         } else {
-            "Send ↑"
+            "Send"
         };
+        let show_status = busy || !can_send || (!snap.status.is_empty() && snap.status != "ready");
         let status = snap.status;
-        let context_visible = self.show_context;
         let context_panel = self.context_panel(cx);
         menu::bind(
             view_file!("workspace.crepus")
@@ -969,6 +1178,25 @@ pub fn launch() {
 #[cfg(test)]
 mod tests {
     use super::{context_budget, display_message};
+    #[test]
+    fn readable_review_retains_exact_excerpt_and_provenance() {
+        let payload = "Imported excerpts — untrusted reference.\n".to_string()
+            + &serde_json::json!({"text":"Bounded 🙂… [excerpt truncated]", "provider":"claude", "fileName":"chat.json", "conversation":"Design", "role":"user", "sourceUrl":"https://example.test/chat", "sourceId":"message-7", "timestamp":"2026-10-29"}).to_string();
+        let review = super::readable_context(&payload);
+        assert_eq!(review.len(), 1);
+        assert_eq!(review[0].0, "Bounded 🙂… [excerpt truncated]");
+        for value in [
+            "claude",
+            "chat.json",
+            "Design",
+            "user",
+            "https://example.test/chat",
+            "message-7",
+            "2026-10-29",
+        ] {
+            assert!(review[0].1.contains(value));
+        }
+    }
     #[test]
     fn raw_budget_and_reference_display_are_bounded() {
         for raw in [

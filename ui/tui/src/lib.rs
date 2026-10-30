@@ -11,6 +11,7 @@ pub mod exec;
 pub mod harness;
 pub mod host;
 pub mod host_events;
+#[cfg_attr(not(feature = "coordinator-preview"), path = "local_runtime_direct.rs")]
 pub mod local_runtime;
 pub mod login_menu;
 pub mod markdown;

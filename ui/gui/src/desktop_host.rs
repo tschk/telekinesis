@@ -9,7 +9,8 @@ use std::{
     sync::{mpsc, Arc},
 };
 pub use telekinesis::local_runtime::{
-    AgentRole, Permission, Project, Receipt, ReceiptState, SendMode, Thread, ThreadConfig,
+    AgentRole, Permission, Project, ProjectThreads, Receipt, ReceiptState, SendMode, Thread,
+    ThreadConfig, WorkerInfo, Workflow,
 };
 use telekinesis::local_runtime::{CreateThread, Handoff, LocalRuntime, RuntimeEvent, Submit};
 
@@ -17,6 +18,8 @@ use telekinesis::local_runtime::{CreateThread, Handoff, LocalRuntime, RuntimeEve
 pub struct DesktopSnapshot {
     pub input: String,
     pub projects: Vec<Project>,
+    pub project_groups: Vec<ProjectThreads>,
+    pub coordinator: Option<Thread>,
     pub threads: Vec<Thread>,
     pub active_project_id: Option<String>,
     pub active_thread_id: Option<String>,
@@ -29,6 +32,9 @@ pub struct DesktopSnapshot {
     pub context_pct: usize,
     pub options: Vec<Value>,
     pub reference_context: Option<String>,
+    pub worker: Option<WorkerInfo>,
+    pub worker_states: HashMap<String, WorkerInfo>,
+    pub can_retry_settlement: bool,
 }
 pub struct DesktopHost {
     pub input: String,
@@ -47,7 +53,17 @@ pub struct DesktopHost {
 impl DesktopHost {
     pub fn boot() -> Self {
         let (tx, events) = mpsc::channel();
-        let root = dirs::home_dir().map(|p| p.join(".telekinesis/local-runtime"));
+        let root = std::env::var_os("TK_LOCAL_RUNTIME_ROOT")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                dirs::home_dir().map(|home| {
+                    home.join(if cfg!(feature = "coordinator-preview") {
+                        ".telekinesis/local-runtime-preview"
+                    } else {
+                        ".telekinesis/local-runtime"
+                    })
+                })
+            });
         let (ready_tx, ready) = mpsc::channel();
         std::thread::spawn(move || {
             let result = root
@@ -110,12 +126,17 @@ impl DesktopHost {
             .as_ref()
             .map(|r| r.projects())
             .unwrap_or_default();
-        let threads = self
+        let project_groups = self
             .runtime
             .as_ref()
-            .zip(self.active_project_id.as_ref())
-            .map(|(r, id)| r.threads(id))
+            .map(|r| r.project_groups())
             .unwrap_or_default();
+        let coordinator = self.runtime.as_ref().and_then(|r| r.coordinator_thread());
+        let threads: Vec<Thread> = project_groups
+            .iter()
+            .flat_map(|group| group.threads.iter().cloned())
+            .chain(coordinator.iter().cloned())
+            .collect();
         let loaded = self
             .runtime
             .as_ref()
@@ -143,10 +164,26 @@ impl DesktopHost {
                 messages.push(MessageItem::new("assistant", stream));
             }
         }
-        let busy = loaded.as_ref().is_some_and(|s| s.active_run_id.is_some());
+        let busy = loaded
+            .as_ref()
+            .is_some_and(|s| s.active_run_id.is_some() || s.family_busy);
+        let worker = loaded.as_ref().and_then(|s| s.worker.clone());
+        let worker_states = self
+            .runtime
+            .as_ref()
+            .map(|runtime| {
+                projects
+                    .iter()
+                    .flat_map(|project| runtime.worker_states(&project.id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let can_retry_settlement = loaded.as_ref().is_some_and(|s| s.can_retry_settlement);
         DesktopSnapshot {
             input: self.input.clone(),
             projects,
+            project_groups,
+            coordinator,
             threads,
             active_project_id: self.active_project_id.clone(),
             active_thread_id: self.active_thread_id.clone(),
@@ -162,14 +199,48 @@ impl DesktopHost {
                 "needs attention"
             } else if self.active_project_id.is_none() {
                 "choose a project"
+            } else if loaded
+                .as_ref()
+                .is_some_and(|s| s.settlement_error.is_some())
+            {
+                "cleanup needs attention"
+            } else if worker
+                .as_ref()
+                .is_some_and(|w| w.status == rx4::subagent::SubagentStatus::Interrupted)
+            {
+                "interrupted; review workspace ownership"
+            } else if worker
+                .as_ref()
+                .is_some_and(|w| w.status == rx4::subagent::SubagentStatus::Stopping)
+            {
+                "stopping; waiting for settlement"
+            } else if let Some(worker) = &worker {
+                match worker.status {
+                    rx4::subagent::SubagentStatus::Completed => "completed",
+                    rx4::subagent::SubagentStatus::Failed => "failed",
+                    rx4::subagent::SubagentStatus::Cancelled => "cancelled",
+                    _ => "working",
+                }
             } else if busy {
                 "working"
             } else {
                 "ready"
             }
             .into(),
-            error: self.error.clone(),
-            config: loaded.map(|s| s.thread.config).unwrap_or_default(),
+            error: self.error.clone().or_else(|| {
+                loaded.as_ref().and_then(|s| {
+                    s.settlement_error.clone().or_else(|| {
+                        s.worker
+                            .as_ref()
+                            .filter(|w| w.status == rx4::subagent::SubagentStatus::Failed)
+                            .and_then(|w| w.result.as_ref()?.error.clone())
+                    })
+                })
+            }),
+            config: loaded
+                .as_ref()
+                .map(|s| s.thread.config.clone())
+                .unwrap_or_default(),
             context_pct: self
                 .active_thread_id
                 .as_ref()
@@ -182,6 +253,9 @@ impl DesktopHost {
                 .map(|r| r.options())
                 .unwrap_or_default(),
             reference_context: self.reference_context.clone(),
+            worker: worker.clone(),
+            worker_states,
+            can_retry_settlement,
         }
     }
     pub fn add_project(&mut self, path: &str) -> Result<(), String> {
@@ -224,15 +298,25 @@ impl DesktopHost {
     }
     pub fn select_thread(&mut self, id: &str) -> Result<(), String> {
         let thread = self.runtime()?.load_thread(id)?.thread;
-        if self.active_project_id.as_ref() != Some(&thread.project_id) {
-            return Err("Thread belongs to a different project.".into());
-        }
         self.save_draft()?;
+        self.active_project_id = Some(thread.project_id);
         self.active_thread_id = Some(id.into());
         self.reference_context = None;
         self.input = self.drafts.get(id).cloned().unwrap_or_default();
         self.error = None;
         Ok(())
+    }
+    pub fn select_coordinator(&mut self) -> Result<(), String> {
+        let thread = if let Some(thread) = self.runtime()?.coordinator_thread() {
+            thread
+        } else {
+            let project = self
+                .active_project_id
+                .as_deref()
+                .ok_or("Open a project before starting Coordinator.")?;
+            self.runtime()?.ensure_coordinator(project)?
+        };
+        self.select_thread(&thread.id)
     }
     pub fn rename_thread(&mut self, title: &str) -> Result<(), String> {
         let id = self
@@ -312,7 +396,11 @@ impl DesktopHost {
                 .as_ref()
                 .ok_or("Select a thread first.")?;
             let runtime = self.runtime()?;
-            if let Some(run) = runtime.load_thread(id)?.active_run_id {
+            let snapshot = runtime.load_thread(id)?;
+            if let Some(run) = snapshot
+                .active_run_id
+                .or_else(|| snapshot.receipts.last().map(|r| r.run_id.clone()))
+            {
                 runtime.cancel(id, &run)?;
             }
             Ok::<_, String>(())
@@ -322,11 +410,27 @@ impl DesktopHost {
         }
     }
     pub fn handoff(&mut self, request: Handoff) -> Result<(), String> {
+        if self.snapshot().worker.is_some() {
+            return Err("Handoff is available only from a root thread.".into());
+        }
         let child = self.runtime()?.handoff(request)?;
         self.select_thread(&child.thread.id)
     }
+    pub fn retry_settlement(&mut self) -> Result<(), String> {
+        let id = self
+            .active_thread_id
+            .as_ref()
+            .ok_or("Select a thread first.")?;
+        self.runtime()?.retry_settlement(id)
+    }
     pub fn poll(&mut self) -> HostTick {
         let mut tick = HostTick::default();
+        if let Some(runtime) = &self.runtime {
+            match runtime.refresh_workers() {
+                Ok(changed) => tick.dirty |= changed,
+                Err(e) => self.error = Some(e),
+            }
+        }
         if let Ok(ready) = self.ready.try_recv() {
             self.initialize(ready);
             tick.dirty = true;
@@ -436,5 +540,15 @@ impl Drop for DesktopHost {
 }
 
 fn draft_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|home| home.join(".telekinesis/native-drafts.json"))
+    std::env::var_os("TK_LOCAL_RUNTIME_ROOT")
+        .map(|root| std::path::PathBuf::from(root).join("native-drafts.json"))
+        .or_else(|| {
+            dirs::home_dir().map(|home| {
+                home.join(if cfg!(feature = "coordinator-preview") {
+                    ".telekinesis/native-drafts-preview.json"
+                } else {
+                    ".telekinesis/native-drafts.json"
+                })
+            })
+        })
 }

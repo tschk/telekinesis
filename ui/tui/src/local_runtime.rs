@@ -13,6 +13,9 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use uuid::Uuid;
+mod ownership;
+mod workers;
+pub use workers::{WorkerInfo, Workflow};
 
 type Result<T> = std::result::Result<T, String>;
 type Observer = Arc<dyn Fn(RuntimeEvent) + Send + Sync>;
@@ -27,6 +30,12 @@ pub struct Project {
     pub id: String,
     pub path: String,
     pub name: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectThreads {
+    pub project: Project,
+    pub threads: Vec<Thread>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,6 +59,7 @@ pub struct ThreadConfig {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub effort: String,
+    pub workflow: Workflow,
     pub permission: Permission,
     pub role: AgentRole,
 }
@@ -59,6 +69,7 @@ impl Default for ThreadConfig {
             provider: None,
             model: None,
             effort: "low".into(),
+            workflow: Workflow::Direct,
             permission: Permission::Yolo,
             role: AgentRole::General,
         }
@@ -166,6 +177,10 @@ pub struct ThreadSnapshot {
     pub messages: Vec<HistoryMessage>,
     pub receipts: Vec<Receipt>,
     pub active_run_id: Option<String>,
+    pub worker: Option<WorkerInfo>,
+    pub family_busy: bool,
+    pub settlement_error: Option<String>,
+    pub can_retry_settlement: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,13 +199,32 @@ struct SavedThread {
     receipts: Vec<Receipt>,
     #[serde(default)]
     sequence: u64,
+    #[serde(default)]
+    worker: Option<rx4::subagent::SubagentSnapshot>,
+    #[serde(default)]
+    ownership_uncertain: bool,
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Store {
+    #[serde(default)]
+    coordinator_thread_id: Option<String>,
+    #[serde(default)]
+    ownership_version: u8,
     projects: Vec<Project>,
     threads: Vec<SavedThread>,
     #[serde(default)]
     handoffs: Vec<SavedHandoff>,
+}
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            coordinator_thread_id: None,
+            ownership_version: 1,
+            projects: vec![],
+            threads: vec![],
+            handoffs: vec![],
+        }
+    }
 }
 struct Active {
     run_id: String,
@@ -200,10 +234,14 @@ struct Active {
     session: Arc<RwLock<Session>>,
     messages: Arc<RwLock<Vec<Message>>>,
     stopped: bool,
+    exec: Arc<rx4::tools::exec::ExecRegistry>,
+    settlement_error: Option<String>,
+    retry: Arc<tokio::sync::Notify>,
 }
 struct State {
     store: Store,
     active: HashMap<String, Active>,
+    managers: HashMap<String, rx4::subagent::SubagentManager>,
 }
 
 // A process-wide executor outlives run tasks. An owned Runtime in a run's
@@ -232,6 +270,7 @@ pub struct LocalRuntime {
     factory: Factory,
     runtime: &'static tokio::runtime::Runtime,
     options: Vec<Value>,
+    ownership: Arc<Mutex<ownership::Ownership>>,
 }
 impl LocalRuntime {
     pub fn open(
@@ -345,16 +384,31 @@ impl LocalRuntime {
         } else {
             Store::default()
         };
+        if store.ownership_version != 1 {
+            if !store.threads.is_empty() {
+                return Err("This coordinator preview requires an isolated history directory; existing Direct history was not modified. Legacy background ownership cannot be proved.".into());
+            }
+            store.ownership_version = 1;
+        }
         // No task survives process restart. Never silently re-run accepted or queued work.
         for thread in &mut store.threads {
+            // A persisted worker steering receipt already proves acceptance into
+            // its durable engine session; it never promised provider consumption.
+            if thread.worker.is_some() {
+                continue;
+            }
             for receipt in &mut thread.receipts {
                 if receipt.state.pending() {
+                    if thread.worker.is_none() {
+                        thread.ownership_uncertain = true;
+                    }
                     receipt.state = ReceiptState::Interrupted;
                     receipt.error =
                         Some("Host restarted; submit a new message to continue.".into());
                 }
             }
         }
+        let managers = workers::restore(&mut store)?;
         let host = Arc::new(Self {
             root,
             _store_lock: store_lock,
@@ -362,11 +416,20 @@ impl LocalRuntime {
             factory,
             runtime,
             options,
+            ownership: ownership::shared(),
             state: Mutex::new(State {
                 store,
                 active: HashMap::new(),
+                managers,
             }),
         });
+        {
+            let mut state = host.state.lock();
+            for (id, manager) in &mut state.managers {
+                workers::watch(manager, Arc::downgrade(&host), id.clone());
+            }
+        }
+        host.restore_ownership()?;
         host.persist(&host.state.lock().store)?;
         Ok(host)
     }
@@ -399,6 +462,93 @@ impl LocalRuntime {
         state.store = next;
         Ok(value)
     }
+    /// Stable pinned chat; navigating projects never changes its execution workspace.
+    pub fn coordinator_thread(&self) -> Option<Thread> {
+        let state = self.state.lock();
+        let id = state.store.coordinator_thread_id.as_ref()?;
+        state
+            .store
+            .threads
+            .iter()
+            .find(|s| &s.thread.id == id)
+            .map(|s| s.thread.clone())
+    }
+    pub fn ensure_coordinator(&self, project_id: &str) -> Result<Thread> {
+        self.mutate(|store| {
+            if let Some(id) = &store.coordinator_thread_id {
+                return store
+                    .threads
+                    .iter()
+                    .find(|s| &s.thread.id == id && s.worker.is_none())
+                    .map(|s| s.thread.clone())
+                    .ok_or_else(|| {
+                        "Pinned Coordinator history is missing; no replacement was created.".into()
+                    });
+            }
+            if !store.projects.iter().any(|p| p.id == project_id) {
+                return Err("Unknown Coordinator workspace.".into());
+            }
+            let mut config = ThreadConfig {
+                workflow: Workflow::Coordinator,
+                ..Default::default()
+            };
+            if let Some(option) = self.options.first() {
+                config.provider = option["provider"].as_str().map(str::to_string);
+                config.model = option["model"].as_str().map(str::to_string);
+            }
+            validate_config(&config)?;
+            let thread = Thread {
+                id: id(),
+                session_id: id(),
+                project_id: project_id.into(),
+                title: "Coordinator".into(),
+                config,
+                parent_thread_id: None,
+                request_id: None,
+            };
+            store.threads.push(SavedThread {
+                session: Session::new(&thread.session_id, &thread.title),
+                thread: thread.clone(),
+                receipts: vec![],
+                sequence: 0,
+                worker: None,
+                ownership_uncertain: false,
+            });
+            store.coordinator_thread_id = Some(thread.id.clone());
+            Ok(thread)
+        })
+    }
+    /// Stored canonical workspaces; threads are newest-created first, not activity-ranked.
+    pub fn project_groups(&self) -> Vec<ProjectThreads> {
+        let _ = self.refresh_workers();
+        let state = self.state.lock();
+        let mut groups: Vec<_> = state
+            .store
+            .projects
+            .iter()
+            .map(|project| ProjectThreads {
+                project: project.clone(),
+                threads: state
+                    .store
+                    .threads
+                    .iter()
+                    .rev()
+                    .filter(|s| {
+                        s.thread.project_id == project.id
+                            && Some(&s.thread.id) != state.store.coordinator_thread_id.as_ref()
+                    })
+                    .map(|s| s.thread.clone())
+                    .collect(),
+            })
+            .collect();
+        groups.sort_by(|a, b| {
+            a.project
+                .name
+                .cmp(&b.project.name)
+                .then(a.project.path.cmp(&b.project.path))
+        });
+        groups
+    }
     pub fn projects(&self) -> Vec<Project> {
         self.state.lock().store.projects.clone()
     }
@@ -426,6 +576,7 @@ impl LocalRuntime {
         })
     }
     pub fn threads(&self, project_id: &str) -> Vec<Thread> {
+        let _ = self.refresh_workers();
         self.state
             .lock()
             .store
@@ -436,6 +587,15 @@ impl LocalRuntime {
             .collect()
     }
     pub fn create_thread(&self, request: CreateThread) -> Result<Thread> {
+        if request
+            .parent_thread_id
+            .as_ref()
+            .is_some_and(|id| self.worker_handle(id).is_some())
+        {
+            return Err(
+                "Worker history cannot be used to create an independent continuation.".into(),
+            );
+        }
         self.mutate(|store| {
             if !store.projects.iter().any(|p| p.id == request.project_id) {
                 return Err("Unknown project.".into());
@@ -487,6 +647,8 @@ impl LocalRuntime {
                 thread: thread.clone(),
                 receipts: vec![],
                 sequence: 0,
+                worker: None,
+                ownership_uncertain: false,
             });
             Ok(thread)
         })
@@ -501,6 +663,15 @@ impl LocalRuntime {
             return Err("Handoff requires a request ID and a prompt within 128 KB.".into());
         }
         let mut state = self.state.lock();
+        let source = state
+            .store
+            .threads
+            .iter()
+            .find(|s| s.thread.id == request.source_thread_id)
+            .ok_or("Unknown source thread.")?;
+        if source.worker.is_some() {
+            return Err("Worker threads cannot create independent handoffs.".into());
+        }
         let child_id = if let Some(existing) = state
             .store
             .handoffs
@@ -564,6 +735,8 @@ impl LocalRuntime {
                 thread: thread.clone(),
                 receipts: vec![receipt],
                 sequence: 0,
+                worker: None,
+                ownership_uncertain: false,
             });
             next.handoffs.push(SavedHandoff {
                 request,
@@ -604,8 +777,16 @@ impl LocalRuntime {
     pub fn update_thread(&self, thread_id: &str, config: ThreadConfig) -> Result<Thread> {
         validate_config(&config)?;
         let mut state = self.state.lock();
-        if state.active.contains_key(thread_id) {
-            return Err("Stop the current run before changing settings.".into());
+        if state.store.coordinator_thread_id.as_deref() == Some(thread_id)
+            && config.workflow != Workflow::Coordinator
+        {
+            return Err("The pinned Coordinator workflow cannot be changed.".into());
+        }
+        if state.active.contains_key(thread_id)
+            || family_busy(&state, thread_id, false)
+            || saved_mut(&mut state.store, thread_id)?.worker.is_some()
+        {
+            return Err("Wait for the family to settle before changing root settings.".into());
         }
         let mut next = state.store.clone();
         let saved = saved_mut(&mut next, thread_id)?;
@@ -616,6 +797,7 @@ impl LocalRuntime {
         Ok(thread)
     }
     pub fn load_thread(&self, thread_id: &str) -> Result<ThreadSnapshot> {
+        self.refresh_workers()?;
         let state = self.state.lock();
         let saved = state
             .store
@@ -643,13 +825,35 @@ impl LocalRuntime {
                 })
                 .collect(),
             receipts: saved.receipts.clone(),
-            active_run_id: active.map(|a| a.run_id.clone()),
+            active_run_id: active.map(|a| a.run_id.clone()).or_else(|| {
+                saved
+                    .worker
+                    .as_ref()
+                    .filter(|w| workers::live(w))
+                    .map(|w| w.identity.run_id.clone())
+            }),
+            worker: saved.worker.as_ref().map(WorkerInfo::from),
+            can_retry_settlement: active.is_some_and(|a| {
+                a.settlement_error.is_some() || a.exec.settlement_control().error().is_some()
+            }) || saved.worker.as_ref().is_some_and(|w| {
+                w.status == rx4::subagent::SubagentStatus::Stopping && w.settlement_error.is_some()
+            }),
+            family_busy: family_busy(&state, thread_id, false),
+            settlement_error: if saved.ownership_uncertain {
+                Some("Interrupted root execution requires workspace reconciliation before new writes.".into())
+            } else {
+                active.and_then(|a| a.settlement_error.clone().or_else(||a.exec.settlement_control().error())).or_else(|| saved.worker.as_ref().and_then(|w| w.settlement_error.clone().or_else(||(w.status==rx4::subagent::SubagentStatus::Interrupted).then(||"Interrupted worker has no live cleanup owner; reconcile workspace ownership before new writes.".into()))))
+            },
         })
     }
     pub fn options(&self) -> Vec<Value> {
         self.options.clone()
     }
     pub fn submit(self: &Arc<Self>, request: Submit) -> Result<Receipt> {
+        self.refresh_workers()?;
+        if self.worker_handle(&request.thread_id).is_some() {
+            return self.steer_worker(request);
+        }
         if request.text.trim().is_empty()
             || request.text.len() > 128_000
             || request
@@ -682,7 +886,9 @@ impl LocalRuntime {
             }
             return Ok(receipt.clone());
         }
-        if family_busy(&state, &request.thread_id, true) {
+        if family_busy(&state, &request.thread_id, true)
+            && !state.active.contains_key(&request.thread_id)
+        {
             return Err("A linked continuation is still running or settling.".into());
         }
         let active = state.active.get(&request.thread_id);
@@ -745,7 +951,7 @@ impl LocalRuntime {
     }
     fn start(self: &Arc<Self>, thread_id: &str) -> Result<()> {
         let mut state = self.state.lock();
-        if state.active.contains_key(thread_id) {
+        if state.active.contains_key(thread_id) || family_busy(&state, thread_id, true) {
             return Ok(());
         }
         let saved = state
@@ -792,6 +998,7 @@ impl LocalRuntime {
                 return Err(error);
             }
         };
+        self.attach_family(&mut state, &saved.thread, &mut agent)?;
         *agent.session_handle().write() = saved.session.clone();
         *agent.messages_handle().write() = saved.session.provider_messages();
         let session = agent.session_handle();
@@ -820,6 +1027,9 @@ impl LocalRuntime {
                 session,
                 messages: agent.messages_handle(),
                 stopped: false,
+                exec: agent.exec.clone(),
+                settlement_error: None,
+                retry: Arc::new(tokio::sync::Notify::new()),
             },
         );
         let host = self.clone();
@@ -829,6 +1039,8 @@ impl LocalRuntime {
             let future = agent.prompt(&prompt); tokio::pin!(future);
             let result = loop { tokio::select! { result = &mut future => break result.map_err(|e|e.to_string()), Some(event) = rx.recv() => host.engine_event(&thread_id, &receipt.run_id, event) } };
             while let Ok(event) = rx.try_recv() { host.engine_event(&thread_id, &receipt.run_id, event); }
+            host.settle_root(&thread_id).await;
+            let _ = host.refresh_workers();
             host.finish(&thread_id, &receipt.run_id, result);
         });
         Ok(())
@@ -962,7 +1174,13 @@ impl LocalRuntime {
         }
     }
     pub fn shutdown(&self) -> Result<()> {
+        let _ = self.refresh_workers();
         let mut state = self.state.lock();
+        for manager in state.managers.values_mut() {
+            for child in manager.list() {
+                let _ = manager.cancel(child.id());
+            }
+        }
         for active in state.active.values_mut() {
             active.stopped = true;
             active.cancel.cancel();
@@ -977,13 +1195,47 @@ impl LocalRuntime {
         self.persist(&state.store)
     }
     pub fn cancel(&self, thread_id: &str, run_id: &str) -> Result<bool> {
+        self.refresh_workers()?;
+        if let Some((root, handle)) = self.worker_handle(thread_id) {
+            if handle.snapshot().identity.run_id != run_id {
+                return Ok(false);
+            }
+            self.state
+                .lock()
+                .managers
+                .get_mut(&root)
+                .ok_or("Worker family unavailable.")?
+                .cancel(handle.id())
+                .map_err(|e| e.to_string())?;
+            self.refresh_workers()?;
+            return Ok(true);
+        }
         let mut state = self.state.lock();
+        let root_run_matches = state
+            .active
+            .get(thread_id)
+            .map(|a| a.run_id == run_id)
+            .unwrap_or_else(|| {
+                state
+                    .store
+                    .threads
+                    .iter()
+                    .find(|s| s.thread.id == thread_id)
+                    .is_some_and(|s| s.receipts.last().is_some_and(|r| r.run_id == run_id))
+            });
+        if root_run_matches {
+            if let Some(manager) = state.managers.get_mut(thread_id) {
+                for child in manager.list() {
+                    let _ = manager.cancel(child.id());
+                }
+            }
+        }
         let Some(active) = state
             .active
             .get_mut(thread_id)
             .filter(|a| a.run_id == run_id)
         else {
-            return Ok(false);
+            return Ok(root_run_matches);
         };
         active.stopped = true;
         active.cancel.cancel();
@@ -1017,7 +1269,9 @@ fn family_busy(state: &State, thread_id: &str, exclude_self: bool) -> bool {
         (!exclude_self || saved.thread.id != thread_id)
             && family_root(&state.store, &saved.thread.id) == root
             && (state.active.contains_key(&saved.thread.id)
-                || saved.receipts.iter().any(|r| r.state.pending()))
+                || (saved.worker.is_none() && saved.receipts.iter().any(|r| r.state.pending()))
+                || saved.worker.as_ref().is_some_and(workers::live)
+                || saved.ownership_uncertain)
     })
 }
 fn saved_mut<'a>(store: &'a mut Store, thread_id: &str) -> Result<&'a mut SavedThread> {
@@ -1089,6 +1343,18 @@ fn configure_agent(agent: &mut Agent, config: &ThreadConfig) {
             agent.set_approver(Arc::new(rx4::permissions::AlwaysDeny));
             agent.os_sandbox = None;
         }
+    }
+}
+
+impl Drop for LocalRuntime {
+    fn drop(&mut self) {
+        for manager in self.state.get_mut().managers.values_mut() {
+            for child in manager.list() {
+                let _ = manager.cancel(child.id());
+            }
+        }
+        // No unproved workspace lease is released by Drop. The engine retains
+        // execution while it drains; interrupted restoration remains fail closed.
     }
 }
 
@@ -2088,5 +2354,786 @@ mod tests {
                 ..request
             })
             .is_err());
+    }
+    struct CoordinatorFixture;
+    #[async_trait::async_trait]
+    impl Provider for CoordinatorFixture {
+        fn id(&self) -> &str {
+            "coordinator-fixture"
+        }
+        fn name(&self) -> &str {
+            "Coordinator fixture"
+        }
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _: &Option<String>,
+            model: &str,
+            _: &[Value],
+            _: Option<&str>,
+        ) -> std::result::Result<StreamResult, ProviderError> {
+            assert_eq!(
+                model, "fixture-model",
+                "worker must inherit the selected model"
+            );
+            let last = messages
+                .iter()
+                .rev()
+                .find(|m| m.role == rx4::provider::Role::User)
+                .map(|m| m.content.as_str())
+                .unwrap_or("");
+            if last == "fail" {
+                return Err(ProviderError::Api("fixture worker failure".into()));
+            }
+            if last == "hold" {
+                return Ok(Box::new(futures::stream::pending()));
+            }
+            let tools = messages
+                .iter()
+                .filter(|m| m.role == rx4::provider::Role::Tool)
+                .count();
+            let events = if last == "child-write" && tools == 0 {
+                vec![
+                    Ok(StreamEvent::ToolCall(rx4::agent::ToolCall {
+                        id: "worker-write-call".into(),
+                        name: "write".into(),
+                        arguments: json!({"path":"worker.txt","content":"owned worker result"})
+                            .to_string(),
+                    })),
+                    Ok(StreamEvent::Done),
+                ]
+            } else if last == "write" && tools == 0 {
+                vec![
+                    Ok(StreamEvent::ToolCall(rx4::agent::ToolCall {
+                        id: "write-call".into(),
+                        name: "write".into(),
+                        arguments: json!({"path":"raced.txt","content":"unsafe root writer"})
+                            .to_string(),
+                    })),
+                    Ok(StreamEvent::Done),
+                ]
+            } else if matches!(last, "delegate" | "delegate-write" | "delegate-fail") && tools < 2 {
+                vec![
+                    Ok(StreamEvent::ToolCall(rx4::agent::ToolCall {
+                        id: format!("delegate-{tools}"),
+                        name: "spawn_agent".into(),
+                        arguments:
+                            json!({"task_id":"task-1","name":"Research worker","prompt":match last {"delegate-write"=>"child-write","delegate-fail"=>"fail",_=>"hold"}})
+                                .to_string(),
+                    })),
+                    Ok(StreamEvent::Done),
+                ]
+            } else {
+                vec![Ok(StreamEvent::Delta("Done".into())), Ok(StreamEvent::Done)]
+            };
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+    fn coordinator_fixture(root: PathBuf) -> Arc<LocalRuntime> {
+        LocalRuntime::open_with(
+            root,
+            Arc::new(|_| {}),
+            local_executor().unwrap(),
+            vec![],
+            Arc::new(|thread, project| {
+                let mut agent = Agent::new();
+                agent.set_workspace_root(PathBuf::from(&project.path));
+                agent.set_provider(Arc::new(CoordinatorFixture));
+                agent.set_model("fixture-model");
+                configure_agent(&mut agent, &thread.config);
+                Ok(agent)
+            }),
+        )
+        .unwrap()
+    }
+    fn worker_thread(host: &LocalRuntime, project: &Project) -> Thread {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(t) = host
+                .threads(&project.id)
+                .into_iter()
+                .find(|t| t.parent_thread_id.is_some())
+            {
+                return t;
+            }
+            assert!(Instant::now() < deadline, "worker projection missing");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn coordinator_identity_is_not_published_after_failed_save_or_replaced_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("state");
+        let host = coordinator_fixture(root.clone());
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        assert!(host.ensure_coordinator("unknown").is_err());
+        let tmp = root.join("threads.json.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        assert!(host.ensure_coordinator(&project.id).is_err());
+        assert!(host.coordinator_thread().is_none());
+        assert!(host.threads(&project.id).is_empty());
+        std::fs::remove_dir(tmp).unwrap();
+        let coordinator = host.ensure_coordinator(&project.id).unwrap();
+        host.state.lock().store.threads.clear();
+        assert!(host.ensure_coordinator(&project.id).is_err());
+        assert_eq!(
+            host.state.lock().store.coordinator_thread_id.as_deref(),
+            Some(coordinator.id.as_str())
+        );
+    }
+    #[test]
+    fn pinned_coordinator_is_atomic_durable_and_never_rebound_by_project_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let host = coordinator_fixture(state.clone());
+        let a = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let b = host.add_project(other.to_str().unwrap()).unwrap();
+        let ordinary = thread(&host, &a, "Coordinator");
+        assert!(host.coordinator_thread().is_none(), "title is not identity");
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = [&a, &b]
+                .into_iter()
+                .map(|project| {
+                    let barrier = barrier.clone();
+                    let host = &host;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        host.ensure_coordinator(&project.id).unwrap()
+                    })
+                })
+                .collect();
+            barrier.wait();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results[0].id, results[1].id);
+        assert_eq!(results[0].project_id, results[1].project_id);
+        assert_ne!(results[0].id, ordinary.id);
+        let pinned = host.coordinator_thread().unwrap();
+        assert!(host
+            .update_thread(&pinned.id, ThreadConfig::default())
+            .is_err());
+        assert_eq!(host.ensure_coordinator(&b.id).unwrap().id, pinned.id);
+        let groups = host.project_groups();
+        assert_eq!(
+            groups
+                .iter()
+                .flat_map(|g| &g.threads)
+                .filter(|t| t.id == pinned.id)
+                .count(),
+            0
+        );
+        assert!(groups
+            .iter()
+            .flat_map(|g| &g.threads)
+            .any(|t| t.id == ordinary.id));
+        drop(host);
+        let reopened = coordinator_fixture(state);
+        assert_eq!(
+            reopened.coordinator_thread().unwrap().session_id,
+            pinned.session_id
+        );
+        assert_eq!(
+            reopened.ensure_coordinator(&a.id).unwrap().project_id,
+            pinned.project_id
+        );
+        assert_eq!(
+            reopened.load_thread(&ordinary.id).unwrap().thread.id,
+            ordinary.id
+        );
+    }
+    #[test]
+    fn settled_worker_without_steering_cannot_handoff_or_start_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = starts.clone();
+        let host = LocalRuntime::open_with(
+            dir.path().join("state"),
+            Arc::new(|_| {}),
+            local_executor().unwrap(),
+            vec![],
+            Arc::new(move |thread, project| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut agent = Agent::new();
+                agent.set_workspace_root(PathBuf::from(&project.path));
+                agent.set_provider(Arc::new(CoordinatorFixture));
+                agent.set_model("fixture-model");
+                configure_agent(&mut agent, &thread.config);
+                Ok(agent)
+            }),
+        )
+        .unwrap();
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let root = coordinator_root(&host, &project, "Root");
+        let run = host
+            .submit(request(&root, "delegate", "delegate", SendMode::Steer))
+            .unwrap();
+        let worker = worker_thread(&host, &project);
+        host.cancel(&root.id, &run.run_id).unwrap();
+        settled(&host, &worker);
+        wait_idle(&host);
+        let snapshot = host.load_thread(&worker.id).unwrap();
+        assert!(snapshot.worker.is_some());
+        assert!(snapshot.receipts.is_empty());
+        let before = std::fs::read(dir.path().join("state/threads.json")).unwrap();
+        let count = starts.load(std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..2 {
+            let error = host
+                .handoff(handoff_request(&worker, "escape", None))
+                .unwrap_err();
+            assert!(error.to_string().contains("Worker threads"));
+        }
+        assert_eq!(host.threads(&project.id).len(), 2);
+        assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), count);
+        assert_eq!(
+            std::fs::read(dir.path().join("state/threads.json")).unwrap(),
+            before
+        );
+    }
+    #[test]
+    fn coordinator_uses_one_real_durable_worker_and_accepted_only_steering() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = coordinator_fixture(dir.path().join("state"));
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let root = host
+            .create_thread(CreateThread {
+                project_id: project.id.clone(),
+                title: "Coordinator".into(),
+                config: Some(ThreadConfig {
+                    workflow: Workflow::Coordinator,
+                    ..Default::default()
+                }),
+                parent_thread_id: None,
+                request_id: None,
+            })
+            .unwrap();
+        let run = host
+            .submit(request(&root, "root-message", "delegate", SendMode::Steer))
+            .unwrap();
+        let worker = worker_thread(&host, &project);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host.load_thread(&root.id).unwrap().active_run_id.is_some() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            host.threads(&project.id).len(),
+            2,
+            "retried task ID spawned a duplicate"
+        );
+        let snap = host.load_thread(&worker.id).unwrap();
+        assert_eq!(
+            snap.worker.as_ref().unwrap().status,
+            rx4::subagent::SubagentStatus::Running
+        );
+        assert!(snap.messages.iter().any(|m| m.text == "hold"));
+        assert!(host.load_thread(&root.id).unwrap().family_busy);
+        assert!(host
+            .submit(request(
+                &root,
+                "unsafe-concurrent",
+                "other",
+                SendMode::Steer
+            ))
+            .is_err());
+        assert!(host
+            .update_thread(&root.id, ThreadConfig::default())
+            .is_err());
+        assert!(host
+            .update_thread(&worker.id, ThreadConfig::default())
+            .is_err());
+        let receipt = host
+            .submit(request(
+                &worker,
+                "steer-1",
+                "bounded reference",
+                SendMode::Steer,
+            ))
+            .unwrap();
+        assert_eq!(receipt.state, ReceiptState::Accepted);
+        assert_eq!(
+            host.submit(request(
+                &worker,
+                "steer-1",
+                "bounded reference",
+                SendMode::Steer
+            ))
+            .unwrap()
+            .state,
+            ReceiptState::Accepted
+        );
+        assert!(host
+            .submit(request(&worker, "steer-1", "changed", SendMode::Steer))
+            .is_err());
+        assert!(host
+            .submit(request(&worker, "queue", "new", SendMode::Queue))
+            .is_err());
+        assert!(host
+            .submit(request(
+                &worker,
+                "oversize",
+                &"x".repeat(8193),
+                SendMode::Steer
+            ))
+            .is_err());
+        let durable = host.load_thread(&worker.id).unwrap();
+        assert_eq!(durable.receipts.len(), 1);
+        assert!(durable
+            .messages
+            .iter()
+            .any(|m| m.text == "bounded reference"));
+        assert!(host.cancel(&root.id, &run.run_id).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let s = host.load_thread(&worker.id).unwrap();
+            if s.active_run_id.is_none() {
+                assert_eq!(
+                    s.worker.unwrap().status,
+                    rx4::subagent::SubagentStatus::Cancelled
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!host.load_thread(&root.id).unwrap().family_busy);
+        assert_eq!(
+            host.load_thread(&worker.id).unwrap().receipts[0].state,
+            ReceiptState::Accepted
+        );
+        host.submit(request(&root, "next", "direct followup", SendMode::Steer))
+            .unwrap();
+        settled(&host, &root);
+        host.shutdown().unwrap();
+        if let Some(path) = std::env::var_os("TK_NATIVE_REVIEW_FIXTURE_DIR") {
+            let path = PathBuf::from(path);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join("threads.json"),
+                serde_json::to_vec(&host.state.lock().store).unwrap(),
+            )
+            .unwrap();
+        }
+        let released = Arc::downgrade(&host);
+        drop(host);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while released.upgrade().is_some() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let reopened = coordinator_fixture(dir.path().join("state"));
+        let s = reopened.load_thread(&worker.id).unwrap();
+        assert_eq!(s.thread.session_id, worker.session_id);
+        assert!(s.messages.iter().any(|m| m.text == "bounded reference"));
+        assert_eq!(s.thread.parent_thread_id, Some(root.id));
+    }
+    #[test]
+    fn restrictive_coordinator_does_not_bypass_parent_tool_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = coordinator_fixture(dir.path().join("state"));
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let root = host
+            .create_thread(CreateThread {
+                project_id: project.id.clone(),
+                title: "Restricted".into(),
+                config: Some(ThreadConfig {
+                    workflow: Workflow::Coordinator,
+                    permission: Permission::Restrictive,
+                    ..Default::default()
+                }),
+                parent_thread_id: None,
+                request_id: None,
+            })
+            .unwrap();
+        host.submit(request(&root, "restricted", "delegate", SendMode::Steer))
+            .unwrap();
+        let s = settled(&host, &root);
+        assert_eq!(host.threads(&project.id).len(), 1);
+        assert!(s.messages.iter().any(|m| m.role == "tool"
+            && (m.text.contains("denied")
+                || m.text.contains("allowed")
+                || m.text.contains("permission"))));
+    }
+
+    struct RacingCoordinatorFixture {
+        barrier: Arc<std::sync::Barrier>,
+    }
+    #[async_trait::async_trait]
+    impl Provider for RacingCoordinatorFixture {
+        fn id(&self) -> &str {
+            "coordinator-fixture"
+        }
+        fn name(&self) -> &str {
+            "Racing coordinator fixture"
+        }
+        async fn stream(
+            &self,
+            messages: &[Message],
+            system: &Option<String>,
+            model: &str,
+            tools: &[Value],
+            effort: Option<&str>,
+        ) -> std::result::Result<StreamResult, ProviderError> {
+            if !messages.iter().any(|m| m.role == rx4::provider::Role::Tool)
+                && messages
+                    .last()
+                    .is_some_and(|m| m.content == "delegate" || m.content == "write")
+            {
+                self.barrier.wait();
+            }
+            CoordinatorFixture
+                .stream(messages, system, model, tools, effort)
+                .await
+        }
+    }
+    fn racing_host(root: PathBuf) -> Arc<LocalRuntime> {
+        let provider = Arc::new(RacingCoordinatorFixture {
+            barrier: Arc::new(std::sync::Barrier::new(2)),
+        });
+        LocalRuntime::open_with(
+            root,
+            Arc::new(|_| {}),
+            local_executor().unwrap(),
+            vec![],
+            Arc::new(move |thread, project| {
+                let mut agent = Agent::new();
+                agent.set_workspace_root(PathBuf::from(&project.path));
+                agent.set_provider(provider.clone());
+                agent.set_model("fixture-model");
+                configure_agent(&mut agent, &thread.config);
+                Ok(agent)
+            }),
+        )
+        .unwrap()
+    }
+    fn coordinator_root(host: &LocalRuntime, project: &Project, name: &str) -> Thread {
+        host.create_thread(CreateThread {
+            project_id: project.id.clone(),
+            title: name.into(),
+            config: Some(ThreadConfig {
+                workflow: Workflow::Coordinator,
+                ..Default::default()
+            }),
+            parent_thread_id: None,
+            request_id: None,
+        })
+        .unwrap()
+    }
+    #[test]
+    fn workspace_admission_serializes_competing_roots_and_retains_until_worker_settles() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = racing_host(dir.path().join("state"));
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let a = coordinator_root(&host, &project, "A");
+        let b = coordinator_root(&host, &project, "B");
+        let ar = host
+            .submit(request(&a, "a", "delegate", SendMode::Steer))
+            .unwrap();
+        let br = host
+            .submit(request(&b, "b", "delegate", SendMode::Steer))
+            .unwrap();
+        let worker = worker_thread(&host, &project);
+        settled(&host, &a);
+        settled(&host, &b);
+        assert_eq!(
+            host.threads(&project.id).len(),
+            3,
+            "both competing roots admitted workers"
+        );
+        let loser = if worker.parent_thread_id.as_deref() == Some(&a.id) {
+            &b
+        } else {
+            &a
+        };
+        assert!(host
+            .load_thread(&loser.id)
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.role == "tool" && m.text.contains("Workspace is busy")));
+        assert!(!host.cancel(&a.id, "old-run").unwrap());
+        assert!(!host.cancel(&b.id, "old-run").unwrap());
+        assert!(host
+            .load_thread(&worker.id)
+            .unwrap()
+            .active_run_id
+            .is_some());
+        let owner = if worker.parent_thread_id.as_deref() == Some(&a.id) {
+            (&a, &ar)
+        } else {
+            (&b, &br)
+        };
+        host.cancel(&owner.0.id, &owner.1.run_id).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host
+            .load_thread(&worker.id)
+            .unwrap()
+            .active_run_id
+            .is_some()
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(host
+            .ownership
+            .lock()
+            .admit(
+                dir.path(),
+                &workers::Owner {
+                    root: "fixture".into(),
+                    request: "new".into(),
+                    unreconciled: false,
+                }
+            )
+            .unwrap());
+        host.ownership
+            .lock()
+            .release_failed_reservation(
+                dir.path(),
+                &workers::Owner {
+                    root: "fixture".into(),
+                    request: "new".into(),
+                    unreconciled: false,
+                },
+            )
+            .unwrap();
+    }
+    #[test]
+    fn cross_root_writer_vs_spawn_is_fail_closed_before_mutating_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = racing_host(dir.path().join("state"));
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let coordinator = coordinator_root(&host, &project, "Coordinator");
+        let direct = thread(&host, &project, "Direct");
+        host.submit(request(&direct, "writer", "write", SendMode::Steer))
+            .unwrap();
+        let run = host
+            .submit(request(
+                &coordinator,
+                "coordinator",
+                "delegate",
+                SendMode::Steer,
+            ))
+            .unwrap();
+        let worker = worker_thread(&host, &project);
+        settled(&host, &direct);
+        assert!(!dir.path().join("raced.txt").exists());
+        assert!(host
+            .load_thread(&direct.id)
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.role == "tool"));
+        host.cancel(&coordinator.id, &run.run_id).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host
+            .load_thread(&worker.id)
+            .unwrap()
+            .active_run_id
+            .is_some()
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn interrupted_unknown_worker_restores_read_only_and_keeps_workspace_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = coordinator_fixture(dir.path().join("original"));
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let root = coordinator_root(&host, &project, "Root");
+        let run = host
+            .submit(request(&root, "root", "delegate", SendMode::Steer))
+            .unwrap();
+        let worker = worker_thread(&host, &project);
+        settled(&host, &root);
+        host.refresh_workers().unwrap();
+        let mut saved = host.state.lock().store.clone();
+        let record = saved_mut(&mut saved, &worker.id).unwrap();
+        record.worker.as_mut().unwrap().settlement_error =
+            Some("fixture: process observation unavailable".into());
+        let restore_dir = dir.path().join("restored");
+        std::fs::create_dir(&restore_dir).unwrap();
+        std::fs::write(
+            restore_dir.join("threads.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        host.cancel(&root.id, &run.run_id).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host
+            .load_thread(&worker.id)
+            .unwrap()
+            .active_run_id
+            .is_some()
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(host);
+        let restored = coordinator_fixture(restore_dir);
+        let snapshot = restored.load_thread(&worker.id).unwrap();
+        assert_eq!(
+            snapshot.worker.unwrap().status,
+            rx4::subagent::SubagentStatus::Interrupted
+        );
+        assert!(snapshot.settlement_error.is_some());
+        assert!(restored.retry_settlement(&worker.id).is_err());
+        assert!(restored
+            .ownership
+            .lock()
+            .admit(
+                dir.path(),
+                &workers::Owner {
+                    root: "competitor".into(),
+                    request: "attempt".into(),
+                    unreconciled: false,
+                }
+            )
+            .is_err());
+        restored.refresh_workers().unwrap();
+        assert!(restored
+            .ownership
+            .lock()
+            .admit(
+                dir.path(),
+                &workers::Owner {
+                    root: "competitor".into(),
+                    request: "retry".into(),
+                    unreconciled: false,
+                }
+            )
+            .is_err());
+    }
+    #[test]
+    fn worker_completion_writes_under_engine_authority_and_failure_persists() {
+        for (prompt, status) in [
+            ("delegate-write", rx4::subagent::SubagentStatus::Completed),
+            ("delegate-fail", rx4::subagent::SubagentStatus::Failed),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let host = coordinator_fixture(dir.path().join("state"));
+            let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+            let root = coordinator_root(&host, &project, "Coordinator");
+            host.submit(request(&root, "root", prompt, SendMode::Steer))
+                .unwrap();
+            let worker = worker_thread(&host, &project);
+            settled(&host, &root);
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let snapshot = loop {
+                let s = host.load_thread(&worker.id).unwrap();
+                if s.active_run_id.is_none() {
+                    break s;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let info = snapshot.worker.unwrap();
+            assert_eq!(info.status, status);
+            assert!(info.result.is_some());
+            assert!(!host.load_thread(&root.id).unwrap().family_busy);
+            if status == rx4::subagent::SubagentStatus::Completed {
+                assert_eq!(
+                    std::fs::read_to_string(dir.path().join("worker.txt")).unwrap(),
+                    "owned worker result"
+                );
+                assert_eq!(
+                    snapshot
+                        .messages
+                        .iter()
+                        .filter(|m| m.role == "tool")
+                        .count(),
+                    1
+                );
+            } else {
+                assert!(info
+                    .result
+                    .unwrap()
+                    .error
+                    .unwrap()
+                    .contains("fixture worker failure"));
+            }
+        }
+    }
+    #[test]
+    fn legacy_history_is_refused_without_rewriting_or_admitting_unknown_background_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("state");
+        let host = coordinator_fixture(root.clone());
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let _thread = thread(&host, &project, "Legacy root");
+        drop(host);
+        let file = root.join("threads.json");
+        let mut store: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        store.as_object_mut().unwrap().remove("ownership_version");
+        let legacy = serde_json::to_vec(&store).unwrap();
+        std::fs::write(&file, &legacy).unwrap();
+        let result = LocalRuntime::open_with(
+            root,
+            Arc::new(|_| {}),
+            local_executor().unwrap(),
+            vec![],
+            Arc::new(|_, _| panic!("legacy execution must not start")),
+        );
+        assert!(matches!(result,Err(ref e) if e.contains("isolated history")));
+        assert_eq!(std::fs::read(file).unwrap(), legacy);
+    }
+    #[test]
+    fn worker_steering_storage_failure_cancels_and_recovers_one_accepted_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = coordinator_fixture(dir.path().join("state"));
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let root = coordinator_root(&host, &project, "Coordinator");
+        host.submit(request(&root, "root", "delegate", SendMode::Steer))
+            .unwrap();
+        let worker = worker_thread(&host, &project);
+        settled(&host, &root);
+        let temporary = dir.path().join("state/threads.json.tmp");
+        std::fs::create_dir(&temporary).unwrap();
+        assert!(host
+            .submit(request(
+                &worker,
+                "steer-failed-save",
+                "bounded reference",
+                SendMode::Steer
+            ))
+            .is_err());
+        let (_, handle) = host.worker_handle(&worker.id).unwrap();
+        assert_ne!(handle.status(), rx4::subagent::SubagentStatus::Running);
+        std::fs::remove_dir(temporary).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host
+            .load_thread(&worker.id)
+            .unwrap()
+            .active_run_id
+            .is_some()
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let accepted = host
+            .submit(request(
+                &worker,
+                "steer-failed-save",
+                "bounded reference",
+                SendMode::Steer,
+            ))
+            .unwrap();
+        assert_eq!(accepted.state, ReceiptState::Accepted);
+        let snapshot = host.load_thread(&worker.id).unwrap();
+        assert_eq!(snapshot.receipts.len(), 1);
+        assert_eq!(
+            snapshot
+                .messages
+                .iter()
+                .filter(|m| m.text == "bounded reference")
+                .count(),
+            1
+        );
     }
 }
