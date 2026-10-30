@@ -1,0 +1,175 @@
+div #workspace w-full h-full flex flex-col bg-[#1c1d21] text-zinc-100 overflow-hidden when:{light}="bg-[#f1f1f3] text-[#202126]"
+  {titlebar}
+  div #workspace-body flex-1 min-h-0 w-full flex flex-row gap-2 px-2 pb-5
+    if {sidebar_visible}
+      div #sidebar w-56 h-full flex flex-col shrink-0 px-3 py-4 gap-4 when:{reference_layout}="w-[353px]"
+        div flex flex-row items-center gap-2
+          span text-lg font-bold text-zinc-100 when:{light}="text-[#202126]"
+            "TK"
+          span text-xs text-violet-300 px-2 py-0.5 rounded bg-[#211b35] when:{light}="bg-[#e9e4f7] text-[#6b50a2]"
+            "Local"
+        if {light}
+          button w-full text-left text-sm text-zinc-300 px-3 py-2 rounded-lg bg-[#12141b] hover:bg-[#e0e0e7] @click=open_project when:{light}="bg-[#e7e7eb] text-[#42434b]"
+            "{project_name}"
+        else
+          button w-full text-left text-sm text-zinc-300 px-3 py-2 rounded-lg bg-[#12141b] hover:bg-[#1c1f29] @click=open_project when:{light}="bg-[#e7e7eb] text-[#42434b]"
+            "{project_name}"
+        if {light}
+          button w-full text-left text-sm text-zinc-200 px-3 py-2 rounded-lg border border-[#292b35] hover:bg-[#e0e0e7] @click=new_thread when:{light}="border-[#d6d6dc] text-[#292a31]"
+            "+  New thread"
+        else
+          button w-full text-left text-sm text-zinc-200 px-3 py-2 rounded-lg border border-[#292b35] hover:bg-[#1c1f29] @click=new_thread when:{light}="border-[#d6d6dc] text-[#292a31]"
+            "+  New thread"
+        div #search-box rounded-lg bg-[#101218] border border-[#252732] p-2 when:{light}="bg-[#ffffff] border-[#d6d6dc]"
+          {search_input}
+        div flex flex-row items-center justify-between
+          span text-xs text-zinc-400 when:{light}="text-[#62636f]"
+            "THREADS"
+          span text-xs text-zinc-400 when:{light}="text-[#62636f]"
+            "⌘N"
+        div #thread-list w-full flex-1 min-h-0 flex flex-col gap-1 overflow-y-scroll
+          {thread_items}
+        div flex flex-col gap-2 border-t border-[#242630] pt-3 when:{light}="border-[#dedee4]"
+          span text-xs text-zinc-400 when:{light}="text-[#62636f]"
+            "{project_path}"
+          span text-xs text-zinc-400 when:{light}="text-[#62636f]"
+            "Local workspace"
+    div #conversation flex-1 min-w-0 h-full flex flex-col rounded-xl bg-[#0d0f17] border border-[#242630] overflow-hidden when:{light}="bg-[#ffffff] border-[#dedee4]"
+      div h-14 w-full flex flex-row items-center px-4 gap-3 border-b border-[#242630] shrink-0 when:{light}="border-[#dedee4]"
+        div w-7 h-7 rounded-lg bg-[#bca6ff] flex items-center justify-center text-[#191324] text-sm font-bold
+          "✳"
+        span flex-1 min-w-0 truncate text-sm font-semibold text-zinc-200 when:{light}="text-[#292a31]"
+          "{thread_title}"
+        if {expanded_toolbar}
+          if {light}
+            button text-xs text-zinc-400 hover:text-[#202126] @click=start_rename when:{light}="text-[#202126] text-[#62636f]"
+              "Rename"
+          else
+            button text-xs text-zinc-400 hover:text-zinc-100 @click=start_rename when:{light}="text-[#202126] text-[#62636f]"
+              "Rename"
+        if {light}
+          button text-xs text-zinc-400 hover:text-[#202126] @click=toggle_settings when:{light}="text-[#202126] text-[#62636f]"
+            "Settings"
+        else
+          button text-xs text-zinc-400 hover:text-zinc-100 @click=toggle_settings when:{light}="text-[#202126] text-[#62636f]"
+            "Settings"
+        if {light}
+          button text-xs text-zinc-400 hover:text-[#202126] @click=toggle_context when:{light}="text-[#202126] text-[#62636f]"
+            "Context"
+        else
+          button text-xs text-zinc-400 hover:text-zinc-100 @click=toggle_context when:{light}="text-[#202126] text-[#62636f]"
+            "Context"
+        if {expanded_toolbar}
+          if {light}
+            button text-xs text-zinc-400 hover:text-[#202126] @click=start_handoff when:{light}="text-[#202126] text-[#62636f]"
+              "Handoff ↗"
+          else
+            button text-xs text-zinc-400 hover:text-zinc-100 @click=start_handoff when:{light}="text-[#202126] text-[#62636f]"
+              "Handoff ↗"
+      if {has_parent}
+        button w-full text-left text-xs text-violet-300 px-5 py-2 border-b border-[#242630] @click=original_thread when:{light}="border-[#dedee4] text-[#6b50a2]"
+          "↖ Original thread"
+      if {show_settings}
+        div #settings-panel w-full max-h-64 overflow-y-scroll p-4 border-b border-[#242630] flex flex-col gap-3 when:{light}="border-[#dedee4]"
+          {settings}
+      if {has_error}
+        div #error w-full px-5 py-3 bg-[#301a23] text-sm text-[#f4b9c8] when:{light}="bg-[#fff0f2] text-[#963449]"
+          "{error_text}"
+      div #history flex-1 min-h-0 w-full overflow-y-scroll
+        div w-full max-w-240 mx-auto px-6 py-6 flex flex-col gap-6
+          if {empty_history}
+            div w-full py-12 flex flex-col gap-3
+              span text-2xl font-semibold text-zinc-100 when:{light}="text-[#202126]"
+                "{empty_title}"
+              span text-sm text-zinc-400 when:{light}="text-[#62636f]"
+                "{empty_detail}"
+          for message in {messages}
+            div w-full min-w-0 flex flex-col gap-2
+              span text-xs font-semibold text-zinc-400 when:{light}="text-[#62636f]"
+                "{message.role}"
+              if {message.is_user}
+                div w-full min-w-0 rounded-lg px-4 py-3 bg-[#08090e] border border-[#1b1d26] when:{light}="bg-[#f5f5f7] border-[#dedee4]"
+                  span w-full min-w-0 text-sm text-zinc-200 whitespace-normal when:{light}="text-[#292a31]"
+                    "{message.content}"
+              else
+                div w-full min-w-0 px-2
+                  span w-full min-w-0 text-sm text-zinc-200 whitespace-normal when:{light}="text-[#292a31]"
+                    "{message.content}"
+          for receipt in {receipts}
+            span text-xs text-zinc-400 when:{light}="text-[#62636f]"
+              "{receipt}"
+      div w-full px-5 pb-4 pt-2 shrink-0 flex flex-col gap-2
+        if {has_attachment}
+          div flex flex-row items-center gap-3
+            span flex-1 text-xs text-violet-300 when:{light}="text-[#6b50a2]"
+              "Selected reference context attached"
+            if {light}
+              button text-xs text-zinc-400 hover:text-[#202126] @click=remove_context when:{light}="text-[#292a31] text-[#62636f]"
+                "Remove"
+            else
+              button text-xs text-zinc-400 hover:text-zinc-200 @click=remove_context when:{light}="text-[#292a31] text-[#62636f]"
+                "Remove"
+        if {handoff_open}
+          div flex flex-row items-center gap-3
+            span flex-1 text-xs text-violet-300 when:{light}="text-[#6b50a2]"
+              "{edit_label}"
+            if {light}
+              button text-xs text-zinc-400 hover:text-[#202126] @click=cancel_handoff when:{light}="text-[#202126] text-[#62636f]"
+                "Cancel"
+            else
+              button text-xs text-zinc-400 hover:text-zinc-100 @click=cancel_handoff when:{light}="text-[#202126] text-[#62636f]"
+                "Cancel"
+        div #composer-shell w-full rounded-xl bg-[#191b23] border border-[#343642] flex flex-col when:{light}="bg-[#f5f5f7] border-[#c9c9d2]"
+          div #composer-scroll w-full max-h-48 overflow-y-scroll p-3
+            {composer}
+          div h-10 px-3 w-full flex flex-row items-center gap-3
+            if {light}
+              button text-xs text-zinc-400 hover:text-[#202126] @click=toggle_settings when:{light}="text-[#202126] text-[#62636f]"
+                "{model_label}"
+            else
+              button text-xs text-zinc-400 hover:text-zinc-100 @click=toggle_settings when:{light}="text-[#202126] text-[#62636f]"
+                "{model_label}"
+            if {wide}
+              if {light}
+                button text-xs text-zinc-400 hover:text-[#202126] @click=cycle_role when:{light}="text-[#292a31] text-[#62636f]"
+                  "{role_label}"
+              else
+                button text-xs text-zinc-400 hover:text-zinc-200 @click=cycle_role when:{light}="text-[#292a31] text-[#62636f]"
+                  "{role_label}"
+              if {light}
+                button text-xs text-zinc-400 hover:text-[#202126] @click=cycle_permission when:{light}="text-[#292a31] text-[#62636f]"
+                  "{permission_label}"
+              else
+                button text-xs text-zinc-400 hover:text-zinc-200 @click=cycle_permission when:{light}="text-[#292a31] text-[#62636f]"
+                  "{permission_label}"
+            span flex-1
+            if {light}
+              button text-xs text-zinc-400 hover:text-[#202126] @click=toggle_queue when:{light}="text-[#292a31] text-[#62636f]"
+                "{send_mode}"
+            else
+              button text-xs text-zinc-400 hover:text-zinc-200 @click=toggle_queue when:{light}="text-[#292a31] text-[#62636f]"
+                "{send_mode}"
+            if {busy}
+              button px-3 py-1 rounded-md bg-[#633343] text-[#ffe6ec] text-xs @click=stop
+                "Stop ■"
+            else
+              button px-3 py-1 rounded-md bg-[#bca6ff] text-[#191324] text-xs font-semibold @click=send_click
+                "{send_label}"
+        div flex flex-row items-center justify-between
+          span text-xs text-zinc-400 when:{light}="text-[#62636f]"
+            "{status}"
+          span text-xs text-zinc-400 when:{light}="text-[#62636f]"
+            "↵ send   ⇧↵ newline"
+    if {context_visible}
+      div #context-pane w-80 h-full flex flex-col shrink-0 rounded-xl when:{reference_layout}="w-[570px]" bg-[#0d0f17] border border-[#242630] overflow-hidden when:{light}="bg-[#ffffff] border-[#dedee4]"
+        div h-14 px-4 flex flex-row items-center gap-3 border-b border-[#242630] when:{light}="border-[#dedee4]"
+          span flex-1 text-sm font-semibold text-zinc-200 when:{light}="text-[#292a31]"
+            "Reference context"
+          if {light}
+            button text-xs text-zinc-400 hover:text-[#202126] @click=toggle_context when:{light}="text-[#202126] text-[#62636f]"
+              "Close"
+          else
+            button text-xs text-zinc-400 hover:text-zinc-100 @click=toggle_context when:{light}="text-[#202126] text-[#62636f]"
+              "Close"
+        div #context-scroll flex-1 min-h-0 overflow-y-scroll p-4 flex flex-col gap-3
+          {context_panel}

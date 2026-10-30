@@ -6,13 +6,12 @@ use crate::{
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    hash::{Hash, Hasher},
     sync::{mpsc, Arc},
 };
 pub use telekinesis::local_runtime::{
     AgentRole, Permission, Project, Receipt, ReceiptState, SendMode, Thread, ThreadConfig,
 };
-use telekinesis::local_runtime::{CreateThread, LocalRuntime, RuntimeEvent, Submit};
+use telekinesis::local_runtime::{CreateThread, Handoff, LocalRuntime, RuntimeEvent, Submit};
 
 #[derive(Clone)]
 pub struct DesktopSnapshot {
@@ -43,6 +42,7 @@ pub struct DesktopHost {
     error: Option<String>,
     reference_context: Option<String>,
     generation: u64,
+    drafts: HashMap<String, String>,
 }
 impl DesktopHost {
     pub fn boot() -> Self {
@@ -71,6 +71,10 @@ impl DesktopHost {
             error: None,
             reference_context: None,
             generation: 0,
+            drafts: draft_path()
+                .and_then(|path| std::fs::read(path).ok())
+                .and_then(|data| serde_json::from_slice(&data).ok())
+                .unwrap_or_default(),
         }
     }
     fn initialize(&mut self, result: Result<Arc<LocalRuntime>, String>) {
@@ -188,10 +192,16 @@ impl DesktopHost {
         if !self.runtime()?.projects().iter().any(|p| p.id == id) {
             return Err("Unknown project.".into());
         }
+        self.save_draft()?;
         self.active_project_id = Some(id.into());
         self.active_thread_id = self.runtime()?.threads(id).first().map(|t| t.id.clone());
         self.reference_context = None;
-        self.input.clear();
+        self.input = self
+            .active_thread_id
+            .as_ref()
+            .and_then(|id| self.drafts.get(id))
+            .cloned()
+            .unwrap_or_default();
         self.error = None;
         if self.active_thread_id.is_none() {
             self.create_thread("New thread")?;
@@ -217,10 +227,19 @@ impl DesktopHost {
         if self.active_project_id.as_ref() != Some(&thread.project_id) {
             return Err("Thread belongs to a different project.".into());
         }
+        self.save_draft()?;
         self.active_thread_id = Some(id.into());
         self.reference_context = None;
-        self.input.clear();
+        self.input = self.drafts.get(id).cloned().unwrap_or_default();
         self.error = None;
+        Ok(())
+    }
+    pub fn rename_thread(&mut self, title: &str) -> Result<(), String> {
+        let id = self
+            .active_thread_id
+            .as_ref()
+            .ok_or("Select a thread first.")?;
+        self.runtime()?.rename_thread(id, title)?;
         Ok(())
     }
     pub fn update_config(&mut self, config: ThreadConfig) -> Result<(), String> {
@@ -266,11 +285,25 @@ impl DesktopHost {
         match result {
             Ok(_) => {
                 self.input.clear();
+                self.error = self.save_draft().err();
                 self.reference_context = None;
-                self.error = None;
             }
             Err(error) => self.error = Some(error),
         }
+    }
+    pub fn has_active_work(&self) -> bool {
+        self.runtime.as_ref().is_some_and(|runtime| {
+            runtime.projects().iter().any(|project| {
+                runtime.threads(&project.id).iter().any(|thread| {
+                    runtime
+                        .load_thread(&thread.id)
+                        .is_ok_and(|s| s.active_run_id.is_some())
+                })
+            })
+        })
+    }
+    pub fn stop_all(&mut self) -> Result<(), String> {
+        self.runtime()?.shutdown()
     }
     pub fn interrupt(&mut self) {
         let result = (|| {
@@ -288,42 +321,9 @@ impl DesktopHost {
             self.error = Some(error);
         }
     }
-    pub fn handoff(&mut self, summary: &str) -> Result<(), String> {
-        if summary.trim().is_empty() || summary.len() > 32_000 {
-            return Err("Handoff must contain a goal and fit within 32 KB.".into());
-        }
-        let parent_id = self
-            .active_thread_id
-            .clone()
-            .ok_or("Select a thread first.")?;
-        let parent = self.runtime()?.load_thread(&parent_id)?;
-        if parent.active_run_id.is_some()
-            || parent.receipts.iter().any(|receipt| {
-                matches!(receipt.state, ReceiptState::Accepted | ReceiptState::Queued)
-            })
-        {
-            return Err(
-                "Stop the source run and wait for pending work to settle before handing off."
-                    .into(),
-            );
-        }
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        summary.hash(&mut hash);
-        let child = self.runtime()?.create_thread(CreateThread {
-            project_id: parent.thread.project_id,
-            title: format!("Continue: {}", parent.thread.title),
-            config: Some(parent.thread.config),
-            parent_thread_id: Some(parent_id.clone()),
-            request_id: Some(format!("handoff:{parent_id}:{:016x}", hash.finish())),
-        })?;
-        self.runtime()?.submit(Submit {
-            thread_id: child.id.clone(),
-            client_message_id: format!("handoff-first:{}", child.id),
-            text: summary.into(),
-            mode: SendMode::Steer,
-            reference_context: None,
-        })?;
-        self.select_thread(&child.id)
+    pub fn handoff(&mut self, request: Handoff) -> Result<(), String> {
+        let child = self.runtime()?.handoff(request)?;
+        self.select_thread(&child.thread.id)
     }
     pub fn poll(&mut self) -> HostTick {
         let mut tick = HostTick::default();
@@ -381,6 +381,30 @@ impl DesktopHost {
     pub fn poll_generation(&self) -> u64 {
         self.generation
     }
+    pub fn save_draft(&mut self) -> Result<(), String> {
+        let Some(id) = &self.active_thread_id else {
+            return Ok(());
+        };
+        self.drafts.insert(id.clone(), self.input.clone());
+        let path = draft_path().ok_or("Home directory unavailable; draft cannot be saved.")?;
+        let bytes = serde_json::to_vec(&self.drafts).map_err(|e| e.to_string())?;
+        let temp = path.with_extension("json.tmp");
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temp)
+            .map_err(|e| format!("Draft could not be saved: {e}"))?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .and_then(|_| std::fs::rename(temp, path))
+            .map_err(|e| format!("Draft could not be saved: {e}"))
+    }
     pub fn insert_text(&mut self, text: &str) {
         self.input.push_str(text);
     }
@@ -404,8 +428,13 @@ impl DesktopHost {
 
 impl Drop for DesktopHost {
     fn drop(&mut self) {
+        let _ = self.save_draft();
         if let Some(runtime) = &self.runtime {
             let _ = runtime.shutdown();
         }
     }
+}
+
+fn draft_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| home.join(".telekinesis/native-drafts.json"))
 }

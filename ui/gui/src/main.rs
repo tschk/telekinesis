@@ -39,6 +39,11 @@ fn screen_size() -> (f32, f32) {
 }
 
 fn main() {
+    if !std::env::args().any(|arg| arg == "--companion") {
+        view::workspace::launch();
+        return;
+    }
+
     let hotkey_manager = GlobalHotKeyManager::new().ok();
     let hotkey_id = if let Some(ref manager) = hotkey_manager {
         let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);

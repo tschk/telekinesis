@@ -589,6 +589,18 @@ impl LocalRuntime {
         }
         self.load_thread(&child_id)
     }
+    /// Rename presentation metadata without replacing session identity or history.
+    pub fn rename_thread(&self, thread_id: &str, title: &str) -> Result<Thread> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > 240 || title.chars().any(char::is_control) {
+            return Err("Thread name must contain 1 to 240 characters on one line.".into());
+        }
+        self.mutate(|store| {
+            let saved = saved_mut(store, thread_id)?;
+            saved.thread.title = title.to_owned();
+            Ok(saved.thread.clone())
+        })
+    }
     pub fn update_thread(&self, thread_id: &str, config: ThreadConfig) -> Result<Thread> {
         validate_config(&config)?;
         let mut state = self.state.lock();
@@ -1340,6 +1352,60 @@ mod tests {
             wait_idle(&host);
         }
     }
+    #[test]
+    fn rename_preserves_identity_history_config_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(Mutex::new(vec![]));
+        let (tx, rx) = mpsc::channel();
+        let host = fixture(dir.path().join("state"), calls.clone(), tx.clone());
+        let project = host.add_project(dir.path().to_str().unwrap()).unwrap();
+        let a = thread(&host, &project, "Before");
+        host.submit(request(
+            &a,
+            "rename-history",
+            "original history",
+            SendMode::Steer,
+        ))
+        .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let before = settled(&host, &a);
+        for invalid in [
+            "".to_string(),
+            " ".into(),
+            "x".repeat(241),
+            "two\nlines".into(),
+        ] {
+            assert!(host.rename_thread(&a.id, &invalid).is_err());
+        }
+        assert!(host.rename_thread("unknown", "Valid").is_err());
+        let renamed = host.rename_thread(&a.id, "  After 🙂  ").unwrap();
+        assert_eq!(renamed.title, "After 🙂");
+        assert_eq!(renamed.id, a.id);
+        assert_eq!(renamed.session_id, a.session_id);
+        assert_eq!(
+            serde_json::to_value(&renamed.config).unwrap(),
+            serde_json::to_value(&before.thread.config).unwrap()
+        );
+        wait_idle(&host);
+        drop(host);
+        let host = fixture(dir.path().join("state"), calls, tx);
+        let after = host.load_thread(&a.id).unwrap();
+        assert_eq!(after.thread.title, "After 🙂");
+        assert_eq!(
+            after
+                .messages
+                .iter()
+                .map(|m| (&m.id, &m.text))
+                .collect::<Vec<_>>(),
+            before
+                .messages
+                .iter()
+                .map(|m| (&m.id, &m.text))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(after.receipts.len(), before.receipts.len());
+    }
+
     #[test]
     fn isolated_threads_cancel_queue_resume_and_idempotency() {
         let dir = tempfile::tempdir().unwrap();
