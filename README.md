@@ -120,3 +120,52 @@ Mobile companion (Expo M0 scaffold): [`apps/mobile`](apps/mobile).
 ## License
 
 MPL-2.0
+
+## Local chat and worker preview
+
+The native app has one pinned Coordinator chat with a stable session and an
+explicitly selected workspace. Project navigation does not move that execution
+workspace. Other threads are grouped by their stored canonical project roots.
+Normal Direct tools and existing histories remain available by default. The
+Coordinator label does not introduce a separate host agent loop.
+
+Experimental worker orchestration requires `coordinator-preview`, which is
+excluded from both default and `full` features. Enable it explicitly for an
+isolated preview store; normal histories are not migrated into worker ownership.
+
+Build and stage a matching CLI or macOS GPUI app from the same dependency source:
+
+```bash
+python3 scripts/stage-local-host.py cli --out target/local-cli
+python3 scripts/stage-local-host.py gpui --out target/local-gpui
+```
+
+Staging uses locked dependencies and allows Cargo to fetch missing packages. Add
+`--offline` only when all dependencies are already cached.
+
+Use `--native-layout --target-dir target/local-host` to reuse a native development
+build. The helper is a separate executable beside the host. `cargo install --path
+ui/tui` installs both binaries; `cargo run` still selects `tk`. Missing or mismatched
+helpers fail closed. Tauri stages `binaries/rx4-script-worker-<target-triple>` as an
+external binary before bundling. Local staging records source identity and helper
+checksums, but does not perform distribution signing or notarization. Sign the
+helper as nested executable code before signing/notarizing a macOS app, and verify
+the real hardened-runtime package and LuaJIT entitlement requirements separately.
+
+Local GPUI staging opens an isolated state directory beside the artifact. Only
+the explicit worker preview refuses legacy Direct histories, because those stores
+cannot prove background-process ownership. The default host accepts normal
+existing histories and refuses worker-preview stores rather than discarding their
+unresolved ownership.
+
+The explicit worker preview uses read tools in Direct and Coordinator roots. A single delegate owns workspace writes until the engine proves settlement;
+other admissions return busy. Durable admission markers survive host loss and are
+cleared only after proven settlement; dropping a lock or task is insufficient.
+Generic root process/file-write tools are hidden
+until an engine per-run ownership API can preserve successful background work and
+prove cleanup without sealing the registry. This restriction must not silently
+replace the existing Direct product. Worker history, parent links, results and
+accepted steering persist. Accepted steering does not mean provider consumption.
+Interrupted or unknown cleanup does not replay work or release workspace ownership.
+The desktop Local host and Direct/Coordinator workflow are independent choices;
+this preview adds no cloud provisioning or unauthenticated mobile transport.

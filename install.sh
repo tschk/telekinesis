@@ -68,18 +68,21 @@ verify_checksum() {
 )
 
 tar -C "$tmpdir" -xzf "${tmpdir}/${asset}"
-if [ ! -f "${tmpdir}/tk" ]; then
-  echo "install.sh: archive ${asset} did not contain tk" >&2
+if [ ! -f "${tmpdir}/tk" ] || [ ! -f "${tmpdir}/rx4-script-worker" ]; then
+  echo "install.sh: archive ${asset} did not contain tk and its matching script helper" >&2
   exit 1
 fi
 
 mkdir -p "$DEST_DIR"
+for binary in tk rx4-script-worker; do
 if command -v install >/dev/null 2>&1; then
-  install -m 755 "${tmpdir}/tk" "${DEST_DIR}/tk"
+  install -m 755 "${tmpdir}/${binary}" "${DEST_DIR}/${binary}"
 else
-  cp "${tmpdir}/tk" "${DEST_DIR}/tk"
-  chmod 755 "${DEST_DIR}/tk"
+  cp "${tmpdir}/${binary}" "${DEST_DIR}/${binary}"
+  chmod 755 "${DEST_DIR}/${binary}"
 fi
+
+done
 
 echo "installed ${DEST_DIR}/tk (${target})"
 case ":${PATH}:" in

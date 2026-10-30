@@ -29,3 +29,7 @@ apps/mobile/android/
 
 # Amp orb portals
 .amp/portals/*
+
+# Matching script helpers are staged per target, never source artifacts.
+apps/desktop/src-tauri/binaries/rx4-script-worker-*
+target/

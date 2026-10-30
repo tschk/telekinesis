@@ -53,10 +53,13 @@ jobs:
       - name: Build with PGO + LLVM PGSO
         working-directory: ${{ github.workspace }}
         run: bash scripts/pgo/pgo.sh --target "${{ matrix.target }}"
+      - name: Build matching script helper
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/stage-local-host.py cli --helper-only --profile release --target "${{ matrix.target }}" --out target/helper-stage --target-dir ui/tui/target
       - name: Package
         env:
           TARGET: ${{ matrix.target }}
-        run: tar -C "target/$TARGET/release" -czf "../../tk-$TARGET.tar.gz" tk
+        run: tar -C "target/$TARGET/release" -czf "../../tk-$TARGET.tar.gz" tk rx4-script-worker
       - uses: actions/upload-artifact@v4
         with:
           name: tk-${{ matrix.target }}

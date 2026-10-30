@@ -1,5 +1,6 @@
 [package]
 name = "telekinesis"
+default-run = "tk"
 version = "0.6.25"
 edition = "2021"
 license = "MPL-2.0"
@@ -14,6 +15,8 @@ name = "tk"
 path = "src/main.rs"
 
 [features]
+# Worker execution and stricter ownership are explicitly opt-in.
+coordinator-preview = []
 default = ["pi-compat", "acp"]
 pi-compat = []
 acp = []
@@ -41,7 +44,7 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 rs_ai_oauth = "0.2.31"
-rx4 = { git = "https://github.com/tschk/rotary", rev = "b5d5b63ad298272b8a54907560958b3768757289", default-features = false, features = ["providers", "builtin-tools", "script"] }
+rx4 = { git = "https://github.com/tschk/rotary", rev = "bb8d5ee80ffe519379f772cb3f01084a25c08eed", default-features = false, features = ["providers", "builtin-tools", "script"] }
 telekinesis-router = { path = "../router", version = "0.3" }
 darash = { version = "0.6.0", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "charset", "http2", "json", "rustls-tls", "stream"] }
@@ -55,3 +58,7 @@ thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "rx4-script-worker"
+path = "src/bin/script-worker.rs"

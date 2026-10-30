@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.tschk.telekinesis.desktop",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "python3 ../../scripts/stage-local-host.py tauri --helper-only --profile dev --out ../../target/tauri-helper && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "python3 ../../scripts/stage-local-host.py tauri --helper-only --profile release --out ../../target/tauri-helper && bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -32,6 +32,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/rx4-script-worker"
     ]
   }
 }
