@@ -17,6 +17,20 @@ test -x "$tick" || fail "tick.sh must be executable"
 test -x "$run" || fail "run.sh must be executable"
 test -x "$status" || fail "status.sh must be executable"
 
+source "$root/scripts/avo/lib.sh"
+avo_parse_score '{"correct":true,"objective":1e2,"note":"ok"}' >/dev/null || fail "valid score JSON must parse"
+for raw in \
+  '{"correct":true,"objective":1,"note":"ok",}' \
+  '{"correct":true,"objective":01,"note":"ok"}' \
+  '{"correct":true,"objective":1,"note":"ok","extra":[1,]}' \
+  '{"correct":true,"objective":NaN,"note":"ok"}' \
+  '{"correct":true,"objective":Infinity,"note":"ok"}' \
+  '{"correct":true,"objective":1,"note":"ok","extra":-Infinity}'; do
+  if avo_parse_score "$raw" >/dev/null 2>&1; then
+    fail "invalid score JSON accepted: $raw"
+  fi
+done
+
 if grep -nE 'git[[:space:]]+push' "$root/scripts/avo"/* >/tmp/avo-push-hits 2>/dev/null; then
   cat /tmp/avo-push-hits >&2
   fail "scripts/avo must never invoke git push"

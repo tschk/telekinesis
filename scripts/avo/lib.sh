@@ -551,7 +551,9 @@ avo_parse_score() {
   python3 - "$raw" <<'PY'
 import json, sys
 raw = sys.argv[1]
-obj = json.loads(raw)
+def reject_constant(value):
+    raise ValueError(f"invalid JSON constant: {value}")
+obj = json.loads(raw, parse_constant=reject_constant)
 if "correct" not in obj or "objective" not in obj or "note" not in obj:
     raise SystemExit("score JSON must include correct, objective, note")
 if not isinstance(obj["correct"], bool):
