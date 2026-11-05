@@ -3100,6 +3100,75 @@ mod tests {
         assert_eq!(messages[2].content, "done");
     }
 
+    #[cfg(feature = "pi-compat")]
+    #[test]
+    fn slash_session_listing_and_resume() {
+        const CHILD: &str = "TK_SESSION_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::tests::slash_session_listing_and_resume",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("HOME", home.path())
+                .current_dir(home.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let dir = crate::pi::pi_sessions_dir(&std::env::current_dir().unwrap());
+        let mut session = PiSession::new("/project", "test-model");
+        session.append_message(rx4::provider::Role::User, "saved message");
+        let todos = TodoState {
+            items: vec![rx4::TodoItem {
+                id: "one".into(),
+                content: "saved todo".into(),
+                status: TodoStatus::InProgress,
+                creation_confidence: 60,
+                completion_confidence: None,
+                verification_attempts: 0,
+            }],
+        };
+        session.append(PiEntryType::Custom {
+            extension: crate::pi::TODOS_EXTENSION.into(),
+            payload: serde_json::to_value(&todos).unwrap(),
+        });
+        session.save_jsonl(&dir).unwrap();
+
+        let mut app = App::new();
+        let agent = Arc::new(Mutex::new(rx4::agent::Agent::new()));
+        app.agent = Some(agent.clone());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_slash_command(&mut app, "/sessions", &agent, &tx);
+        assert!(app.messages.last().unwrap().content.contains("[1]"));
+        let guard = agent.try_lock().unwrap();
+        handle_slash_command(&mut app, "/resume 1", &agent, &tx);
+        assert!(app
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("agent is busy"));
+        assert!(app.session.is_none());
+        assert!(guard.messages.read().is_empty());
+        drop(guard);
+
+        handle_slash_command(&mut app, "/resume 1", &agent, &tx);
+        assert!(app
+            .messages
+            .iter()
+            .any(|message| message.content == "saved message"));
+        assert_eq!(app.todos.items[0].content, "saved todo");
+        let guard = agent.try_lock().unwrap();
+        assert_eq!(guard.messages.read().len(), 1);
+        assert_eq!(guard.todos().items[0].content, "saved todo");
+    }
+
     #[test]
     fn embedded_template_ignores_stale_home_template() {
         let home = tempfile::tempdir().unwrap();

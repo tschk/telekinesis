@@ -366,7 +366,10 @@ pub(crate) fn handle_slash_command(
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        format!("  [{index}] {stamp} · {model} · {count} messages · {name}")
+                        format!(
+                            "  [{}] {stamp} · {model} · {count} messages · {name}",
+                            index + 1
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -397,15 +400,20 @@ pub(crate) fn handle_slash_command(
                 };
                 match PiSession::load_jsonl(path) {
                     Ok(session) => {
+                        let Ok(mut agent) = agent.try_lock() else {
+                            push_system_message(
+                                app,
+                                "Cannot resume while the agent is busy. Try again when it is idle.",
+                            );
+                            return;
+                        };
+                        *agent.messages.write() = session.messages();
+                        let todos = session.todos();
+                        agent.set_todo_state(todos.clone());
+                        app.todos = todos;
                         app.messages = restored_chat(&session);
-                        let messages = session.messages();
                         let dir = pi::pi_sessions_dir(&std::env::current_dir().unwrap_or_default());
                         app.session = Some((session, dir));
-                        if let Some(agent) = &app.agent {
-                            if let Ok(agent) = agent.try_lock() {
-                                *agent.messages.write() = messages;
-                            }
-                        }
                         let _ = app.persist();
                         push_system_message(
                             app,
