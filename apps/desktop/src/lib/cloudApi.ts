@@ -45,21 +45,24 @@ export async function getHealth(): Promise<{
   health: HealthResponse | null;
   ok: boolean;
   error?: string;
+  status?: number;
 }> {
   const url = `${baseUrl()}/health`;
+  let status: number | undefined;
   try {
     const res = await fetch(url, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) {
+      status = res.status;
       throw new Error(`HTTP ${res.status}`);
     }
     const health = await parseJson<HealthResponse>(res);
     return { health, ok: Boolean(health?.ok) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { health: null, ok: false, error: message };
+    return { health: null, ok: false, error: message, status };
   }
 }
 
@@ -72,8 +75,10 @@ export async function listWorkspaces(): Promise<{
   workspaces: Workspace[];
   source: "api" | "unavailable";
   error?: string;
+  status?: number;
 }> {
   const url = `${baseUrl()}/v1/workspaces`;
+  let status: number | undefined;
 
   try {
     const res = await fetch(url, {
@@ -81,6 +86,7 @@ export async function listWorkspaces(): Promise<{
       signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) {
+      status = res.status;
       throw new Error(`HTTP ${res.status}`);
     }
     const data = (await res.json()) as WorkspaceMeta[] | { workspaces?: WorkspaceMeta[] };
@@ -96,6 +102,7 @@ export async function listWorkspaces(): Promise<{
       workspaces: [],
       source: "unavailable",
       error: `Cloud workspace list unavailable (${message}). API: ${url}`,
+      status,
     };
   }
 }
@@ -104,8 +111,9 @@ export async function listWorkspaces(): Promise<{
 export async function createWorkspace(input?: {
   name?: string;
   tier?: string;
-}): Promise<{ workspace: Workspace; error?: string }> {
+}): Promise<{ workspace: Workspace; error?: string; status?: number }> {
   const url = `${baseUrl()}/v1/workspaces`;
+  let status: number | undefined;
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -120,6 +128,7 @@ export async function createWorkspace(input?: {
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) {
+      status = res.status;
       throw new Error(`HTTP ${res.status}`);
     }
     const meta = await parseJson<WorkspaceMeta>(res);
@@ -136,6 +145,7 @@ export async function createWorkspace(input?: {
         status: "error",
       },
       error: message,
+      status,
     };
   }
 }
@@ -143,21 +153,23 @@ export async function createWorkspace(input?: {
 /** GET /v1/workspaces/:id */
 export async function getWorkspace(
   id: string,
-): Promise<{ workspace: Workspace | null; error?: string }> {
+): Promise<{ workspace: Workspace | null; error?: string; status?: number }> {
   const url = `${baseUrl()}/v1/workspaces/${encodeURIComponent(id)}`;
+  let status: number | undefined;
   try {
     const res = await fetch(url, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) {
+      status = res.status;
       throw new Error(`HTTP ${res.status}`);
     }
     const meta = await parseJson<WorkspaceMeta>(res);
     return { workspace: asWorkspace(meta) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { workspace: null, error: message };
+    return { workspace: null, error: message, status };
   }
 }
 
@@ -165,8 +177,9 @@ export async function getWorkspace(
 export async function execInWorkspace(
   id: string,
   body: ExecRequest,
-): Promise<{ result: ExecResult; error?: string }> {
+): Promise<{ result: ExecResult; error?: string; status?: number }> {
   const url = `${baseUrl()}/v1/workspaces/${encodeURIComponent(id)}/exec`;
+  let status: number | undefined;
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -177,6 +190,7 @@ export async function execInWorkspace(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30000),
     });
+    if (!res.ok) status = res.status;
     const result = await parseJson<ExecResult>(res);
     if (!res.ok && result.ok !== false) {
       return {
@@ -190,14 +204,16 @@ export async function execInWorkspace(
           backend: result.backend,
         },
         error: `HTTP ${res.status}`,
+        status,
       };
     }
-    return { result };
+    return { result, status };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
       result: { ok: false, message },
       error: message,
+      status,
     };
   }
 }

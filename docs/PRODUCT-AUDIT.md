@@ -19,7 +19,10 @@ calls remain unverified; type checks and mock-server tests do not replace them.
   Add an idempotent command protocol and an agent consumer before enabling
   controls. An event-log echo alone does not prove that the agent acted.
 - Desktop reports workspace-list failures as unavailable instead of selecting
-  mock workspace IDs for real cloud actions.
+  mock workspace IDs for real cloud actions. Previously its transport discarded
+  HTTP status, so callers could not distinguish authorization failures from
+  outages. Preserve status at the transport boundary so clients can apply the
+  shared access policy.
 - Web, desktop, and mobile scope approval and diff state to the workspace.
   Mobile processes every event in a batch. The stream client reconnects after
   the server's 200-event replay page instead of skipping older events.

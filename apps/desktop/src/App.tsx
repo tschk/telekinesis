@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AppShell,
@@ -21,6 +21,7 @@ import {
 } from "./lib/cloudApi";
 import type { HealthResponse, HostMode, SpawnResult, Workspace } from "./lib/types";
 import { diffFromEvent } from "@tk/diff-view";
+import { createWorkspaceAccess } from "../../access/workspaceAccess";
 import "./App.css";
 
 function healthBadgeStatus(
@@ -58,16 +59,43 @@ function App() {
     pendingApproval: string | null;
     diff: string | null;
   } | null>(null);
+  const access = useRef(createWorkspaceAccess()).current;
+  const streamAllowed = useRef(true);
+
+  const deny = useCallback((status: number | undefined) => {
+    const message = access.deny(status);
+    if (!message) return false;
+    streamAllowed.current = false;
+    setWorkspaces([]);
+    setSelectedId(null);
+    setLogLines([]);
+    setStreamDetails(null);
+    setStreamStatus(null);
+    setListSource("unavailable");
+    setListError(message);
+    setLoading(false);
+    return true;
+  }, [access]);
 
   const refreshHealth = useCallback(async () => {
+    const generation = access.snapshot();
     const result = await getHealth();
+    if (!access.current(generation)) return;
+    if (deny(result.status)) return;
     setHealth(result.health);
     setHealthError(result.error ?? null);
-  }, []);
+  }, [access, deny]);
 
   const refreshCloud = useCallback(async () => {
+    const generation = access.retry();
+    streamAllowed.current = true;
     setLoading(true);
     const result = await listWorkspaces();
+    if (!access.current(generation)) return;
+    if (deny(result.status)) {
+      setLoading(false);
+      return;
+    }
     setWorkspaces(result.workspaces);
     setListSource(result.source);
     setListError(result.error ?? null);
@@ -76,7 +104,7 @@ function App() {
       return result.workspaces[0]?.id ?? null;
     });
     setLoading(false);
-  }, []);
+  }, [access, deny]);
 
   const refreshLocalStatus = useCallback(async () => {
     try {
@@ -109,19 +137,20 @@ function App() {
       return;
     }
     let active = true;
+    const isCurrent = () => active && streamAllowed.current;
     setStreamDetails({ workspaceId: selectedId, pendingApproval: null, diff: null });
     const seen = new Set<number>();
     const stream = connectWorkspaceStream({
       baseUrl: cloudApiBase(),
       workspaceId: selectedId,
       onStatus: (status) => {
-        if (active) setStreamStatus(status);
+        if (isCurrent()) setStreamStatus(status);
       },
       onUnavailable: () => {
-        if (active) setStreamStatus("unavailable");
+        if (isCurrent()) setStreamStatus("unavailable");
       },
       onEvents: (events) => {
-        if (!active) return;
+        if (!isCurrent()) return;
         const rows = events.map((event) => {
           if (seen.has(event.id)) return null;
           seen.add(event.id);
@@ -153,7 +182,7 @@ function App() {
       active = false;
       stream.close();
     };
-  }, [mode, selectedId]);
+  }, [access, mode, selectedId]);
 
   async function onSpawn() {
     setSpawnBusy(true);
@@ -174,8 +203,10 @@ function App() {
     const name = newName.trim() || undefined;
     setCreateBusy(true);
     setCreateError(null);
-    const { workspace, error } = await createWorkspace({ name });
+    const generation = access.snapshot();
+    const { workspace, error, status } = await createWorkspace({ name });
     setCreateBusy(false);
+    if (!access.current(generation) || deny(status)) return;
     if (error || !workspace.id) {
       setCreateError(error ?? "create failed");
       return;
@@ -193,9 +224,14 @@ function App() {
   async function onExec() {
     if (!selectedId || !prompt.trim()) return;
     const source = prompt.trim();
+    const generation = access.snapshot();
     setExecBusy(true);
     setLogLines((prev) => [...prev, `$ ${source}`]);
-    const { result, error } = await execInWorkspace(selectedId, { source });
+    const { result, error, status } = await execInWorkspace(selectedId, { source });
+    if (!access.current(generation) || deny(status)) {
+      setExecBusy(false);
+      return;
+    }
     const chunks: string[] = [];
     if (result.stdout) chunks.push(result.stdout.replace(/\n$/, ""));
     if (result.stderr) {
@@ -251,7 +287,7 @@ function App() {
           <span className="tk-shell__subtitle">desktop ADE</span>
         </div>
       </div>
-      <HostSwitcher mode={mode} onChange={setMode} />
+      <HostSwitcher mode={mode} onChange={(next) => { access.retry(); setMode(next); }} />
       <div className="tk-shell__top-spacer" />
       <div className="tk-shell__top-meta">
         <button
