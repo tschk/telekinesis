@@ -16,6 +16,7 @@ import { AppShell } from "./components/AppShell";
 import { Button } from "./components/Button";
 import { DiffPane } from "./components/DiffPane";
 import { diffFromEvent } from "@tk/diff-view";
+import { createWorkspaceAccess } from "../../access/workspaceAccess";
 import { Input } from "./components/Input";
 import { LogPane, type LogLine } from "./components/LogPane";
 import { Panel } from "./components/Panel";
@@ -59,7 +60,7 @@ export default function App() {
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const selectedRef = useRef(selectedId);
-  const workspaceRefresh = useRef(0);
+  const access = useRef(createWorkspaceAccess()).current;
   useLayoutEffect(() => {
     selectedRef.current = selectedId;
     return () => { selectedRef.current = null; };
@@ -80,48 +81,44 @@ export default function App() {
   }, []);
 
   const showAccessFailure = useCallback((err: unknown) => {
-    if (!(err instanceof ApiHttpError) || (err.status !== 401 && err.status !== 403)) {
-      return false;
-    }
-    workspaceRefresh.current += 1;
+    const message = access.deny(err instanceof ApiHttpError ? err.status : undefined);
+    if (!message) return false;
     selectedRef.current = null;
     setSelectedId(null);
     setWorkspaces([]);
     setListSource("denied");
     setLines([]);
-    setError(err.status === 401
-      ? "Authentication required (401). Sign-in is not yet available in this app."
-      : "Access denied (403). Your account does not have permission to access this resource.");
+    setError(message);
     return true;
-  }, []);
+  }, [access]);
 
   const refreshWorkspaces = useCallback(async () => {
-    const generation = ++workspaceRefresh.current;
+    const generation = access.retry();
     setError(null);
     try {
       const listed = await listWorkspaces();
-      if (generation !== workspaceRefresh.current) return;
+      if (!access.current(generation)) return;
       setWorkspaces(listed);
       await syncWorkspaceIds(listed.map((w) => w.id));
-      if (generation !== workspaceRefresh.current) return;
+      if (!access.current(generation)) return;
       setListSource("api");
       setSelectedId((cur) => cur ?? listed[0]?.id ?? null);
       return;
     } catch (err) {
-      if (generation !== workspaceRefresh.current) return;
+      if (!access.current(generation)) return;
       if (showAccessFailure(err)) return;
       // list not ready / offline — fall back to localStorage ids
     }
 
     const ids = await loadWorkspaceIds();
-    if (generation !== workspaceRefresh.current) return;
+    if (!access.current(generation)) return;
     const metas: WorkspaceMeta[] = [];
     for (const id of ids) {
       try {
         metas.push(await getWorkspace(id));
-        if (generation !== workspaceRefresh.current) return;
+        if (!access.current(generation)) return;
       } catch (err) {
-        if (generation !== workspaceRefresh.current) return;
+        if (!access.current(generation)) return;
         if (showAccessFailure(err)) return;
         metas.push({
           id,
@@ -136,7 +133,7 @@ export default function App() {
     setWorkspaces(metas);
     setListSource("local");
     setSelectedId((cur) => cur ?? metas[0]?.id ?? null);
-  }, [showAccessFailure]);
+  }, [access, showAccessFailure]);
 
   useEffect(() => {
     let cancelled = false;
