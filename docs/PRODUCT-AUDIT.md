@@ -4,6 +4,11 @@ This audit records source observations from November 2026. Items marked as
 proposals are not promises of implemented behavior. Verify the cloud protocol
 and exercise each flow before choosing an implementation.
 
+The TUI temporarily pins an unmerged rotary revision for approval-authorizer
+retention. `ui/tui/Cargo.toml` records the upstream merge and authority fixes
+required before repinning. Mobile rendering and live Claude and Copilot calls
+remain unverified; type checks and mock-server tests do not replace them.
+
 ## Reliability first
 
 - Interactive resume now restores the displayed conversation, agent messages,
