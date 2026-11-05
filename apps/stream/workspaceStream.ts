@@ -42,8 +42,8 @@ export interface ConnectWorkspaceStreamOptions {
 }
 
 const MAX_BACKOFF_MS = 15_000;
-/** Matches tk-cloud MAX_EVENT_PAGE. A full page is not the end of the log. */
-const MAX_EVENT_PAGE = 500;
+/** Matches tk-cloud DEFAULT_EVENT_PAGE for the initial stream replay. */
+const EVENT_PAGE_SIZE = 200;
 
 export function connectWorkspaceStream(
   opts: ConnectWorkspaceStreamOptions,
@@ -68,6 +68,7 @@ export function connectWorkspaceStream(
     opts.onStatus?.(attempt === 0 ? "connecting" : "reconnecting");
     const url = streamUrl(opts.baseUrl, opts.workspaceId, cursor);
     let opened = false;
+    let replayPending = false;
     let ws: WebSocket;
     try {
       ws = new WS(url);
@@ -85,6 +86,7 @@ export function connectWorkspaceStream(
     });
 
     ws.addEventListener("message", (ev) => {
+      if (replayPending) return;
       const page = parsePage(ev.data);
       if (!page) return;
       const fresh = page.events.filter((event) => event.id > cursor);
@@ -97,7 +99,8 @@ export function connectWorkspaceStream(
       opts.onEvents(fresh);
       // The server sends one page per socket. A full page means older rows
       // remain; reconnect from the new cursor instead of waiting for live frames.
-      if (fresh.length >= MAX_EVENT_PAGE) {
+      if (fresh.length >= EVENT_PAGE_SIZE) {
+        replayPending = true;
         ws.close();
       }
     });

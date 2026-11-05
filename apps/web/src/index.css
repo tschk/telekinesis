@@ -356,6 +356,39 @@ body {
   text-align: center;
 }
 
+.tk-diff__summary {
+  margin: 0 0 var(--tk-space-2);
+  color: var(--tk-muted);
+  font-size: 0.8125rem;
+}
+
+.tk-diff__nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tk-space-2);
+  max-height: 120px;
+  overflow: auto;
+  margin-bottom: var(--tk-space-2);
+}
+
+.tk-diff__nav button {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tk-diff__log .tk-log__line {
+  display: block;
+  margin: 0;
+  white-space: pre;
+}
+
+.tk-diff__log .tk-log__line--ok { color: var(--tk-success); }
+.tk-diff__log .tk-log__line--danger { color: var(--tk-danger); }
+.tk-diff__log .tk-log__line--warn { color: var(--tk-warn); }
+
 .tk-hint {
   margin: 0 0 var(--tk-space-3);
   color: var(--tk-muted);

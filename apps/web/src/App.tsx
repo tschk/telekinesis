@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   connectWorkspaceStream,
   createWorkspace,
@@ -57,7 +57,18 @@ export default function App() {
   const [steer, setSteer] = useState("");
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
-  const streamRef = useRef<ReturnType<typeof connectWorkspaceStream> | null>(null);
+  const selectedRef = useRef(selectedId);
+  useLayoutEffect(() => {
+    selectedRef.current = selectedId;
+    return () => { selectedRef.current = null; };
+  }, [selectedId]);
+  const [stateWorkspace, setStateWorkspace] = useState(selectedId);
+  if (stateWorkspace !== selectedId) {
+    setStateWorkspace(selectedId);
+    setPendingApproval(null);
+    setDiff(null);
+    setStreamStatus(null);
+  }
 
   const appendLog = useCallback((text: string, tone?: LogLine["tone"]) => {
     setLines((prev) => [
@@ -117,18 +128,18 @@ export default function App() {
   }, [refreshWorkspaces]);
 
   useEffect(() => {
-    if (!selectedId) {
-      setStreamStatus(null);
-      return;
-    }
+    if (!selectedId) return;
     const seen = new Set<number>();
+    const controller = new AbortController();
+    const isCurrent = () => !controller.signal.aborted && selectedRef.current === selectedId;
     const stream = connectWorkspaceStream({
       baseUrl: (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim()
         || "http://127.0.0.1:8787",
       workspaceId: selectedId,
-      onStatus: setStreamStatus,
-      onUnavailable: () => setStreamStatus("unavailable"),
+      onStatus: (status) => { if (isCurrent()) setStreamStatus(status); },
+      onUnavailable: () => { if (isCurrent()) setStreamStatus("unavailable"); },
       onEvents: (events) => {
+        if (!isCurrent()) return;
         for (const event of events) {
           if (seen.has(event.id)) continue;
           seen.add(event.id);
@@ -148,10 +159,9 @@ export default function App() {
         }
       },
     });
-    streamRef.current = stream;
     return () => {
+      controller.abort();
       stream.close();
-      streamRef.current = null;
     };
   }, [selectedId, appendLog]);
 
@@ -282,11 +292,6 @@ export default function App() {
                 className="tk-prompt"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  const text = steer.trim();
-                  if (!text) return;
-                  streamRef.current?.send("steer", { text });
-                  appendLog(`steer ${text}`, "warn");
-                  setSteer("");
                 }}
               >
                 <input
@@ -295,35 +300,15 @@ export default function App() {
                   placeholder="Steer the running session…"
                   onChange={(e) => setSteer(e.target.value)}
                 />
+                <Button disabled>Steer unavailable</Button>
+                <p className="tk-hint">Remote steering is unavailable.</p>
               </form>
             ) : null}
             {pendingApproval ? (
               <div className="tk-prompt__footer">
-                <Button
-                  onClick={() => {
-                    streamRef.current?.send("approval_response", {
-                      id: pendingApproval,
-                      approved: true,
-                    });
-                    appendLog(`approved ${pendingApproval}`, "ok");
-                    setPendingApproval(null);
-                  }}
-                >
-                  Approve
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    streamRef.current?.send("approval_response", {
-                      id: pendingApproval,
-                      approved: false,
-                    });
-                    appendLog(`denied ${pendingApproval}`, "danger");
-                    setPendingApproval(null);
-                  }}
-                >
-                  Deny
-                </Button>
+                <p className="tk-hint">Approval {pendingApproval}: remote approval is unavailable.</p>
+                <Button disabled>Approve</Button>
+                <Button variant="ghost" disabled>Deny</Button>
               </div>
             ) : null}
             {error ? <p className="tk-error">{error}</p> : null}

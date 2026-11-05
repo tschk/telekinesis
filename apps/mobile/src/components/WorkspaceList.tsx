@@ -1,4 +1,4 @@
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { WorkspaceMeta } from '../api/tkCloud';
 import { Panel } from './Panel';
 import { StatusBadge, type BadgeTone } from './StatusBadge';
@@ -9,6 +9,8 @@ type Props = {
   loading: boolean;
   note: string | null;
   error: string | null;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
 };
 
 function statusTone(status: string): BadgeTone {
@@ -19,7 +21,7 @@ function statusTone(status: string): BadgeTone {
   return 'muted';
 }
 
-export function WorkspaceList({ workspaces, loading, note, error }: Props) {
+export function WorkspaceList({ workspaces, loading, note, error, selectedId, onSelect }: Props) {
   return (
     <Panel title="Workspaces" accessibilityLabel="Workspaces">
       {note ? (
@@ -36,12 +38,14 @@ export function WorkspaceList({ workspaces, loading, note, error }: Props) {
         loading={loading}
         note={note}
         error={error}
+        selectedId={selectedId}
+        onSelect={onSelect}
       />
     </Panel>
   );
 }
 
-function WorkspaceBody({ workspaces, loading, note, error }: Props) {
+function WorkspaceBody({ workspaces, loading, note, error, selectedId, onSelect }: Props) {
   if (loading && workspaces.length === 0) {
     return (
       <View style={styles.empty} accessibilityLabel="Loading workspaces">
@@ -70,16 +74,19 @@ function WorkspaceBody({ workspaces, loading, note, error }: Props) {
   return (
     <View style={styles.list} accessibilityRole="list">
       {workspaces.map((w) => (
-        <View
+        <Pressable
           key={w.id}
-          style={styles.wsCard}
-          accessibilityRole="summary"
+          style={[styles.wsCard, w.id === selectedId && styles.wsCardSelected]}
+          onPress={() => onSelect(w.id)}
+          accessibilityRole="button"
+          accessibilityState={{ selected: w.id === selectedId }}
           accessibilityLabel={`Workspace ${w.name || w.id}, tier ${w.tier}, status ${w.status}`}
         >
           <View style={styles.wsRow}>
             <Text style={styles.wsName}>{w.name || w.id}</Text>
             <StatusBadge tone={statusTone(w.status)} label={w.status} />
           </View>
+          {w.id === selectedId ? <Text style={styles.selected}>Selected</Text> : null}
           <View style={styles.wsMeta}>
             <Text style={styles.metaText}>{w.tier}</Text>
             <Text style={styles.sep}>·</Text>
@@ -88,7 +95,7 @@ function WorkspaceBody({ workspaces, loading, note, error }: Props) {
             </Text>
           </View>
           <Text style={styles.wsId}>{w.id}</Text>
-        </View>
+        </Pressable>
       ))}
     </View>
   );
@@ -121,6 +128,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: colors.tkSpace3,
     gap: colors.tkSpace1,
+  },
+  wsCardSelected: {
+    borderColor: colors.tkAccent,
+  },
+  selected: {
+    ...fontSans,
+    color: colors.tkAccent,
+    fontSize: 12,
   },
   wsRow: {
     flexDirection: 'row',

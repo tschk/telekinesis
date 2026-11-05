@@ -190,6 +190,8 @@ export default function App() {
           loading={loading}
           note={listNote}
           error={error}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
         />
       </ScrollView>
     </SafeAreaView>

@@ -116,27 +116,44 @@ describe("connectWorkspaceStream", () => {
     vi.useRealTimers();
   });
 
-  it("reconnects immediately when a page is full so the rest of the log is not skipped", () => {
+  it("replays all pages before applying a live event, including frames from the closing socket", () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];
-    connectWorkspaceStream({
+    const seen: number[] = [];
+    const stream = connectWorkspaceStream({
       baseUrl: "http://127.0.0.1:8787",
       workspaceId: "abc",
       WebSocket: FakeSocket as unknown as typeof WebSocket,
-      onEvents: () => {},
+      onEvents: (events) => seen.push(...events.map((event) => event.id)),
     });
     const first = FakeSocket.instances[0]!;
-    const events = Array.from({ length: 500 }, (_, i) => ({
+    const events = Array.from({ length: 451 }, (_, i) => ({
       id: i + 1,
       ts: "t",
       kind: "message",
       payload: { content: String(i + 1) },
     }));
     first.emit("open");
-    first.emit("message", JSON.stringify({ events, latest: 500 }));
+    first.emit("message", JSON.stringify({ events: events.slice(0, 200), latest: 200 }));
     expect(first.closed).toBe(true);
+    first.emit("message", JSON.stringify({ events: [events[450]], latest: 451 }));
+    expect(stream.cursor()).toBe(200);
     vi.advanceTimersByTime(500);
-    expect(FakeSocket.instances[1]?.url).toContain("after=500");
+    const second = FakeSocket.instances[1]!;
+    expect(second.url).toContain("after=200");
+    second.emit("open");
+    second.emit("message", JSON.stringify({ events: events.slice(200, 400), latest: 400 }));
+    expect(second.closed).toBe(true);
+    vi.advanceTimersByTime(500);
+    const third = FakeSocket.instances[2]!;
+    expect(third.url).toContain("after=400");
+    third.emit("open");
+    third.emit("message", JSON.stringify({ events: events.slice(400, 451), latest: 451 }));
+    const live = { id: 452, ts: "t", kind: "message", payload: {} };
+    third.emit("message", JSON.stringify({ events: [live], latest: 452 }));
+    expect(seen).toEqual(Array.from({ length: 452 }, (_, i) => i + 1));
+    expect(stream.cursor()).toBe(452);
+    stream.close();
     vi.useRealTimers();
   });
 

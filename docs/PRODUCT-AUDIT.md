@@ -10,32 +10,28 @@ and exercise each flow before choosing an implementation.
   and todo state together, and rejects resume while the agent is busy. The
   shutdown path in `ui/tui/src/tui.rs` still discards final save errors. Report
   those errors instead of silently losing buffered entries.
-- `apps/stream/workspaceStream.ts` queues controls in memory, and closing the
-  stream drops the queue. The apps clear controls before the server confirms
-  them. Define server acknowledgement and retry semantics before presenting
-  an approval or steering request as delivered.
-- Desktop's `apps/desktop/src/lib/cloudApi.ts` falls back to mock workspaces
-  on list failures. Real controls can use the selected workspace ID. Separate
-  disconnected and demo states so mock data is never mistaken for cloud data.
-- Web and mobile keep approval and diff state across stream changes. Scope
-  these to the workspace and show its identity with every approval. Mobile's
-  `FutureTabs.tsx` examines only the last event in each received batch.
+- The apps disable remote steering and approval responses. The inspected cloud
+  server records these events but has no agent consumer or correlated result.
+  Add an idempotent command protocol and an agent consumer before enabling
+  controls. An event-log echo alone does not prove that the agent acted.
+- Desktop reports workspace-list failures as unavailable instead of selecting
+  mock workspace IDs for real cloud actions.
+- Web, desktop, and mobile scope approval and diff state to the workspace.
+  Mobile processes every event in a batch. The stream client reconnects after
+  the server's 200-event replay page instead of skipping older events.
 
 ## More capable workflows
 
-- Make sessions searchable by prompt, model, and date, with pagination and
-  explicit directory errors. `session_files` currently returns at most 20.
-  A useful next step is branching from a chosen point in a session, using the
-  existing pi session support rather than another agent loop.
+- `/sessions [query]` searches prompt text, model, and filename among the 20
+  most recent sessions. Add date filtering, pagination, and explicit directory
+  errors. Branching from a chosen point can use the existing pi session support.
 - Rank memory matches by exact phrase and query coverage before applying the
   result limit. `ui/tui/src/memory.rs` currently stops after eight substring
   hits, before inspecting all notes.
-- Turn the shared diff parser in `apps/stream/diffView.ts` into a review view
-  with file and hunk navigation, change counts, and approval context. Desktop
-  and mobile currently render raw diff text.
-- Let mobile users select an existing workspace and navigate real status,
-  steering, diff, and approval views. Its workspace list is currently not a
-  selection control, and the tab labels are disabled.
+- Web diff review has file and hunk navigation and change counts. Add approval
+  context and bring the review view to desktop and mobile, which render raw text.
+- Mobile users can select an existing workspace. Build real status, steering,
+  diff, and approval views; the current tab labels are disabled.
 - Connect desktop local sessions to the shared host runtime. Its local session,
   terminal, and browser panes are placeholders; starting a CLI process alone
   does not provide session discovery or reconnectable interaction.

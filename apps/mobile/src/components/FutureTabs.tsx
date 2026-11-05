@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { connectWorkspaceStream, eventText, type WorkspaceStream } from '../api/tkCloud';
+import { connectWorkspaceStream, eventText } from '../api/tkCloud';
 import { diffFromEvent } from '@tk/diff-view';
 import { colors, fontSans } from '../theme';
 
@@ -18,39 +18,56 @@ export function FutureTabs({ workspaceId, baseUrl }: Props) {
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
   const [lastEvent, setLastEvent] = useState<string | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
-  const streamRef = useRef<WorkspaceStream | null>(null);
+  const identityRef = useRef({ workspaceId, baseUrl });
+  useLayoutEffect(() => {
+    identityRef.current = { workspaceId, baseUrl };
+    return () => { identityRef.current = { workspaceId: null, baseUrl: undefined }; };
+  }, [workspaceId, baseUrl]);
+  const [stateIdentity, setStateIdentity] = useState({ workspaceId, baseUrl });
+  if (stateIdentity.workspaceId !== workspaceId || stateIdentity.baseUrl !== baseUrl) {
+    setStateIdentity({ workspaceId, baseUrl });
+    setPendingApproval(null);
+    setDiff(null);
+    setLastEvent(null);
+    setStreamStatus(null);
+  }
 
   useEffect(() => {
     if (!workspaceId || !baseUrl) {
       setStreamStatus(null);
       return;
     }
+    let active = true;
+    const isCurrent = () => active && identityRef.current.workspaceId === workspaceId
+      && identityRef.current.baseUrl === baseUrl;
     const stream = connectWorkspaceStream({
       baseUrl,
       workspaceId,
-      onStatus: setStreamStatus,
-      onUnavailable: () => setStreamStatus('unavailable'),
+      onStatus: (status) => { if (isCurrent()) setStreamStatus(status); },
+      onUnavailable: () => { if (isCurrent()) setStreamStatus('unavailable'); },
       onEvents: (events) => {
+        if (!isCurrent()) return;
         const last = events.at(-1);
         if (!last) return;
         setLastEvent(eventText(last) ?? last.kind);
-        const patch = diffFromEvent(last);
-        if (patch) setDiff(patch);
-        if (last.kind === 'approval_requested') {
-          const payload = last.payload;
-          const id =
-            payload && typeof payload === 'object' && 'id' in payload
-            && typeof payload.id === 'string'
-              ? payload.id
-              : String(last.id);
-          setPendingApproval(id);
+        for (const event of events) {
+          const patch = diffFromEvent(event);
+          if (patch) setDiff(patch);
+          if (event.kind === 'approval_requested') {
+            const payload = event.payload;
+            const id =
+              payload && typeof payload === 'object' && 'id' in payload
+              && typeof payload.id === 'string'
+                ? payload.id
+                : String(event.id);
+            setPendingApproval(id);
+          }
         }
       },
     });
-    streamRef.current = stream;
     return () => {
+      active = false;
       stream.close();
-      streamRef.current = null;
     };
   }, [workspaceId, baseUrl]);
 
@@ -91,31 +108,21 @@ export function FutureTabs({ workspaceId, baseUrl }: Props) {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Send steer"
-            disabled={!steer.trim()}
-            onPress={() => {
-              const text = steer.trim();
-              if (!text) return;
-              streamRef.current?.send('steer', { text });
-              setSteer('');
-            }}
+            disabled
             style={styles.steerButton}
           >
             <Text style={styles.steerButtonText}>Steer</Text>
           </Pressable>
         </View>
       ) : null}
+      {workspaceId ? <Text style={styles.hint}>Remote steering is unavailable.</Text> : null}
       {pendingApproval ? (
         <View style={styles.steerRow}>
+          <Text style={styles.hint}>Approval {pendingApproval}: remote approval is unavailable.</Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Approve"
-            onPress={() => {
-              streamRef.current?.send('approval_response', {
-                id: pendingApproval,
-                approved: true,
-              });
-              setPendingApproval(null);
-            }}
+            disabled
             style={styles.steerButton}
           >
             <Text style={styles.steerButtonText}>Approve</Text>
@@ -123,13 +130,7 @@ export function FutureTabs({ workspaceId, baseUrl }: Props) {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Deny"
-            onPress={() => {
-              streamRef.current?.send('approval_response', {
-                id: pendingApproval,
-                approved: false,
-              });
-              setPendingApproval(null);
-            }}
+            disabled
             style={styles.steerButton}
           >
             <Text style={styles.steerButtonText}>Deny</Text>

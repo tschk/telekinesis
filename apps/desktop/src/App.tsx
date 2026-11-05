@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AppShell,
@@ -36,7 +36,7 @@ function App() {
   const [mode, setMode] = useState<HostMode>("local");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [listSource, setListSource] = useState<"api" | "mock" | null>(null);
+  const [listSource, setListSource] = useState<"api" | "unavailable" | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [localStatus, setLocalStatus] = useState<string>(
@@ -53,9 +53,11 @@ function App() {
   const [healthError, setHealthError] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [steer, setSteer] = useState("");
-  const [pendingApproval, setPendingApproval] = useState<string | null>(null);
-  const [diff, setDiff] = useState<string | null>(null);
-  const streamRef = useRef<ReturnType<typeof connectWorkspaceStream> | null>(null);
+  const [streamDetails, setStreamDetails] = useState<{
+    workspaceId: string;
+    pendingApproval: string | null;
+    diff: string | null;
+  } | null>(null);
 
   const refreshHealth = useCallback(async () => {
     const result = await getHealth();
@@ -103,21 +105,31 @@ function App() {
   useEffect(() => {
     if (mode !== "cloud" || !selectedId) {
       setStreamStatus(null);
+      setStreamDetails(null);
       return;
     }
+    let active = true;
+    setStreamDetails({ workspaceId: selectedId, pendingApproval: null, diff: null });
     const seen = new Set<number>();
     const stream = connectWorkspaceStream({
       baseUrl: cloudApiBase(),
       workspaceId: selectedId,
-      onStatus: setStreamStatus,
-      onUnavailable: () => setStreamStatus("unavailable"),
+      onStatus: (status) => {
+        if (active) setStreamStatus(status);
+      },
+      onUnavailable: () => {
+        if (active) setStreamStatus("unavailable");
+      },
       onEvents: (events) => {
+        if (!active) return;
         const rows = events.map((event) => {
           if (seen.has(event.id)) return null;
           seen.add(event.id);
           const text = eventText(event);
           const patch = diffFromEvent(event);
-          if (patch) setDiff(patch);
+          if (patch) setStreamDetails((prev) => prev?.workspaceId === selectedId
+            ? { ...prev, diff: patch }
+            : prev);
           if (event.kind === "approval_requested") {
             const payload = event.payload;
             const id =
@@ -125,7 +137,9 @@ function App() {
               && typeof payload.id === "string"
                 ? payload.id
                 : String(event.id);
-            setPendingApproval(id);
+            setStreamDetails((prev) => prev?.workspaceId === selectedId
+              ? { ...prev, pendingApproval: id }
+              : prev);
           }
           return text
             ? `${event.kind} #${event.id} ${text}`
@@ -135,10 +149,9 @@ function App() {
         setLogLines((prev) => [...prev, ...rows]);
       },
     });
-    streamRef.current = stream;
     return () => {
+      active = false;
       stream.close();
-      streamRef.current = null;
     };
   }, [mode, selectedId]);
 
@@ -216,6 +229,9 @@ function App() {
   }
 
   const selected = workspaces.find((w) => w.id === selectedId) ?? null;
+  const details = mode === "cloud" && streamDetails?.workspaceId === selectedId
+    ? streamDetails
+    : null;
 
   const healthLabel =
     health?.ok === true
@@ -376,7 +392,7 @@ function App() {
               <code>GET/POST /v1/workspaces</code>,{" "}
               <code>POST …/exec</code>). Point{" "}
               <code>VITE_TK_CLOUD_API</code> at wrangler dev. Empty list from API
-              is valid; mock fallback only on network/HTTP failure.
+              is valid; failures are shown without mock workspaces.
             </p>
             {selected ? (
               <div className="tk-status-line">
@@ -396,11 +412,6 @@ function App() {
               className="tk-create-ws"
               onSubmit={(e) => {
                 e.preventDefault();
-                const text = steer.trim();
-                if (!text) return;
-                streamRef.current?.send("steer", { text });
-                setLogLines((prev) => [...prev, `steer ${text}`]);
-                setSteer("");
               }}
             >
               <input
@@ -410,38 +421,22 @@ function App() {
                 placeholder="Steer the running session"
                 disabled={!selected}
               />
-              <Button type="submit" disabled={!selected || !steer.trim()}>
+              <Button type="submit" disabled>
                 Steer
               </Button>
             </form>
-            {pendingApproval ? (
-              <div className="tk-prompt__actions">
-                <Button
-                  onClick={() => {
-                    streamRef.current?.send("approval_response", {
-                      id: pendingApproval,
-                      approved: true,
-                    });
-                    setLogLines((prev) => [...prev, `approved ${pendingApproval}`]);
-                    setPendingApproval(null);
-                  }}
-                >
-                  Approve
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    streamRef.current?.send("approval_response", {
-                      id: pendingApproval,
-                      approved: false,
-                    });
-                    setLogLines((prev) => [...prev, `denied ${pendingApproval}`]);
-                    setPendingApproval(null);
-                  }}
-                >
-                  Deny
-                </Button>
-              </div>
+            <p className="tk-hint">
+              Cloud steering and approval responses are unavailable: events are
+              stored, but no agent consumer or correlated acknowledgment is available.
+            </p>
+            {details?.pendingApproval ? (
+              <>
+                <p className="tk-hint">Approval requested: {details.pendingApproval}</p>
+                <div className="tk-prompt__actions">
+                  <Button disabled>Approve</Button>
+                  <Button variant="ghost" disabled>Deny</Button>
+                </div>
+              </>
             ) : null}
             <h3 className="tk-section-label">
               Log{streamStatus ? ` · ${streamStatus}` : ""}
@@ -453,8 +448,8 @@ function App() {
         <div className="tk-placeholder-grid">
           <div className="tk-placeholder">Terminal pane stub</div>
           <div className="tk-log" role="region" aria-label="Workspace diff">
-            {diff ? (
-              <pre className="tk-log__body">{diff}</pre>
+            {details?.diff ? (
+              <pre className="tk-log__body">{details.diff}</pre>
             ) : (
               <div className="tk-log__empty">No diff in the session yet.</div>
             )}
