@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  ApiHttpError,
   connectWorkspaceStream,
   createWorkspace,
   eventText,
@@ -50,7 +51,7 @@ export default function App() {
   const [createName, setCreateName] = useState("");
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [listSource, setListSource] = useState<"api" | "local" | null>(null);
+  const [listSource, setListSource] = useState<"api" | "local" | "denied" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
@@ -58,6 +59,7 @@ export default function App() {
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const selectedRef = useRef(selectedId);
+  const workspaceRefresh = useRef(0);
   useLayoutEffect(() => {
     selectedRef.current = selectedId;
     return () => { selectedRef.current = null; };
@@ -77,25 +79,50 @@ export default function App() {
     ]);
   }, []);
 
+  const showAccessFailure = useCallback((err: unknown) => {
+    if (!(err instanceof ApiHttpError) || (err.status !== 401 && err.status !== 403)) {
+      return false;
+    }
+    workspaceRefresh.current += 1;
+    selectedRef.current = null;
+    setSelectedId(null);
+    setWorkspaces([]);
+    setListSource("denied");
+    setLines([]);
+    setError(err.status === 401
+      ? "Authentication required (401). Sign-in is not yet available in this app."
+      : "Access denied (403). Your account does not have permission to access this resource.");
+    return true;
+  }, []);
+
   const refreshWorkspaces = useCallback(async () => {
+    const generation = ++workspaceRefresh.current;
     setError(null);
     try {
       const listed = await listWorkspaces();
+      if (generation !== workspaceRefresh.current) return;
       setWorkspaces(listed);
       await syncWorkspaceIds(listed.map((w) => w.id));
+      if (generation !== workspaceRefresh.current) return;
       setListSource("api");
       setSelectedId((cur) => cur ?? listed[0]?.id ?? null);
       return;
-    } catch {
+    } catch (err) {
+      if (generation !== workspaceRefresh.current) return;
+      if (showAccessFailure(err)) return;
       // list not ready / offline — fall back to localStorage ids
     }
 
     const ids = await loadWorkspaceIds();
+    if (generation !== workspaceRefresh.current) return;
     const metas: WorkspaceMeta[] = [];
     for (const id of ids) {
       try {
         metas.push(await getWorkspace(id));
+        if (generation !== workspaceRefresh.current) return;
       } catch (err) {
+        if (generation !== workspaceRefresh.current) return;
+        if (showAccessFailure(err)) return;
         metas.push({
           id,
           name: id,
@@ -109,7 +136,7 @@ export default function App() {
     setWorkspaces(metas);
     setListSource("local");
     setSelectedId((cur) => cur ?? metas[0]?.id ?? null);
-  }, []);
+  }, [showAccessFailure]);
 
   useEffect(() => {
     let cancelled = false;
@@ -117,15 +144,18 @@ export default function App() {
       try {
         await getHealth();
         if (!cancelled) setHealthOk(true);
-      } catch {
-        if (!cancelled) setHealthOk(false);
+      } catch (err) {
+        if (!cancelled) {
+          setHealthOk(false);
+          if (showAccessFailure(err)) return;
+        }
       }
       if (!cancelled) await refreshWorkspaces();
     })();
     return () => {
       cancelled = true;
     };
-  }, [refreshWorkspaces]);
+  }, [refreshWorkspaces, showAccessFailure]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -186,11 +216,13 @@ export default function App() {
       setSelectedId(meta.id);
       appendLog(`Created workspace ${meta.id} (${meta.name})`, "ok");
       // Prefer re-sync via list when available
-      void refreshWorkspaces().then(() => setSelectedId(meta.id));
+      void refreshWorkspaces();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      appendLog(`Create failed: ${msg}`, "danger");
+      if (!showAccessFailure(err)) {
+        setError(msg);
+        appendLog(`Create failed: ${msg}`, "danger");
+      }
     } finally {
       setCreating(false);
     }
@@ -218,8 +250,10 @@ export default function App() {
       appendLog(body, result.ok ? "ok" : "danger");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      appendLog(`Prompt failed: ${msg}`, "danger");
+      if (!showAccessFailure(err)) {
+        setError(msg);
+        appendLog(`Prompt failed: ${msg}`, "danger");
+      }
     } finally {
       setBusy(false);
     }
@@ -242,6 +276,8 @@ export default function App() {
                 ? "Loaded from GET /v1/workspaces"
                 : listSource === "local"
                   ? "List API unavailable — using localStorage ids"
+                  : listSource === "denied"
+                    ? "Workspace access denied"
                   : "Loading…"}
             </p>
             <div className="tk-create">
@@ -258,7 +294,7 @@ export default function App() {
               </Button>
             </div>
             <div className="tk-wlist">
-              {workspaces.length === 0 ? (
+              {workspaces.length === 0 && listSource !== "denied" ? (
                 <p className="tk-hint">No workspaces yet. Create one to start.</p>
               ) : (
                 workspaces.map((w) => (
@@ -311,7 +347,7 @@ export default function App() {
                 <Button variant="ghost" disabled>Deny</Button>
               </div>
             ) : null}
-            {error ? <p className="tk-error">{error}</p> : null}
+            {error ? <p className="tk-error" role="alert">{error}</p> : null}
           </Panel>
 
           <Panel title={streamStatus ? `Log · ${streamStatus}` : "Log"}>

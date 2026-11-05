@@ -42,6 +42,21 @@ Env:
 - Prompt → agent + log (`POST /v1/workspaces/:id/prompt`)
 - Diff pane stub, billing portal link stub
 
+### Authentication and workspace fallback
+
+The companion does not yet provide sign-in. Previously, a 401 or 403 from
+the workspace API was treated as an unavailable list and cached workspace IDs
+were shown instead. Authorization failures now clear the active workspace view
+and are shown explicitly; the cached-ID fallback remains for other failures.
+This does not add authentication or server-side authorization.
+
+Same-origin hosting is a candidate for the eventual sign-in flow, but is not
+configured for this companion. tk-cloud's Worker already serves its own portal
+assets and API together; replacing those assets would replace that portal.
+The companion's Pages configuration has no API proxy, and its API base defaults
+to localhost. A separate path or hostname needs its own routing and asset build
+before the companion can use same-origin sessions.
+
 ### Prompt endpoint + exec fallback
 
 `PromptBox` submits via `promptWorkspace()` in `src/api/client.ts`:
