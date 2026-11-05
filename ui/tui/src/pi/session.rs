@@ -498,6 +498,19 @@ mod tests {
     }
 
     #[test]
+    fn saved_session_rejects_truncation_at_entry_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let mut session = PiSession::new("/test/project", "gpt-5.5");
+        session.append_message(Role::User, "first");
+        session.append_message(Role::Assistant, "second");
+        let path = session.save_jsonl(tmp.path()).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let prefix = content.split_inclusive('\n').take(2).collect::<String>();
+        std::fs::write(&path, prefix).unwrap();
+        assert!(PiSession::load_jsonl(&path).is_err());
+    }
+
+    #[test]
     fn todo_state_round_trips_through_the_session() {
         let tmp = TempDir::new().unwrap();
         let mut s = PiSession::new("/test/project", "gpt-5.5");
