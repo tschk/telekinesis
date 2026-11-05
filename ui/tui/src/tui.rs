@@ -340,6 +340,9 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     app.mcp_connecting = false;
     #[cfg(feature = "pi-compat")]
     {
+        let load_status = loaded_session
+            .as_ref()
+            .map(|session| format!("Session load status: {}", session.integrity_status()));
         app.messages = loaded_session
             .as_ref()
             .map(restored_chat)
@@ -359,7 +362,12 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
             }),
             session_dir,
         ));
-        app.persist()?;
+        if load_status.is_none() {
+            app.persist()?;
+        }
+        if let Some(status) = load_status {
+            push_system_message(&mut app, status);
+        }
     }
     app.providers = providers
         .into_iter()

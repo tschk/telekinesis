@@ -3224,6 +3224,10 @@ mod tests {
             .messages
             .iter()
             .any(|message| message.content == "saved message"));
+        assert!(app
+            .messages
+            .iter()
+            .any(|message| message.content.contains("load status: verified")));
         assert_eq!(app.todos.items[0].content, "saved todo");
         let guard = agent.try_lock().unwrap();
         assert_eq!(guard.messages.read().len(), 1);

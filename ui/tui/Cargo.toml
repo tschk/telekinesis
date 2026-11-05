@@ -53,6 +53,6 @@ tracing = "0.1"
 parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
-
-[dev-dependencies]
+sha2 = "0.10"
 tempfile = "3"
+fs2 = "0.4"

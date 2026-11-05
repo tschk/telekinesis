@@ -6,10 +6,49 @@
 //! - Format: JSON Lines (header + entries)
 
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use rx4::provider::{Message, Role};
 use rx4::TodoState;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+
+const MAX_SESSION_BYTES: usize = 10 * 1024 * 1024;
+
+#[derive(Serialize, Deserialize)]
+struct SessionCheckpoint {
+    version: u32,
+    entries: usize,
+    bytes: u64,
+    sha256: String,
+}
+
+fn checkpoint_path(path: &Path) -> PathBuf {
+    path.with_extension("jsonl.integrity")
+}
+
+fn lock_session(path: &Path, exclusive: bool) -> std::io::Result<std::fs::File> {
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.with_extension("jsonl.lock"))?;
+    if exclusive {
+        FileExt::lock_exclusive(&lock)?;
+    } else {
+        FileExt::lock_shared(&lock)?;
+    }
+    Ok(lock)
+}
+
+fn checksum(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn invalid_data(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
+}
 
 /// Custom-entry extension name for tool calls appended by the TUI.
 pub const TOOL_CALL_EXTENSION: &str = "telekinesis.tool_call";
@@ -97,6 +136,10 @@ pub struct PiSession {
     next_id: u64,
     persisted_entries: usize,
     persisted_bytes: u64,
+    persisted_hash: Option<String>,
+    persisted_path: Option<PathBuf>,
+    integrity_status: &'static str,
+    can_append: bool,
 }
 
 impl PiSession {
@@ -107,7 +150,16 @@ impl PiSession {
             next_id: 1,
             persisted_entries: 0,
             persisted_bytes: 0,
+            persisted_hash: None,
+            persisted_path: None,
+            integrity_status: "unverified-legacy",
+            can_append: true,
         }
+    }
+
+    /// Integrity of the snapshot that was loaded, before any subsequent save.
+    pub fn integrity_status(&self) -> &'static str {
+        self.integrity_status
     }
 
     pub fn append(&mut self, entry_type: PiEntryType) -> u64 {
@@ -191,62 +243,144 @@ impl PiSession {
         ))
     }
 
-    /// Save as JSONL v3 (header on first line, entries follow).
-    ///
-    /// Appends only the entries written since the last successful save. Falls
-    /// back to a full atomic rewrite when the file is missing, was truncated or
-    /// rewritten behind our back, or the watermark no longer matches.
+    /// Save JSONL entries by appending, then atomically publish their checkpoint.
     pub fn save_jsonl(&mut self, dir: &Path) -> std::io::Result<std::path::PathBuf> {
         use std::io::Write;
 
+        if !self.can_append {
+            return Err(invalid_data(
+                "legacy session contains incomplete or unsupported records; refusing to append",
+            ));
+        }
         std::fs::create_dir_all(dir)?;
-        let path = self.jsonl_path(dir);
-
-        let appendable = self.persisted_entries <= self.entries.len()
-            && self.persisted_bytes > 0
-            && std::fs::metadata(&path)
-                .map(|m| m.len() == self.persisted_bytes)
-                .unwrap_or(false);
-
-        if appendable {
-            let mut added = String::new();
-            for entry in &self.entries[self.persisted_entries..] {
-                added.push_str(&serde_json::to_string(entry).unwrap());
-                added.push('\n');
+        let path = self
+            .persisted_path
+            .clone()
+            .unwrap_or_else(|| self.jsonl_path(dir));
+        let _lock = lock_session(&path, true)?;
+        let existing = if let Some(expected) = &self.persisted_hash {
+            let content = std::fs::read(&path)?;
+            if content.len() as u64 != self.persisted_bytes || checksum(&content) != *expected {
+                return Err(invalid_data(
+                    "session changed since it was loaded; refusing to overwrite it",
+                ));
             }
-            if added.is_empty() {
-                return Ok(path);
-            }
-            let mut file = std::fs::OpenOptions::new().append(true).open(&path)?;
-            file.write_all(added.as_bytes())?;
-            file.sync_all()?;
-            self.persisted_entries = self.entries.len();
-            self.persisted_bytes += added.len() as u64;
-            return Ok(path);
+            content
+        } else {
+            Vec::new()
+        };
+        if self.persisted_entries > self.entries.len() {
+            return Err(invalid_data(
+                "session entries were removed; refusing to overwrite the saved file",
+            ));
         }
+        let mut added = Vec::new();
+        if self.persisted_hash.is_none() {
+            serde_json::to_writer(&mut added, &self.header)?;
+            added.push(b'\n');
+        }
+        for entry in &self.entries[self.persisted_entries..] {
+            serde_json::to_writer(&mut added, entry)?;
+            added.push(b'\n');
+        }
+        if existing.len().saturating_add(added.len()) > MAX_SESSION_BYTES {
+            return Err(invalid_data("session exceeds the 10 MiB size limit"));
+        }
+        let mut content = existing;
+        content.extend_from_slice(&added);
+        let hash = checksum(&content);
+        let checkpoint = SessionCheckpoint {
+            version: 1,
+            entries: self.entries.len(),
+            bytes: content.len() as u64,
+            sha256: hash.clone(),
+        };
+        let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap_or(dir))?;
+        serde_json::to_writer(&mut temporary, &checkpoint)?;
+        temporary.write_all(b"\n")?;
+        temporary.as_file().sync_all()?;
 
-        let mut content = String::new();
-        content.push_str(&serde_json::to_string(&self.header).unwrap());
-        content.push('\n');
-        for entry in &self.entries {
-            content.push_str(&serde_json::to_string(entry).unwrap());
-            content.push('\n');
-        }
-        let temporary = path.with_extension("jsonl.tmp");
-        {
-            let mut file = std::fs::File::create(&temporary)?;
-            file.write_all(content.as_bytes())?;
+        let new_file = self.persisted_hash.is_none();
+        let mut file = if new_file {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?
+        } else {
+            std::fs::OpenOptions::new().append(true).open(&path)?
+        };
+        let result = (|| {
+            file.write_all(&added)?;
             file.sync_all()?;
+            temporary
+                .persist(checkpoint_path(&path))
+                .map_err(|error| error.error)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            if new_file {
+                drop(file);
+                let _ = std::fs::remove_file(&path);
+            } else if file
+                .set_len(self.persisted_bytes)
+                .and_then(|()| file.sync_all())
+                .is_err()
+            {
+                return Err(invalid_data(format!("session save failed ({error}); rollback failed, do not resume without inspecting the file")));
+            }
+            return Err(error);
         }
-        std::fs::rename(temporary, &path)?;
         self.persisted_entries = self.entries.len();
         self.persisted_bytes = content.len() as u64;
+        self.persisted_hash = Some(hash);
+        self.persisted_path = Some(path.clone());
+        #[cfg(unix)]
+        std::fs::File::open(path.parent().unwrap_or(dir))?.sync_all()?;
         Ok(path)
     }
 
     /// Load a JSONL v3 session file.
     pub fn load_jsonl(path: &Path) -> std::io::Result<Self> {
-        let content = std::fs::read_to_string(path)?;
+        use std::io::Read;
+        let _lock = lock_session(path, false)?;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take((MAX_SESSION_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_SESSION_BYTES {
+            return Err(invalid_data("session exceeds the 10 MiB size limit"));
+        }
+        let checkpoint = match std::fs::read(checkpoint_path(path)) {
+            Ok(bytes) => Some(
+                serde_json::from_slice::<SessionCheckpoint>(&bytes)
+                    .map_err(|e| invalid_data(format!("invalid session checkpoint: {e}")))?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let hash = checksum(&bytes);
+        if let Some(checkpoint) = &checkpoint {
+            if checkpoint.version != 1 {
+                return Err(invalid_data("unsupported session checkpoint version"));
+            }
+            if (bytes.len() as u64) < checkpoint.bytes {
+                let records = bytes
+                    .iter()
+                    .filter(|byte| **byte == b'\n')
+                    .count()
+                    .saturating_sub(1);
+                return Err(invalid_data(format!(
+                    "session truncated-at-{records} records (expected {} records, {} bytes)",
+                    checkpoint.entries, checkpoint.bytes
+                )));
+            }
+            if bytes.len() as u64 != checkpoint.bytes || hash != checkpoint.sha256 {
+                return Err(invalid_data(
+                    "session integrity check failed; file differs from committed checkpoint",
+                ));
+            }
+        }
+        let content = String::from_utf8(bytes).map_err(|e| invalid_data(e.to_string()))?;
         let mut lines = content.lines();
         let header_line = lines.next().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "empty session file")
@@ -256,6 +390,7 @@ impl PiSession {
 
         let mut entries = Vec::new();
         let mut next_id = 1u64;
+        let mut skipped = false;
         for line in lines {
             if line.is_empty() {
                 continue;
@@ -265,15 +400,34 @@ impl PiSession {
                     next_id = entry.id + 1;
                 }
                 entries.push(entry);
+            } else {
+                skipped = true;
             }
+        }
+        if checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.entries != entries.len())
+            || (checkpoint.is_some() && skipped)
+        {
+            return Err(invalid_data(
+                "session checkpoint does not match its records",
+            ));
         }
 
         Ok(Self {
             header,
+            persisted_entries: entries.len(),
             entries,
             next_id,
-            persisted_entries: 0,
-            persisted_bytes: 0,
+            persisted_bytes: content.len() as u64,
+            persisted_hash: Some(hash),
+            persisted_path: Some(path.to_path_buf()),
+            integrity_status: if checkpoint.is_some() {
+                "verified"
+            } else {
+                "unverified-legacy"
+            },
+            can_append: !skipped && content.ends_with('\n'),
         })
     }
 
@@ -507,7 +661,11 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let prefix = content.split_inclusive('\n').take(2).collect::<String>();
         std::fs::write(&path, prefix).unwrap();
-        assert!(PiSession::load_jsonl(&path).is_err());
+        let error = match PiSession::load_jsonl(&path) {
+            Ok(_) => panic!("truncated session must not load"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("truncated-at-1 records"));
     }
 
     #[test]
@@ -550,9 +708,11 @@ mod tests {
         let mut s = PiSession::new("/test/project", "gpt-5.5");
         s.append_message(Role::User, "one");
         let path = s.save_jsonl(tmp.path()).unwrap();
+        let prefix = std::fs::read(&path).unwrap();
 
         s.append_message(Role::Assistant, "two");
         assert_eq!(s.save_jsonl(tmp.path()).unwrap(), path);
+        assert!(std::fs::read(&path).unwrap().starts_with(&prefix));
         s.append_message(Role::User, "three");
         assert_eq!(s.save_jsonl(tmp.path()).unwrap(), path);
 
@@ -572,22 +732,92 @@ mod tests {
     }
 
     #[test]
-    fn stale_watermark_falls_back_to_full_rewrite() {
+    fn changed_session_is_not_overwritten() {
         let tmp = TempDir::new().unwrap();
         let mut s = PiSession::new("/test/project", "gpt-5.5");
         s.append_message(Role::User, "one");
         let path = s.save_jsonl(tmp.path()).unwrap();
 
-        // Simulate a crash mid-write: the file no longer matches the watermark.
         let truncated = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, &truncated[..truncated.len() / 2]).unwrap();
+        let damaged = std::fs::read(&path).unwrap();
 
         s.append_message(Role::Assistant, "two");
-        s.save_jsonl(tmp.path()).unwrap();
+        assert!(s.save_jsonl(tmp.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+    }
 
-        let loaded = PiSession::load_jsonl(&path).unwrap();
-        assert_eq!(loaded.entry_count(), 2);
-        assert_eq!(loaded.message_count(), 2);
+    #[test]
+    fn integrity_checks_corruption_legacy_and_failed_save() {
+        let tmp = TempDir::new().unwrap();
+        let mut s = PiSession::new("/test/project", "test-model");
+        s.append_message(Role::User, "first");
+        let path = s.save_jsonl(tmp.path()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert_eq!(
+            PiSession::load_jsonl(&path).unwrap().integrity_status(),
+            "verified"
+        );
+
+        let mut changed = original.clone();
+        let pos = changed
+            .windows(5)
+            .position(|window| window == b"first")
+            .unwrap();
+        changed[pos] = b'F';
+        std::fs::write(&path, &changed).unwrap();
+        assert!(PiSession::load_jsonl(&path).is_err());
+        std::fs::write(&path, &original).unwrap();
+        let mut uncommitted = original.clone();
+        uncommitted.extend_from_slice(b"{\"partial\":");
+        std::fs::write(&path, &uncommitted).unwrap();
+        assert!(PiSession::load_jsonl(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), uncommitted);
+        std::fs::write(&path, &original).unwrap();
+
+        let checkpoint = checkpoint_path(&path);
+        std::fs::remove_file(&checkpoint).unwrap();
+        assert_eq!(
+            PiSession::load_jsonl(&path).unwrap().integrity_status(),
+            "unverified-legacy"
+        );
+        std::fs::create_dir(&checkpoint).unwrap();
+        s.append_message(Role::Assistant, "second");
+        assert!(s.save_jsonl(tmp.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn oversized_append_leaves_previous_session_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let mut s = PiSession::new("/test/project", "test-model");
+        s.append_message(Role::User, "first");
+        let path = s.save_jsonl(tmp.path()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        s.append_message(Role::Assistant, "x".repeat(MAX_SESSION_BYTES));
+        assert!(s.save_jsonl(tmp.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            PiSession::load_jsonl(&path).unwrap().integrity_status(),
+            "verified"
+        );
+    }
+
+    #[test]
+    fn stale_loaded_writer_cannot_overwrite_new_entries() {
+        let tmp = TempDir::new().unwrap();
+        let mut first = PiSession::new("/test/project", "test-model");
+        first.append_message(Role::User, "one");
+        let path = first.save_jsonl(tmp.path()).unwrap();
+        let mut second = PiSession::load_jsonl(&path).unwrap();
+        first.append_message(Role::Assistant, "two");
+        first.save_jsonl(tmp.path()).unwrap();
+        second.append_message(Role::Assistant, "other");
+        assert!(second.save_jsonl(tmp.path()).is_err());
+        assert_eq!(
+            PiSession::load_jsonl(&path).unwrap().messages()[1].content,
+            "two"
+        );
     }
 
     fn loaded_bytes(path: &Path) -> u64 {

@@ -425,6 +425,7 @@ pub(crate) fn handle_slash_command(
                             );
                             return;
                         };
+                        let load_status = session.integrity_status().to_string();
                         *agent.messages.write() = session.messages();
                         let todos = session.todos();
                         agent.set_todo_state(todos.clone());
@@ -432,11 +433,10 @@ pub(crate) fn handle_slash_command(
                         app.messages = restored_chat(&session);
                         let dir = pi::pi_sessions_dir(&std::env::current_dir().unwrap_or_default());
                         app.session = Some((session, dir));
-                        let _ = app.persist();
                         push_system_message(
                             app,
                             format!(
-                                "Resumed session {}",
+                                "Resumed session {} (load status: {load_status})",
                                 path.file_name()
                                     .map(|name| name.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| path.display().to_string())
