@@ -5,7 +5,7 @@ import {
 } from '@expo-google-fonts/chivo-mono';
 import { useFonts } from 'expo-font';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -21,9 +21,11 @@ import {
   formatTkCloudError,
   getHealth,
   isAbortError,
+  isTkCloudError,
   listWorkspaces,
   type WorkspaceMeta,
 } from './src/api/tkCloud';
+import { createWorkspaceAccess } from '../access/workspaceAccess';
 import { CreateWorkspaceCard } from './src/components/CreateWorkspaceCard';
 import { ErrorBanner } from './src/components/ErrorBanner';
 import { FutureTabs } from './src/components/FutureTabs';
@@ -50,10 +52,22 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const access = useRef(createWorkspaceAccess()).current;
+
+  const deny = useCallback((err: unknown) => {
+    const message = access.deny(isTkCloudError(err) && err.code === 'http' ? err.status : undefined);
+    if (!message) return false;
+    setWorkspaces([]);
+    setSelectedId(null);
+    setListNote(null);
+    setError(message);
+    return true;
+  }, [access]);
 
   // Paint loading first. Cloud helpers resolve only after native fetch and
   // off-thread parse/validation; the setters below apply that finished result.
   const refresh = useCallback(async (opts?: { pull?: boolean; signal?: AbortSignal }) => {
+    const generation = access.retry();
     setBusy(true);
     if (opts?.pull) setRefreshing(true);
     setError(null);
@@ -64,7 +78,12 @@ export default function App() {
       listWorkspaces({ signal }),
     ]);
 
-    if (signal?.aborted) {
+    if (signal?.aborted || !access.current(generation)) {
+      return;
+    }
+
+    if ((healthResult.status === 'rejected' && deny(healthResult.reason)) ||
+        (listResult.status === 'rejected' && deny(listResult.reason))) {
       setRefreshing(false);
       setBusy(false);
       setLoading(false);
@@ -94,7 +113,7 @@ export default function App() {
     setRefreshing(false);
     setBusy(false);
     setLoading(false);
-  }, []);
+  }, [access, deny]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -104,18 +123,20 @@ export default function App() {
 
   async function handleCreate() {
     if (creating) return;
+    const generation = access.snapshot();
     setCreating(true);
     setError(null);
     try {
       const meta = await createWorkspace(
         createName.trim() ? { name: createName.trim() } : undefined,
       );
+      if (!access.current(generation)) return;
       setCreateName('');
       setWorkspaces((prev) => [meta, ...prev.filter((w) => w.id !== meta.id)]);
       setSelectedId(meta.id);
       await refresh();
     } catch (err) {
-      if (!isAbortError(err)) setError(formatTkCloudError(err));
+      if (access.current(generation) && !deny(err) && !isAbortError(err)) setError(formatTkCloudError(err));
     } finally {
       setCreating(false);
     }
