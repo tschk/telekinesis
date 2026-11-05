@@ -162,12 +162,32 @@ export default function App() {
     const seen = new Set<number>();
     const controller = new AbortController();
     const isCurrent = () => !controller.signal.aborted && selectedRef.current === selectedId;
+    let unavailable = false;
+    let probe = 0;
+    const checkStreamAccess = () => {
+      if (!isCurrent()) return;
+      unavailable = true;
+      const currentProbe = ++probe;
+      setStreamStatus("unavailable — check connection or access");
+      void getWorkspace(selectedId).catch((err: unknown) => {
+        if (isCurrent() && currentProbe === probe) showAccessFailure(err);
+      });
+    };
     const stream = connectWorkspaceStream({
       baseUrl: (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim()
         || "http://127.0.0.1:8787",
       workspaceId: selectedId,
-      onStatus: (status) => { if (isCurrent()) setStreamStatus(status); },
-      onUnavailable: () => { if (isCurrent()) setStreamStatus("unavailable"); },
+      onStatus: (status) => {
+        if (!isCurrent()) return;
+        if (status === "open") {
+          unavailable = false;
+          probe += 1;
+        } else if (status === "reconnecting") {
+          checkStreamAccess();
+        }
+        if (!unavailable || status === "open") setStreamStatus(status);
+      },
+      onUnavailable: checkStreamAccess,
       onEvents: (events) => {
         if (!isCurrent()) return;
         for (const event of events) {
@@ -193,7 +213,7 @@ export default function App() {
       controller.abort();
       stream.close();
     };
-  }, [selectedId, appendLog]);
+  }, [selectedId, appendLog, showAccessFailure]);
 
   const selected = useMemo(
     () => workspaces.find((w) => w.id === selectedId) ?? null,

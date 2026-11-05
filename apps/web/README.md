@@ -57,6 +57,19 @@ The companion's Pages configuration has no API proxy, and its API base defaults
 to localhost. A separate path or hostname needs its own routing and asset build
 before the companion can use same-origin sessions.
 
+The alternative is cross-origin cookie authentication. That requires explicit
+credentialed CORS, trusted origins, and server-side CSRF checks. Cross-site
+cookies also depend on browser third-party cookie policy. Same-origin routing
+avoids CORS for the app's API requests, but cookie-authenticated mutations
+still need CSRF protection. Neither deployment path is implemented here.
+
+Browsers do not expose a failed WebSocket handshake's HTTP status. When a
+stream cannot open, the companion checks workspace access over HTTP and shows
+any 401 or 403 it receives. A successful check does not prove the stream was
+authorized: the stream may have a separate origin policy. In that case, the
+log reports that the stream is unavailable and asks you to check the connection
+or access. It cannot identify the handshake failure more precisely.
+
 ### Prompt endpoint + exec fallback
 
 `PromptBox` submits via `promptWorkspace()` in `src/api/client.ts`:
