@@ -3232,6 +3232,31 @@ mod tests {
         let guard = agent.try_lock().unwrap();
         assert_eq!(guard.messages.read().len(), 1);
         assert_eq!(guard.todos().items[0].content, "saved todo");
+        drop(guard);
+
+        use std::io::Write as _;
+        let source = &files[saved_index - 1];
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(source)
+            .unwrap();
+        file.write_all(b"{\"partial\":").unwrap();
+        drop(file);
+        let source_bytes = std::fs::read(source).unwrap();
+        let index = crate::tui::session_files()
+            .iter()
+            .position(|path| path == source)
+            .unwrap()
+            + 1;
+        handle_slash_command(&mut app, &format!("/resume {index}"), &agent, &tx);
+        assert!(app.messages.iter().any(|message| {
+            message.content.contains("verified to record")
+                && message.content.contains("partial trailing record")
+        }));
+        let (recovered, dir) = app.session.as_ref().unwrap();
+        assert_ne!(recovered.jsonl_path(dir), *source);
+        assert!(recovered.jsonl_path(dir).is_file());
+        assert_eq!(std::fs::read(source).unwrap(), source_bytes);
     }
 
     #[test]

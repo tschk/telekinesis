@@ -198,11 +198,17 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     #[cfg(feature = "pi-compat")]
     let session_dir = pi::pi_sessions_dir(&std::env::current_dir()?);
     #[cfg(feature = "pi-compat")]
-    let loaded_session = continue_session
+    let mut loaded_session = continue_session
         .then(|| newest_session(&session_dir))
         .flatten()
         .map(|path| PiSession::load_jsonl(&path))
         .transpose()?;
+    #[cfg(feature = "pi-compat")]
+    if let Some(session) = loaded_session.as_mut() {
+        if session.prepare_resume() {
+            session.save_jsonl(&session_dir)?;
+        }
+    }
     #[cfg(feature = "pi-compat")]
     let resumed_model = loaded_session.as_ref().map(|session| {
         session

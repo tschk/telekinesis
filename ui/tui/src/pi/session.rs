@@ -138,8 +138,9 @@ pub struct PiSession {
     persisted_bytes: u64,
     persisted_hash: Option<String>,
     persisted_path: Option<PathBuf>,
-    integrity_status: &'static str,
+    integrity_status: String,
     can_append: bool,
+    unverified_tail: bool,
 }
 
 impl PiSession {
@@ -152,14 +153,30 @@ impl PiSession {
             persisted_bytes: 0,
             persisted_hash: None,
             persisted_path: None,
-            integrity_status: "unverified-legacy",
+            integrity_status: "unverified-legacy".into(),
             can_append: true,
+            unverified_tail: false,
         }
     }
 
     /// Integrity of the snapshot that was loaded, before any subsequent save.
-    pub fn integrity_status(&self) -> &'static str {
-        self.integrity_status
+    pub fn integrity_status(&self) -> &str {
+        &self.integrity_status
+    }
+
+    /// Continue a recovered prefix in a separate session, preserving the source tail.
+    pub fn prepare_resume(&mut self) -> bool {
+        if self.unverified_tail {
+            self.header.id = uuid::Uuid::new_v4().to_string();
+            self.header.created = Utc::now();
+            self.persisted_entries = 0;
+            self.persisted_bytes = 0;
+            self.persisted_hash = None;
+            self.persisted_path = None;
+            self.unverified_tail = false;
+            return true;
+        }
+        false
     }
 
     pub fn append(&mut self, entry_type: PiEntryType) -> u64 {
@@ -252,6 +269,7 @@ impl PiSession {
                 "legacy session contains incomplete or unsupported records; refusing to append",
             ));
         }
+        self.prepare_resume();
         std::fs::create_dir_all(dir)?;
         let path = self
             .persisted_path
@@ -358,7 +376,8 @@ impl PiSession {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
         };
-        let hash = checksum(&bytes);
+        let mut integrity_status = "unverified-legacy".to_owned();
+        let mut unverified_tail = false;
         if let Some(checkpoint) = &checkpoint {
             if checkpoint.version != 1 {
                 return Err(invalid_data("unsupported session checkpoint version"));
@@ -374,12 +393,40 @@ impl PiSession {
                     checkpoint.entries, checkpoint.bytes
                 )));
             }
-            if bytes.len() as u64 != checkpoint.bytes || hash != checkpoint.sha256 {
+            let committed = checkpoint.bytes as usize;
+            if checksum(&bytes[..committed]) != checkpoint.sha256 {
                 return Err(invalid_data(
-                    "session integrity check failed; file differs from committed checkpoint",
+                    "session integrity check failed; committed prefix differs from checkpoint",
                 ));
             }
+            let tail = &bytes[committed..];
+            if tail.is_empty() {
+                integrity_status = "verified".into();
+            } else {
+                let complete = tail.split_inclusive(|byte| *byte == b'\n');
+                let mut records = 0;
+                let mut other = 0;
+                let mut partial = false;
+                for line in complete {
+                    if !line.ends_with(b"\n") {
+                        partial = true;
+                    } else if serde_json::from_slice::<PiEntry>(line).is_ok() {
+                        records += 1;
+                    } else {
+                        other += 1;
+                    }
+                }
+                integrity_status = format!(
+                    "verified to record {}; {records} complete unverified records, {other} unrecognized lines{}; original preserved for inspection at {}; continuation uses a new session",
+                    checkpoint.entries,
+                    if partial { ", partial trailing record" } else { "" },
+                    path.display()
+                );
+                unverified_tail = true;
+            }
+            bytes.truncate(committed);
         }
+        let hash = checksum(&bytes);
         let content = String::from_utf8(bytes).map_err(|e| invalid_data(e.to_string()))?;
         let mut lines = content.lines();
         let header_line = lines.next().ok_or_else(|| {
@@ -422,12 +469,9 @@ impl PiSession {
             persisted_bytes: content.len() as u64,
             persisted_hash: Some(hash),
             persisted_path: Some(path.to_path_buf()),
-            integrity_status: if checkpoint.is_some() {
-                "verified"
-            } else {
-                "unverified-legacy"
-            },
+            integrity_status,
             can_append: !skipped && content.ends_with('\n'),
+            unverified_tail,
         })
     }
 
@@ -771,7 +815,9 @@ mod tests {
         let mut uncommitted = original.clone();
         uncommitted.extend_from_slice(b"{\"partial\":");
         std::fs::write(&path, &uncommitted).unwrap();
-        assert!(PiSession::load_jsonl(&path).is_err());
+        let recovered = PiSession::load_jsonl(&path).unwrap();
+        assert_eq!(recovered.messages()[0].content, "first");
+        assert!(recovered.integrity_status().contains("partial"));
         assert_eq!(std::fs::read(&path).unwrap(), uncommitted);
         std::fs::write(&path, &original).unwrap();
 
@@ -785,6 +831,45 @@ mod tests {
         s.append_message(Role::Assistant, "second");
         assert!(s.save_jsonl(tmp.path()).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn recovered_prefix_forks_without_modifying_unverified_tail() {
+        let tmp = TempDir::new().unwrap();
+        let mut session = PiSession::new("/test/project", "test-model");
+        session.append_message(Role::User, "committed");
+        let path = session.save_jsonl(tmp.path()).unwrap();
+        let checkpoint = std::fs::read(checkpoint_path(&path)).unwrap();
+        session.append_message(Role::Assistant, "unverified");
+        let mut source = std::fs::read(&path).unwrap();
+        serde_json::to_writer(&mut source, session.entries.last().unwrap()).unwrap();
+        source.extend_from_slice(b"\n{\"partial\":");
+        std::fs::write(&path, &source).unwrap();
+
+        let mut recovered = PiSession::load_jsonl(&path).unwrap();
+        assert_eq!(recovered.messages().len(), 1);
+        assert!(recovered
+            .integrity_status()
+            .contains("verified to record 1"));
+        assert!(recovered
+            .integrity_status()
+            .contains("1 complete unverified records"));
+        assert!(recovered
+            .integrity_status()
+            .contains("partial trailing record"));
+        recovered.append_message(Role::Assistant, "continued");
+        let fork = recovered.save_jsonl(tmp.path()).unwrap();
+        assert_ne!(fork, path);
+        assert_eq!(std::fs::read(&path).unwrap(), source);
+        assert_eq!(std::fs::read(checkpoint_path(&path)).unwrap(), checkpoint);
+        let loaded = PiSession::load_jsonl(&fork).unwrap();
+        assert_eq!(loaded.messages().len(), 2);
+        assert_eq!(loaded.messages()[1].content, "continued");
+        assert_eq!(loaded.integrity_status(), "verified");
+
+        source[0] ^= 1;
+        std::fs::write(&path, source).unwrap();
+        assert!(PiSession::load_jsonl(&path).is_err());
     }
 
     #[test]

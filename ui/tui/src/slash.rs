@@ -417,7 +417,7 @@ pub(crate) fn handle_slash_command(
                     return;
                 };
                 match PiSession::load_jsonl(path) {
-                    Ok(session) => {
+                    Ok(mut session) => {
                         let Ok(mut agent) = agent.try_lock() else {
                             push_system_message(
                                 app,
@@ -426,12 +426,21 @@ pub(crate) fn handle_slash_command(
                             return;
                         };
                         let load_status = session.integrity_status().to_string();
+                        let dir = pi::pi_sessions_dir(&std::env::current_dir().unwrap_or_default());
+                        if session.prepare_resume() {
+                            if let Err(error) = session.save_jsonl(&dir) {
+                                push_system_message(
+                                    app,
+                                    format!("Failed to save recovered session: {error}"),
+                                );
+                                return;
+                            }
+                        }
                         *agent.messages.write() = session.messages();
                         let todos = session.todos();
                         agent.set_todo_state(todos.clone());
                         app.todos = todos;
                         app.messages = restored_chat(&session);
-                        let dir = pi::pi_sessions_dir(&std::env::current_dir().unwrap_or_default());
                         app.session = Some((session, dir));
                         push_system_message(
                             app,
