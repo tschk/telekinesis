@@ -72,6 +72,9 @@ fn exec_help() {
     eprintln!("  --investigate-model <name>  Plan model (RX4_INVESTIGATE_MODEL)");
     eprintln!("  --help          Show this help");
     eprintln!();
+    eprintln!("Session tail: set TK_CLOUD_URL and TK_WORKSPACE_ID to post; optionally set");
+    eprintln!("TK_CLOUD_API_KEY for x-api-key authentication (HTTPS, or loopback HTTP).");
+    eprintln!();
     eprintln!("Only the final text goes to stdout; status and errors go to stderr.");
 }
 
@@ -282,7 +285,8 @@ fn newest_session(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 /// POST bytes appended during this exec when `TK_CLOUD_URL` and
-/// `TK_WORKSPACE_ID` are set. Missing env is a no-op. A failed post does
+/// `TK_WORKSPACE_ID` are set. `TK_CLOUD_API_KEY` optionally authenticates it.
+/// Missing env is a no-op. A failed post does
 /// not fail the exec. `from` is the file length before the prompt, so a
 /// reconnect does not re-append earlier rows.
 fn post_session_tail(workspace: &std::path::Path, from: u64) -> anyhow::Result<()> {
@@ -315,26 +319,46 @@ fn post_session_tail(workspace: &std::path::Path, from: u64) -> anyhow::Result<(
         base.trim_end_matches('/'),
         id.trim()
     );
-    let mut child = std::process::Command::new("curl")
-        .args([
-            "-sS",
-            "-X",
-            "POST",
-            &url,
-            "-H",
-            "content-type: text/plain",
-            "--data-binary",
-            "@-",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        stdin.write_all(body.as_bytes())?;
+    let key = std::env::var("TK_CLOUD_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    send_session_tail(&url, &body, key.as_deref())
+}
+
+fn send_session_tail(url: &str, body: &str, key: Option<&str>) -> anyhow::Result<()> {
+    let url = reqwest::Url::parse(url).map_err(|_| anyhow::anyhow!("invalid cloud URL"))?;
+    if key.is_some() {
+        let loopback = url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+        if !(url.scheme() == "https" || url.scheme() == "http" && loopback) {
+            anyhow::bail!("cloud API key requires HTTPS or loopback HTTP");
+        }
     }
-    let status = child.wait()?;
-    if !status.success() {
-        anyhow::bail!("curl exited {status}");
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| anyhow::anyhow!("cannot create cloud HTTP client"))?;
+    let mut request = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "text/plain")
+        .body(body.to_owned());
+    if let Some(key) = key {
+        request = request.header("x-api-key", key);
+    }
+    let response = request
+        .send()
+        .map_err(|_| anyhow::anyhow!("cloud session-tail request failed"))?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "cloud session-tail returned HTTP {}",
+            response.status().as_u16()
+        );
     }
     Ok(())
 }
@@ -395,6 +419,73 @@ fn missing_provider_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_tail_auth_and_http_status() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        for (key, status) in [
+            (Some("test-key"), 200),
+            (None, 200),
+            (Some("test-key"), 401),
+            (Some("test-key"), 302),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!(
+                "http://{}/v1/workspaces/id/session-tail",
+                listener.local_addr().unwrap()
+            );
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    if request
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .is_some_and(|end| request.len() >= end + 4 + 4)
+                    {
+                        break;
+                    }
+                }
+                write!(stream, "HTTP/1.1 {status} test\r\nLocation: http://127.0.0.1:1/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                String::from_utf8(request).unwrap()
+            });
+            let result = send_session_tail(&url, "tail", key);
+            let request = server.join().unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("post /v1/workspaces/id/session-tail http/1.1\r\n"));
+            assert!(request.ends_with("\r\n\r\ntail"));
+            assert_eq!(
+                request.contains("\r\nx-api-key: test-key\r\n"),
+                key.is_some()
+            );
+            assert_eq!(result.is_ok(), status == 200);
+            if let Err(error) = result {
+                assert!(error.to_string().contains(&status.to_string()));
+                assert!(!error.to_string().contains("test-key"));
+            }
+        }
+    }
+
+    #[test]
+    fn session_tail_rejects_insecure_non_loopback_key_without_leaking_it() {
+        let error = send_session_tail(
+            "http://example.com/session-tail",
+            "tail",
+            Some("secret-key"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("requires HTTPS"));
+        assert!(!error.contains("secret-key"));
+    }
 
     #[test]
     fn no_yolo_is_opt_in_on_exec_args() {
