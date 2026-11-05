@@ -29,8 +29,9 @@ pub struct OpenAiChatProvider {
     key: String,
     id: &'static str,
     name: &'static str,
-    chat_url: &'static str,
+    chat_url: String,
     use_session: bool,
+    extra_headers: Vec<(&'static str, String)>,
 }
 
 impl OpenAiChatProvider {
@@ -38,15 +39,26 @@ impl OpenAiChatProvider {
         api_key: impl Into<String>,
         id: &'static str,
         name: &'static str,
-        chat_url: &'static str,
+        chat_url: impl Into<String>,
     ) -> Self {
         Self {
             key: api_key.into(),
             id,
             name,
-            chat_url,
+            chat_url: chat_url.into(),
             use_session: false,
+            extra_headers: Vec::new(),
         }
+    }
+
+    /// Provider-specific static headers (e.g. Copilot's editor identity).
+    pub fn with_headers(mut self, headers: &[(&'static str, &str)]) -> Self {
+        self.extra_headers.extend(
+            headers
+                .iter()
+                .map(|(name, value)| (*name, value.to_string())),
+        );
+        self
     }
 
     pub fn with_session(mut self) -> Self {
@@ -69,6 +81,13 @@ impl OpenAiChatProvider {
             headers.insert(
                 "x-opencode-session",
                 HeaderValue::from_str(session_id())
+                    .map_err(|error| ProviderError::Api(error.to_string()))?,
+            );
+        }
+        for (name, value) in &self.extra_headers {
+            headers.insert(
+                *name,
+                HeaderValue::from_str(value)
                     .map_err(|error| ProviderError::Api(error.to_string()))?,
             );
         }
@@ -136,7 +155,7 @@ impl Provider for OpenAiChatProvider {
     ) -> Result<StreamResult, ProviderError> {
         let bare = model.split('/').next_back().unwrap_or(model);
         let body = chat_request_body(messages, system, bare, tools, reasoning_effort);
-        let response = Self::send_with_retry(self.chat_url, &self.headers()?, &body)
+        let response = Self::send_with_retry(&self.chat_url, &self.headers()?, &body)
             .await
             .map_err(|error| {
                 ProviderError::Api(format!("{} request failed: {error}", self.name))
@@ -171,7 +190,7 @@ impl Provider for OpenAiChatProvider {
 /// `TK_STREAM_IDLE_TIMEOUT_SECS`; zero or unparsed values fall back to
 /// the default (there is deliberately no off switch: hanging is the
 /// failure mode).
-fn stream_idle_timeout() -> Duration {
+pub(crate) fn stream_idle_timeout() -> Duration {
     const DEFAULT_SECS: u64 = 120;
     static TIMEOUT: OnceLock<Duration> = OnceLock::new();
     *TIMEOUT.get_or_init(|| {
@@ -388,7 +407,7 @@ fn handle_chat_sse_block(
     Ok(())
 }
 
-fn parse_token_usage(value: &Value) -> Option<TokenUsage> {
+pub(crate) fn parse_token_usage(value: &Value) -> Option<TokenUsage> {
     let number = |key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0) as usize;
     let usage = TokenUsage {
         input_tokens: number("input_tokens").max(number("prompt_tokens")),

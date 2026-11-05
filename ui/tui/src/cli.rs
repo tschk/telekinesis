@@ -165,7 +165,7 @@ pub fn print_help() {
     );
     println!("  tk --no-yolo    Headless stdin run that denies Ask-class tools");
     println!(
-        "  tk login <provider>  OAuth login (openai, claude, grok, gemini, copilot, kimi, antigravity)"
+        "  tk login <provider>  OAuth login (openai, claude, grok, gemini, copilot, kimi; antigravity not supported yet)"
     );
     println!("  /login [provider]     OAuth login from the TUI");
     println!("  /providers             Search providers and API-key setup");
@@ -183,7 +183,7 @@ pub fn print_help() {
     println!("  OPENAI_BASE_URL     OpenAI-compatible base URL override");
     println!("  ZAI_API_KEY         Z.ai GLM Coding Plan API key (coding endpoint)");
     println!("  ANTHROPIC_API_KEY   Anthropic API key");
-    println!("  GOOGLE_API_KEY      Google Gemini API key");
+    println!("  GOOGLE_API_KEY      Google Gemini API key (or GEMINI_API_KEY)");
     println!("  OPENCODE_API_KEY    OpenCode Zen / OpenCode Go API key");
     println!("  OPENCODE_GO_API_KEY OpenCode Go API key (preferred for opencode-go)");
     println!("  OPENROUTER_API_KEY  OpenRouter API key");
@@ -192,6 +192,7 @@ pub fn print_help() {
     println!(
         "  TK_EFFORT           exec reasoning effort if --effort/--thinking omitted (default low)"
     );
+    println!("  TK_TOOL_APPROVAL    bypass = TUI auto-approves every tool call (default: ask y/n)");
     println!("  TK_PLAN_APPROVAL    ask to gate whole-turn plans (default: bypass)");
     println!("  TK_TOOL_PROFILE     minimal, coding, or full tool registry");
     println!("  TK_MAX_TURNS        cap tool-loop iterations (default 50, max 1000)");

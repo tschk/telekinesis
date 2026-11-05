@@ -66,7 +66,7 @@ div w-full h-fit flex-col
         "{model} · {effort}"
       span w-fit text-xs text-{context_color}
         "{context_pct}%/{context_window}"
-      span w-fit text-xs text-zinc-600
+      span w-fit text-xs text-{permission_color}
         "· {permission_mode}"
     if {has_running_subagents}
       for subagent in {running_subagents}

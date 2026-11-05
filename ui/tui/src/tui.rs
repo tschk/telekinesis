@@ -277,6 +277,13 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     }
     let (approver, approval_rx) = ChannelApprover::pair();
     let approval_mode = approver.mode();
+    let start_in_bypass = crate::channel_approver::bypass_requested(
+        std::env::var("TK_TOOL_APPROVAL").ok().as_deref(),
+    );
+    agent.set_authorizer(approver.authorizer());
+    subagent_manager
+        .lock()
+        .set_tools(approver.gate_subagent_tools(agent.tools.clone()));
     agent.set_approver(Arc::new(approver));
 
     // rx4 owns the plan gate and the wait; the TUI only presents the bounded
@@ -374,6 +381,9 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
     app.approval_rx = Some(approval_rx);
     app.plan_rx = plan_rx;
     app.approval_mode = Some(approval_mode);
+    if start_in_bypass {
+        app.set_tool_approval_bypass(true);
+    }
     app.subagent_manager = Some(subagent_manager);
     app.prefs_enabled = true;
 
@@ -460,10 +470,6 @@ pub(crate) fn run_tui(continue_session: bool) -> anyhow::Result<()> {
                             }
                             _ => {}
                         }
-                        continue;
-                    }
-                    if is_permission_toggle(key.code, key.modifiers) {
-                        app.toggle_permission_mode();
                         continue;
                     }
                     if app.permission_prompt {
@@ -862,11 +868,6 @@ pub(crate) fn tool_result_summary(name: &str, content: &str, is_error: bool) -> 
         _ if count == 0 => "done".to_string(),
         _ => format!("{count} results"),
     }
-}
-
-pub(crate) fn is_permission_toggle(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    code == KeyCode::Char('~')
-        || code == KeyCode::Char('`') && modifiers.contains(KeyModifiers::SHIFT)
 }
 
 pub(crate) fn tool_color(name: &str) -> crepuscularity_tui::ratatui::style::Color {

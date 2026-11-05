@@ -132,7 +132,7 @@ fn setup_provider(
     if let Some(token) = saved_token("gemini", rt).or_else(|| env_key("GOOGLE_API_KEY")) {
         return Some((
             Arc::new(OpenAIProvider::with_base_url(
-                "https://generativelanguage.googleapis.com/v1beta",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
                 token,
                 "google",
                 "Google Gemini",
