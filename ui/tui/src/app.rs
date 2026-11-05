@@ -3152,6 +3152,9 @@ mod tests {
         }
 
         let dir = crate::pi::pi_sessions_dir(&std::env::current_dir().unwrap());
+        let mut other = PiSession::new("/project", "other-model");
+        other.append_message(rx4::provider::Role::User, "different prompt");
+        other.save_jsonl(&dir).unwrap();
         let mut session = PiSession::new("/project", "test-model");
         session.append_message(rx4::provider::Role::User, "saved message");
         let todos = TodoState {
@@ -3176,8 +3179,36 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         handle_slash_command(&mut app, "/sessions", &agent, &tx);
         assert!(app.messages.last().unwrap().content.contains("[1]"));
+        let files = crate::tui::session_files();
+        let saved_index = files
+            .iter()
+            .position(|path| PiSession::load_jsonl(path).unwrap().header.model == "test-model")
+            .unwrap()
+            + 1;
+        let other_index = 3 - saved_index;
+        for query in ["TEST-MODEL", "SAVED MESSAGE"] {
+            handle_slash_command(&mut app, &format!("/sessions {query}"), &agent, &tx);
+            let listing = &app.messages.last().unwrap().content;
+            assert!(listing.contains(&format!("[{saved_index}]")), "{listing}");
+            assert!(!listing.contains(&format!("[{other_index}]")), "{listing}");
+        }
+        let filename = files[other_index - 1]
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        handle_slash_command(&mut app, &format!("/sessions {filename}"), &agent, &tx);
+        let listing = &app.messages.last().unwrap().content;
+        assert!(listing.contains(&format!("[{other_index}]")), "{listing}");
+        assert!(!listing.contains(&format!("[{saved_index}]")), "{listing}");
+        handle_slash_command(&mut app, "/sessions no-such-session", &agent, &tx);
+        assert!(app
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("No matching sessions"));
         let guard = agent.try_lock().unwrap();
-        handle_slash_command(&mut app, "/resume 1", &agent, &tx);
+        handle_slash_command(&mut app, &format!("/resume {saved_index}"), &agent, &tx);
         assert!(app
             .messages
             .last()
@@ -3188,7 +3219,7 @@ mod tests {
         assert!(guard.messages.read().is_empty());
         drop(guard);
 
-        handle_slash_command(&mut app, "/resume 1", &agent, &tx);
+        handle_slash_command(&mut app, &format!("/resume {saved_index}"), &agent, &tx);
         assert!(app
             .messages
             .iter()

@@ -193,7 +193,7 @@ pub(crate) fn handle_slash_command(
                     {} — scope modes\n\
                     /plan <task> — read-only plan\n\
                     /review [target] — read-only review\n\
-                    /sessions — list saved sessions\n\
+                    /sessions [query] — list or search saved sessions\n\
                     /resume <n> — resume a session\n\
                     /subagent spawn|list|cancel — manage subagents\n\
                     /budget [cost|time|turns|clear] — usage limits\n\
@@ -341,10 +341,11 @@ pub(crate) fn handle_slash_command(
                     );
                     return;
                 }
+                let query = arg.trim().to_lowercase();
                 let lines = files
                     .iter()
                     .enumerate()
-                    .map(|(index, path)| {
+                    .filter_map(|(index, path)| {
                         let session = PiSession::load_jsonl(path).ok();
                         let model = session
                             .as_ref()
@@ -367,13 +368,29 @@ pub(crate) fn handle_slash_command(
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        format!(
-                            "  [{}] {stamp} · {model} · {count} messages · {name}",
-                            index + 1
-                        )
+                        let matches = query.is_empty()
+                            || model.to_lowercase().contains(&query)
+                            || name.to_lowercase().contains(&query)
+                            || session.as_ref().is_some_and(|session| {
+                                session.entries.iter().any(|entry| {
+                                    matches!(&entry.entry_type, PiEntryType::Message {
+                                        role: rx4::provider::Role::User, content, ..
+                                    } if content.to_lowercase().contains(&query))
+                                })
+                            });
+                        matches.then(|| {
+                            format!(
+                                "  [{}] {stamp} · {model} · {count} messages · {name}",
+                                index + 1
+                            )
+                        })
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                if lines.is_empty() {
+                    push_system_message(app, "No matching sessions.");
+                    return;
+                }
                 push_system_message(
                     app,
                     format!("Sessions (newest first)\n{lines}\n\nResume with /resume <n>"),
